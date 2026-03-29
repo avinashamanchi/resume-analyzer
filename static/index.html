@@ -1,0 +1,488 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Resume.AI — Analyzer</title>
+<link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=DM+Mono:wght@300;400;500&display=swap" rel="stylesheet" />
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  :root {
+    --bg: #0a0a0f; --surface: #111118; --card: #16161f; --border: #2a2a3a;
+    --accent: #7cffd4; --accent2: #ff6b6b; --accent3: #ffd166;
+    --text: #e8e8f0; --muted: #6b6b80;
+    --font-head: 'Syne', sans-serif; --font-mono: 'DM Mono', monospace;
+  }
+  body { background: var(--bg); color: var(--text); font-family: var(--font-mono); min-height: 100vh; overflow-x: hidden; }
+  body::before {
+    content: ''; position: fixed; inset: 0;
+    background-image: linear-gradient(rgba(124,255,212,0.03) 1px, transparent 1px), linear-gradient(90deg, rgba(124,255,212,0.03) 1px, transparent 1px);
+    background-size: 40px 40px; pointer-events: none; z-index: 0;
+  }
+  .app { position: relative; z-index: 1; max-width: 900px; margin: 0 auto; padding: 40px 24px 80px; }
+
+  /* Header */
+  .header { display: flex; align-items: flex-start; justify-content: space-between; margin-bottom: 48px; }
+  .logo-block h1 { font-family: var(--font-head); font-size: 2.4rem; font-weight: 800; letter-spacing: -0.03em; line-height: 1; }
+  .logo-block h1 span { color: var(--accent); }
+  .logo-block p { font-size: 0.75rem; color: var(--muted); margin-top: 6px; letter-spacing: 0.08em; text-transform: uppercase; }
+  .badge { background: linear-gradient(135deg, var(--accent), #00c896); color: #0a0a0f; font-family: var(--font-head); font-weight: 700; font-size: 0.65rem; padding: 4px 10px; border-radius: 20px; letter-spacing: 0.1em; text-transform: uppercase; margin-top: 4px; }
+
+  /* Tab toggle */
+  .tab-row { display: flex; gap: 8px; margin-bottom: 14px; }
+  .tab-btn {
+    flex: 1; padding: 10px; border-radius: 8px; border: 1.5px solid var(--border);
+    background: var(--card); color: var(--muted); font-family: var(--font-mono);
+    font-size: 0.78rem; cursor: pointer; transition: all 0.2s; letter-spacing: 0.04em;
+  }
+  .tab-btn.active { border-color: var(--accent); color: var(--accent); background: rgba(124,255,212,0.07); }
+
+  /* Upload Zone */
+  .upload-zone {
+    border: 1.5px dashed var(--border); border-radius: 12px; padding: 44px 32px;
+    text-align: center; cursor: pointer; transition: all 0.25s ease; background: var(--card); position: relative; overflow: hidden;
+  }
+  .upload-zone::before { content: ''; position: absolute; inset: 0; background: radial-gradient(ellipse at 50% 0%, rgba(124,255,212,0.06), transparent 60%); pointer-events: none; }
+  .upload-zone:hover, .upload-zone.dragging { border-color: var(--accent); }
+  .upload-zone.dragging { transform: scale(1.01); }
+  .upload-icon { width: 48px; height: 48px; margin: 0 auto 16px; background: linear-gradient(135deg, rgba(124,255,212,0.15), rgba(124,255,212,0.05)); border-radius: 12px; display: flex; align-items: center; justify-content: center; font-size: 22px; }
+  .upload-zone h3 { font-family: var(--font-head); font-size: 1.1rem; font-weight: 700; margin-bottom: 6px; }
+  .upload-zone p { font-size: 0.78rem; color: var(--muted); }
+  .upload-zone input { display: none; }
+
+  /* LinkedIn input */
+  .linkedin-box { background: var(--card); border: 1.5px solid var(--border); border-radius: 12px; padding: 28px; }
+  .linkedin-box h3 { font-family: var(--font-head); font-size: 1rem; font-weight: 700; margin-bottom: 6px; }
+  .linkedin-box p { font-size: 0.75rem; color: var(--muted); margin-bottom: 16px; line-height: 1.6; }
+  .linkedin-input {
+    width: 100%; background: var(--bg); border: 1.5px solid var(--border);
+    border-radius: 8px; padding: 12px 14px; color: var(--text);
+    font-family: var(--font-mono); font-size: 0.82rem; outline: none; transition: border-color 0.2s;
+  }
+  .linkedin-input:focus { border-color: var(--accent); }
+  .linkedin-input::placeholder { color: var(--muted); }
+  .linkedin-note { font-size: 0.7rem; color: var(--muted); margin-top: 10px; line-height: 1.5; }
+  .linkedin-note a { color: var(--accent3); text-decoration: none; }
+
+  .section-label { font-size: 0.7rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.12em; margin-bottom: 10px; display: flex; align-items: center; gap: 8px; }
+  .section-label::after { content: ''; flex: 1; height: 1px; background: var(--border); }
+
+  .jd-textarea { width: 100%; background: var(--card); border: 1.5px solid var(--border); border-radius: 10px; padding: 14px 16px; color: var(--text); font-family: var(--font-mono); font-size: 0.8rem; resize: vertical; min-height: 110px; outline: none; transition: border-color 0.2s; line-height: 1.6; }
+  .jd-textarea:focus { border-color: var(--accent); }
+  .jd-textarea::placeholder { color: var(--muted); }
+
+  .file-pill { display: inline-flex; align-items: center; gap: 10px; background: rgba(124,255,212,0.08); border: 1px solid rgba(124,255,212,0.2); border-radius: 8px; padding: 10px 14px; font-size: 0.8rem; color: var(--accent); margin-top: 12px; }
+  .file-pill button { background: none; border: none; cursor: pointer; color: var(--muted); font-size: 14px; line-height: 1; padding: 0; margin-left: 4px; transition: color 0.15s; }
+  .file-pill button:hover { color: var(--accent2); }
+
+  .analyze-btn { width: 100%; padding: 16px; background: linear-gradient(135deg, var(--accent), #00c896); color: #0a0a0f; border: none; border-radius: 10px; font-family: var(--font-head); font-size: 1rem; font-weight: 800; cursor: pointer; letter-spacing: 0.02em; transition: all 0.2s ease; margin-top: 14px; }
+  .analyze-btn:hover:not(:disabled) { transform: translateY(-1px); box-shadow: 0 8px 30px rgba(124,255,212,0.25); }
+  .analyze-btn:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
+  .analyze-btn.loading { background: linear-gradient(135deg, #2a2a3a, #1e1e2e); color: var(--accent); }
+
+  .spinner { display: inline-block; width: 16px; height: 16px; border: 2px solid rgba(124,255,212,0.3); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.8s linear infinite; vertical-align: middle; margin-right: 8px; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  .results { animation: fadeUp 0.5s ease forwards; }
+  @keyframes fadeUp { from { opacity: 0; transform: translateY(16px); } to { opacity: 1; transform: translateY(0); } }
+
+  .score-card { background: var(--card); border: 1px solid var(--border); border-radius: 14px; padding: 28px; display: flex; align-items: center; gap: 28px; position: relative; overflow: hidden; }
+  .score-card::before { content: ''; position: absolute; top: 0; left: 0; right: 0; height: 2px; background: linear-gradient(90deg, var(--accent), #00c896, transparent); }
+  .score-ring { flex-shrink: 0; width: 90px; height: 90px; position: relative; }
+  .score-ring svg { width: 90px; height: 90px; transform: rotate(-90deg); }
+  .score-ring .track { fill: none; stroke: var(--border); stroke-width: 6; }
+  .score-ring .fill { fill: none; stroke-width: 6; stroke-linecap: round; transition: stroke-dashoffset 1.2s cubic-bezier(0.4,0,0.2,1); }
+  .score-num { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; flex-direction: column; }
+  .score-num span:first-child { font-family: var(--font-head); font-size: 1.5rem; font-weight: 800; line-height: 1; }
+  .score-num span:last-child { font-size: 0.6rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.1em; }
+  .score-info { flex: 1; }
+  .score-info h2 { font-family: var(--font-head); font-size: 1.3rem; font-weight: 800; margin-bottom: 4px; }
+  .score-info p { font-size: 0.78rem; color: var(--muted); line-height: 1.6; }
+
+  .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+  @media (max-width: 600px) { .grid-2 { grid-template-columns: 1fr; } }
+
+  .info-card { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 20px; }
+  .info-card h4 { font-family: var(--font-head); font-size: 0.85rem; font-weight: 700; margin-bottom: 14px; display: flex; align-items: center; gap: 8px; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+  .dot-green { background: var(--accent); }
+  .dot-red { background: var(--accent2); }
+  .dot-yellow { background: var(--accent3); }
+
+  .tag-list { display: flex; flex-wrap: wrap; gap: 7px; }
+  .tag { font-size: 0.72rem; padding: 4px 10px; border-radius: 20px; letter-spacing: 0.04em; }
+  .tag-green { background: rgba(124,255,212,0.1); color: var(--accent); border: 1px solid rgba(124,255,212,0.2); }
+  .tag-red { background: rgba(255,107,107,0.1); color: var(--accent2); border: 1px solid rgba(255,107,107,0.2); }
+
+  .bullet-list { list-style: none; display: flex; flex-direction: column; gap: 10px; }
+  .bullet-list li { font-size: 0.78rem; color: var(--text); line-height: 1.55; padding-left: 16px; position: relative; }
+  .bullet-list li::before { content: '→'; position: absolute; left: 0; color: var(--accent); font-size: 0.7rem; }
+
+  .full-card { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 22px; }
+  .full-card h4 { font-family: var(--font-head); font-size: 0.85rem; font-weight: 700; margin-bottom: 14px; display: flex; align-items: center; gap: 8px; }
+
+  .gap-stack { display: flex; flex-direction: column; gap: 14px; }
+  .mt-24 { margin-top: 24px; }
+  .mt-32 { margin-top: 32px; }
+  .mt-14 { margin-top: 14px; }
+
+  .status-box { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 20px; font-size: 0.8rem; color: var(--muted); min-height: 60px; display: flex; align-items: center; gap: 12px; margin-top: 24px; }
+  .status-box .cursor { display: inline-block; width: 8px; height: 14px; background: var(--accent); animation: blink 1s steps(1) infinite; flex-shrink: 0; }
+  @keyframes blink { 50% { opacity: 0; } }
+
+  .error-box { background: rgba(255,107,107,0.08); border: 1px solid rgba(255,107,107,0.25); border-radius: 10px; padding: 14px 18px; font-size: 0.8rem; color: var(--accent2); margin-top: 14px; }
+
+  /* Download button */
+  .download-btn {
+    display: flex; align-items: center; justify-content: center; gap: 8px;
+    width: 100%; padding: 14px;
+    background: transparent; border: 1.5px solid var(--accent);
+    color: var(--accent); border-radius: 10px;
+    font-family: var(--font-head); font-size: 0.9rem; font-weight: 700;
+    cursor: pointer; letter-spacing: 0.02em; transition: all 0.2s ease;
+  }
+  .download-btn:hover { background: rgba(124,255,212,0.08); transform: translateY(-1px); }
+</style>
+</head>
+<body>
+<div class="app">
+
+  <div class="header">
+    <div class="logo-block">
+      <h1>Resume<span>.</span>AI</h1>
+      <p>AI-powered resume analyzer & scorer</p>
+    </div>
+    <div class="badge">✦ Powered by Groq</div>
+  </div>
+
+  <!-- Input mode tabs -->
+  <div class="section-label">01 — Input Method</div>
+  <div class="tab-row">
+    <button class="tab-btn active" id="tabPDF" onclick="switchTab('pdf')">📄 Upload PDF</button>
+    <button class="tab-btn" id="tabLinkedIn" onclick="switchTab('linkedin')">🔗 LinkedIn URL</button>
+  </div>
+
+  <!-- PDF Upload -->
+  <div id="pdfSection">
+    <div id="uploadZone" class="upload-zone" onclick="document.getElementById('fileInput').click()">
+      <div class="upload-icon">📄</div>
+      <h3>Drop your resume here</h3>
+      <p>PDF files only · Max 10MB</p>
+      <input type="file" id="fileInput" accept=".pdf" />
+    </div>
+    <div id="filePill" style="display:none;">
+      <div class="file-pill">
+        <span>📎</span><span id="fileName"></span>
+        <button onclick="clearFile()">✕</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- LinkedIn URL -->
+  <div id="linkedinSection" style="display:none;">
+    <div class="linkedin-box">
+      <h3>🔗 LinkedIn Profile URL</h3>
+      <p>Paste your public LinkedIn profile link below. Make sure your profile visibility is set to "Public" in LinkedIn settings.</p>
+      <input class="linkedin-input" type="url" id="linkedinUrl" placeholder="https://www.linkedin.com/in/your-username" />
+      <p class="linkedin-note">
+        ⚠ LinkedIn blocks most automated access. If this fails, export your profile as a PDF:<br/>
+        LinkedIn → Me → Settings & Privacy → Data Privacy → <a href="https://www.linkedin.com/mypreferences/d/categories/profile" target="_blank">Get a copy of your data</a> → then upload as PDF above.
+      </p>
+    </div>
+  </div>
+
+  <!-- Job Description -->
+  <div class="mt-24">
+    <div class="section-label">02 — Job Description (Optional but recommended)</div>
+    <textarea class="jd-textarea" id="jobDesc" placeholder="Paste the job description here for keyword matching & tailored scoring..."></textarea>
+  </div>
+
+  <button class="analyze-btn" id="analyzeBtn" onclick="analyze()" disabled>
+    Analyze Resume
+  </button>
+
+  <div id="errorBox" style="display:none;" class="error-box"></div>
+
+  <div id="statusSection" style="display:none;" class="status-box">
+    <div class="cursor"></div>
+    <span id="statusText">Analyzing your resume...</span>
+  </div>
+
+  <!-- Results -->
+  <div id="results" style="display:none;" class="results mt-32 gap-stack">
+
+    <div class="score-card">
+      <div class="score-ring">
+        <svg viewBox="0 0 90 90">
+          <circle class="track" cx="45" cy="45" r="38" />
+          <circle class="fill" id="scoreArc" cx="45" cy="45" r="38" stroke="#7cffd4" stroke-dasharray="238.76" stroke-dashoffset="238.76" />
+        </svg>
+        <div class="score-num">
+          <span id="scoreNum" style="color: var(--accent)">—</span>
+          <span>/100</span>
+        </div>
+      </div>
+      <div class="score-info">
+        <h2 id="scoreLabel">—</h2>
+        <p id="scoreSummary"></p>
+      </div>
+    </div>
+
+    <div class="grid-2">
+      <div class="info-card">
+        <h4><span class="dot dot-green"></span>Matched Keywords</h4>
+        <div class="tag-list" id="matchedKeywords"></div>
+      </div>
+      <div class="info-card">
+        <h4><span class="dot dot-red"></span>Missing Keywords</h4>
+        <div class="tag-list" id="missingKeywords"></div>
+      </div>
+    </div>
+
+    <div class="grid-2">
+      <div class="info-card">
+        <h4><span class="dot dot-green"></span>Strengths</h4>
+        <ul class="bullet-list" id="strengthsList"></ul>
+      </div>
+      <div class="info-card">
+        <h4><span class="dot dot-yellow"></span>Improvements</h4>
+        <ul class="bullet-list" id="improvementsList"></ul>
+      </div>
+    </div>
+
+    <div class="full-card">
+      <h4><span class="dot dot-green"></span>Suggested Power Bullets</h4>
+      <ul class="bullet-list" id="bulletsList"></ul>
+    </div>
+
+    <div class="full-card">
+      <h4><span class="dot dot-yellow"></span>Recruiter Verdict</h4>
+      <p id="verdict" style="font-size: 0.82rem; line-height: 1.7; color: var(--text);"></p>
+    </div>
+
+    <!-- Download Button -->
+    <button class="download-btn" onclick="downloadReport()">
+      ⬇ Download Full Report as PDF
+    </button>
+
+  </div>
+</div>
+
+<script>
+let pdfBase64 = null;
+let currentMode = 'pdf';
+let lastResult = null;
+
+// Tab switching
+function switchTab(mode) {
+  currentMode = mode;
+  document.getElementById('tabPDF').classList.toggle('active', mode === 'pdf');
+  document.getElementById('tabLinkedIn').classList.toggle('active', mode === 'linkedin');
+  document.getElementById('pdfSection').style.display = mode === 'pdf' ? 'block' : 'none';
+  document.getElementById('linkedinSection').style.display = mode === 'linkedin' ? 'block' : 'none';
+  updateBtn();
+}
+
+function updateBtn() {
+  const btn = document.getElementById('analyzeBtn');
+  if (currentMode === 'pdf') {
+    btn.disabled = !pdfBase64;
+  } else {
+    btn.disabled = false;
+  }
+}
+
+// LinkedIn input listener
+document.getElementById('linkedinUrl').addEventListener('input', updateBtn);
+
+// Drag and drop
+const zone = document.getElementById('uploadZone');
+zone.addEventListener('dragover', e => { e.preventDefault(); zone.classList.add('dragging'); });
+zone.addEventListener('dragleave', () => zone.classList.remove('dragging'));
+zone.addEventListener('drop', e => { e.preventDefault(); zone.classList.remove('dragging'); if (e.dataTransfer.files[0]) handleFile(e.dataTransfer.files[0]); });
+document.getElementById('fileInput').addEventListener('change', e => { if (e.target.files[0]) handleFile(e.target.files[0]); });
+
+function handleFile(file) {
+  if (!file.name.endsWith('.pdf')) { showError('Please upload a PDF file.'); return; }
+  const reader = new FileReader();
+  reader.onload = () => {
+    pdfBase64 = reader.result.split(',')[1];
+    document.getElementById('fileName').textContent = file.name;
+    document.getElementById('filePill').style.display = 'block';
+    updateBtn();
+    hideError();
+  };
+  reader.readAsDataURL(file);
+}
+
+function clearFile() {
+  pdfBase64 = null;
+  document.getElementById('filePill').style.display = 'none';
+  document.getElementById('fileInput').value = '';
+  updateBtn();
+}
+
+function showError(msg) { const b = document.getElementById('errorBox'); b.textContent = '⚠ ' + msg; b.style.display = 'block'; }
+function hideError() { document.getElementById('errorBox').style.display = 'none'; }
+
+const STATUS_MESSAGES = [
+  'Reading your resume...', 'Identifying keywords and skills...',
+  'Matching against job description...', 'Scoring across dimensions...',
+  'Writing power bullet suggestions...', 'Crafting recruiter verdict...'
+];
+
+async function analyze() {
+  hideError();
+  const btn = document.getElementById('analyzeBtn');
+  btn.disabled = true; btn.classList.add('loading');
+  btn.innerHTML = '<span class="spinner"></span> Analyzing...';
+  document.getElementById('results').style.display = 'none';
+  document.getElementById('statusSection').style.display = 'flex';
+
+  let msgIdx = 0;
+  const statusEl = document.getElementById('statusText');
+  statusEl.textContent = STATUS_MESSAGES[0];
+  const interval = setInterval(() => { msgIdx = (msgIdx + 1) % STATUS_MESSAGES.length; statusEl.textContent = STATUS_MESSAGES[msgIdx]; }, 1800);
+
+  try {
+    const body = { job_description: document.getElementById('jobDesc').value.trim() };
+    if (currentMode === 'pdf') {
+      if (!pdfBase64) throw new Error('Please upload a PDF first.');
+      body.pdf_base64 = pdfBase64;
+    } else {
+      const url = document.getElementById('linkedinUrl').value.trim();
+      if (!url) throw new Error('Please enter a LinkedIn URL.');
+      body.linkedin_url = url;
+    }
+
+    const response = await fetch('/analyze', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    });
+
+    clearInterval(interval);
+    const data = await response.json();
+    if (!response.ok || data.error) throw new Error(data.error || 'Server error');
+
+    document.getElementById('statusSection').style.display = 'none';
+    lastResult = data;
+    renderResults(data);
+
+  } catch (err) {
+    clearInterval(interval);
+    document.getElementById('statusSection').style.display = 'none';
+    showError(err.message || 'Something went wrong.');
+  } finally {
+    btn.disabled = false; btn.classList.remove('loading'); btn.innerHTML = 'Analyze Resume';
+    updateBtn();
+  }
+}
+
+function renderResults(data) {
+  document.getElementById('scoreNum').textContent = data.score;
+  document.getElementById('scoreLabel').textContent = data.scoreLabel || '';
+  document.getElementById('scoreSummary').textContent = data.scoreSummary || '';
+
+  const color = data.score >= 80 ? '#7cffd4' : data.score >= 60 ? '#ffd166' : '#ff6b6b';
+  document.getElementById('scoreArc').style.stroke = color;
+  document.getElementById('scoreNum').style.color = color;
+  setTimeout(() => { document.getElementById('scoreArc').style.strokeDashoffset = 238.76 * (1 - Math.min(Math.max(data.score, 0), 100) / 100); }, 100);
+
+  renderTags('matchedKeywords', data.matchedKeywords || [], 'tag-green');
+  renderTags('missingKeywords', data.missingKeywords || [], 'tag-red');
+  renderList('strengthsList', data.strengths || []);
+  renderList('improvementsList', data.improvements || []);
+  renderList('bulletsList', data.powerBullets || []);
+  document.getElementById('verdict').textContent = data.verdict || '';
+  document.getElementById('results').style.display = 'flex';
+  document.getElementById('results').scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+function renderTags(id, items, cls) {
+  document.getElementById(id).innerHTML = items.length
+    ? items.map(t => `<span class="tag ${cls}">${t}</span>`).join('')
+    : `<span style="font-size:0.75rem;color:var(--muted)">None identified</span>`;
+}
+function renderList(id, items) {
+  document.getElementById(id).innerHTML = items.length
+    ? items.map(i => `<li>${i}</li>`).join('')
+    : '<li style="color:var(--muted)">None</li>';
+}
+
+// ── PDF Report Download ──────────────────────────────────────────────────────
+function downloadReport() {
+  if (!lastResult) return;
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF({ unit: 'mm', format: 'a4' });
+  const d = lastResult;
+  const W = 210; const pad = 20; const lineH = 7;
+  let y = 20;
+
+  const addText = (text, size, bold, color) => {
+    doc.setFontSize(size);
+    doc.setFont('helvetica', bold ? 'bold' : 'normal');
+    doc.setTextColor(...(color || [232, 232, 240]));
+    const lines = doc.splitTextToSize(String(text), W - pad * 2);
+    lines.forEach(line => {
+      if (y > 270) { doc.addPage(); y = 20; }
+      doc.text(line, pad, y);
+      y += lineH;
+    });
+  };
+
+  const gap = (n = 1) => { y += lineH * n; };
+
+  // Dark background
+  doc.setFillColor(10, 10, 15);
+  doc.rect(0, 0, 210, 297, 'F');
+
+  // Title
+  addText('Resume.AI — Analysis Report', 22, true, [124, 255, 212]);
+  gap(0.5);
+  addText(`Score: ${d.score}/100 — ${d.scoreLabel}`, 13, true, [232, 232, 240]);
+  gap(0.3);
+  addText(d.scoreSummary, 10, false, [107, 107, 128]);
+  gap();
+
+  // Sections
+  const section = (title, color) => {
+    gap(0.5);
+    doc.setFillColor(...color);
+    doc.rect(pad, y - 4, 4, 4, 'F');
+    addText(title, 12, true, [232, 232, 240]);
+  };
+
+  section('Matched Keywords', [124, 255, 212]);
+  addText((d.matchedKeywords || []).join('  ·  ') || 'None', 9, false, [124, 255, 212]);
+  gap(0.5);
+
+  section('Missing Keywords', [255, 107, 107]);
+  addText((d.missingKeywords || []).join('  ·  ') || 'None', 9, false, [255, 107, 107]);
+  gap(0.5);
+
+  section('Strengths', [124, 255, 212]);
+  (d.strengths || []).forEach(s => addText(`→  ${s}`, 9, false, [200, 200, 210]));
+  gap(0.5);
+
+  section('Areas for Improvement', [255, 209, 102]);
+  (d.improvements || []).forEach(s => addText(`→  ${s}`, 9, false, [200, 200, 210]));
+  gap(0.5);
+
+  section('Power Bullets', [124, 255, 212]);
+  (d.powerBullets || []).forEach(s => addText(`→  ${s}`, 9, false, [200, 200, 210]));
+  gap(0.5);
+
+  section('Recruiter Verdict', [255, 209, 102]);
+  addText(d.verdict, 9, false, [200, 200, 210]);
+
+  // Footer
+  gap();
+  addText(`Generated by Resume.AI · ${new Date().toLocaleDateString()}`, 8, false, [107, 107, 128]);
+
+  doc.save('resume-analysis.pdf');
+}
+</script>
+</body>
+</html>
