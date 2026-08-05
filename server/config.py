@@ -76,6 +76,12 @@ def _canonical_origin(origin: str, *, https_only: bool) -> str:
     try:
         address = ipaddress.ip_address(raw_host)
     except ValueError:
+        if "." in raw_host and all(
+            character in "0123456789." for character in raw_host
+        ):
+            raise ConfigurationError(
+                "ALLOWED_WEB_ORIGINS must contain only canonical origins"
+            ) from None
         host = raw_host.casefold()
         labels = host.split(".")
         if (

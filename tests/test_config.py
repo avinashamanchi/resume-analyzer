@@ -127,3 +127,47 @@ def test_environment_normalizes_cors_origins_to_canonical_literal_values():
         "http://localhost",
         "https://[2001:db8::1]",
     )
+
+
+@pytest.mark.parametrize(
+    "host",
+    [
+        "999.999.999.999",
+        "256.1.1.1",
+        "127.1",
+        "127.0.0.01",
+        "1.2.3.4.5",
+        "1234.5678",
+    ],
+)
+def test_environment_rejects_malformed_or_ambiguous_dotted_numeric_hosts(
+    host: str,
+):
+    origin = f"https://{host}"
+
+    with pytest.raises(ConfigurationError) as caught:
+        Settings.from_environ(
+            {
+                "APP_ENV": "development",
+                "ALLOWED_WEB_ORIGINS": origin,
+            }
+        )
+
+    assert origin not in str(caught.value)
+
+
+def test_environment_preserves_valid_ip_literal_origins():
+    configured = Settings.from_environ(
+        {
+            "APP_ENV": "development",
+            "ALLOWED_WEB_ORIGINS": (
+                "http://192.0.2.10:80,"
+                "https://[2001:0db8::1]:443"
+            ),
+        }
+    )
+
+    assert configured.allowed_web_origins == (
+        "http://192.0.2.10",
+        "https://[2001:db8::1]",
+    )

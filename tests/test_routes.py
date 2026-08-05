@@ -778,6 +778,56 @@ def test_app_normalizes_directly_injected_origins_before_literal_matching(
     )
 
 
+@pytest.mark.parametrize(
+    "host",
+    [
+        "999.999.999.999",
+        "256.1.1.1",
+        "127.1",
+        "127.0.0.01",
+        "1.2.3.4.5",
+        "1234.5678",
+    ],
+)
+def test_app_rejects_direct_malformed_or_ambiguous_dotted_numeric_hosts(
+    harness: Harness,
+    host: str,
+):
+    origin = f"https://{host}"
+
+    with pytest.raises(ConfigurationError) as caught:
+        create_app(
+            settings(allowed_web_origins=(origin,)),
+            harness.registry(),
+        )
+
+    assert origin not in str(caught.value)
+
+
+def test_valid_ip_origins_use_exact_literal_cors_membership(harness: Harness):
+    ipv4_origin = "https://192.0.2.10"
+    ipv6_origin = "https://[2001:db8::1]"
+    app = create_app(
+        settings(allowed_web_origins=(ipv4_origin, ipv6_origin)),
+        harness.registry(),
+    )
+    client = app.test_client()
+
+    ipv4_allowed = client.get("/healthz", headers={"Origin": ipv4_origin})
+    ipv6_allowed = client.get("/healthz", headers={"Origin": ipv6_origin})
+    ipv4_near = client.get(
+        "/healthz", headers={"Origin": "https://192.0.2.100"}
+    )
+    ipv6_near = client.get(
+        "/healthz", headers={"Origin": "https://[2001:db8::2]"}
+    )
+
+    assert ipv4_allowed.headers["Access-Control-Allow-Origin"] == ipv4_origin
+    assert ipv6_allowed.headers["Access-Control-Allow-Origin"] == ipv6_origin
+    assert "Access-Control-Allow-Origin" not in ipv4_near.headers
+    assert "Access-Control-Allow-Origin" not in ipv6_near.headers
+
+
 def test_direct_production_settings_cannot_bypass_https_origin_policy_by_case(
     harness: Harness,
 ):
