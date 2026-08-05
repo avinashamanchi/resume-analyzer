@@ -208,9 +208,11 @@ def test_each_successful_lease_uses_a_fresh_content_free_owner_nonce(
     assert first_owner != second_owner
 
 
-def test_request_lease_release_removes_only_in_flight_marker(
-    redis_client: fakeredis.FakeRedis,
+@pytest.mark.parametrize("decode_responses", [False, True])
+def test_rightful_owner_release_allows_immediate_reacquire(
+    decode_responses: bool,
 ):
+    redis_client = fakeredis.FakeRedis(decode_responses=decode_responses)
     store = RedisRequestLeaseStore(redis_client, key_secret=KEY_SECRET)
     assert store.acquire(INSTALLATION_ID, REQUEST_ID, 45)
 
@@ -220,9 +222,11 @@ def test_request_lease_release_removes_only_in_flight_marker(
     assert store.acquire(INSTALLATION_ID, REQUEST_ID, 45)
 
 
+@pytest.mark.parametrize("decode_responses", [False, True])
 def test_stale_lease_owner_cannot_release_a_new_owner_after_ttl_expiry(
-    redis_client: fakeredis.FakeRedis,
+    decode_responses: bool,
 ):
+    redis_client = fakeredis.FakeRedis(decode_responses=decode_responses)
     owner_a = RedisRequestLeaseStore(redis_client, key_secret=KEY_SECRET)
     owner_b = RedisRequestLeaseStore(redis_client, key_secret=KEY_SECRET)
     contender_c = RedisRequestLeaseStore(redis_client, key_secret=KEY_SECRET)
@@ -238,9 +242,9 @@ def test_stale_lease_owner_cannot_release_a_new_owner_after_ttl_expiry(
     assert contender_c.acquire(INSTALLATION_ID, REQUEST_ID, 45) is True
 
 
-def test_release_from_non_owning_store_is_a_no_op(
-    redis_client: fakeredis.FakeRedis,
-):
+@pytest.mark.parametrize("decode_responses", [False, True])
+def test_release_from_non_owning_store_is_a_no_op(decode_responses: bool):
+    redis_client = fakeredis.FakeRedis(decode_responses=decode_responses)
     owner = RedisRequestLeaseStore(redis_client, key_secret=KEY_SECRET)
     non_owner = RedisRequestLeaseStore(redis_client, key_secret=KEY_SECRET)
     contender = RedisRequestLeaseStore(redis_client, key_secret=KEY_SECRET)
@@ -251,6 +255,30 @@ def test_release_from_non_owning_store_is_a_no_op(
     assert contender.acquire(INSTALLATION_ID, REQUEST_ID, 45) is False
     owner.release(INSTALLATION_ID, REQUEST_ID)
     assert contender.acquire(INSTALLATION_ID, REQUEST_ID, 45) is True
+
+
+@pytest.mark.parametrize(
+    "malformed_owner",
+    [
+        pytest.param("g" * 64, id="non-hex-ascii"),
+        pytest.param("é" * 64, id="non-ascii"),
+        pytest.param("abc", id="wrong-length"),
+    ],
+)
+def test_malformed_text_owner_is_never_accepted_for_release(
+    malformed_owner: str,
+):
+    redis_client = fakeredis.FakeRedis(decode_responses=True)
+    owner = RedisRequestLeaseStore(redis_client, key_secret=KEY_SECRET)
+    contender = RedisRequestLeaseStore(redis_client, key_secret=KEY_SECRET)
+    assert owner.acquire(INSTALLATION_ID, REQUEST_ID, 45) is True
+    key = next(redis_client.scan_iter())
+    redis_client.set(key, malformed_owner, ex=45)
+
+    owner.release(INSTALLATION_ID, REQUEST_ID)
+
+    assert redis_client.get(key) == malformed_owner
+    assert contender.acquire(INSTALLATION_ID, REQUEST_ID, 45) is False
 
 
 def test_release_from_non_owning_execution_context_is_a_no_op(

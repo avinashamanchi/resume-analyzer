@@ -28,6 +28,8 @@ DEFAULT_INSTALLATION_ISSUE_IP_HOURLY_LIMIT = 5
 DEFAULT_INSTALLATION_ISSUE_IP_DAILY_LIMIT = 20
 
 _MAX_TRANSACTION_RETRIES = 100
+_OWNER_NONCE_BYTES = 64
+_OWNER_NONCE_ALPHABET = frozenset(b"0123456789abcdef")
 
 
 @dataclass(frozen=True, slots=True)
@@ -268,8 +270,11 @@ class RedisRequestLeaseStore:
                 with self._redis.pipeline() as transaction:
                     try:
                         transaction.watch(key)
-                        stored_owner = transaction.get(key)
-                        if stored_owner != owner_nonce:
+                        stored_owner = _canonical_owner_nonce(transaction.get(key))
+                        if stored_owner is None or not hmac.compare_digest(
+                            stored_owner,
+                            owner_nonce,
+                        ):
                             transaction.unwatch()
                             compared = True
                             break
@@ -376,3 +381,21 @@ def _counter_value(value: bytes | str | None) -> int:
     if count < 0:
         raise RedisError("invalid rate-limit counter")
     return count
+
+
+def _canonical_owner_nonce(value: object) -> bytes | None:
+    if isinstance(value, str):
+        try:
+            encoded_value = value.encode("ascii", errors="strict")
+        except UnicodeEncodeError:
+            return None
+    elif isinstance(value, bytes):
+        encoded_value = value
+    else:
+        return None
+    if (
+        len(encoded_value) != _OWNER_NONCE_BYTES
+        or not set(encoded_value) <= _OWNER_NONCE_ALPHABET
+    ):
+        return None
+    return encoded_value
