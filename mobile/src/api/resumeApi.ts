@@ -37,7 +37,7 @@ export type AnalyzeRequest = Readonly<{
 export type InstallationTokenProvider = Readonly<{
   getOrIssue(signal: AbortSignal): Promise<string>;
   clear(): Promise<void>;
-  invalidate?: () => Promise<void>;
+  invalidate(expectedToken: string): Promise<void>;
 }>;
 
 export type ResumeApiOptions = Readonly<{
@@ -243,7 +243,7 @@ export class ResumeApi {
       const publicError = PublicErrorSchema.safeParse(data);
       if (!publicError.success) throw new ResumeApiError('invalid_response');
       if (response.status === 401 && publicError.data.code === 'invalid_installation') {
-        this.scheduleTokenInvalidation();
+        this.scheduleTokenInvalidation(token);
       }
       throw new ResumeApiError('service', publicError.data);
     } catch (error) {
@@ -258,11 +258,9 @@ export class ResumeApi {
     }
   }
 
-  private scheduleTokenInvalidation(): void {
+  private scheduleTokenInvalidation(expectedToken: string): void {
     try {
-      const operation = this.installationTokens.invalidate === undefined
-        ? this.installationTokens.clear()
-        : this.installationTokens.invalidate();
+      const operation = this.installationTokens.invalidate(expectedToken);
       void Promise.resolve(operation).catch(() => undefined);
     } catch {
       // A future explicit submit can issue a new anonymous token; never replay this request.

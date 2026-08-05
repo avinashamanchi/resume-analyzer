@@ -11,6 +11,10 @@ jest.mock('expo-sqlite/kv-store', () => ({
   removeItem: jest.fn(),
 }));
 
+jest.mock('expo-sqlite', () => ({
+  openDatabaseAsync: jest.fn(),
+}));
+
 import * as SecureStore from 'expo-secure-store';
 
 import { CONSENT_VERSION, ConsentStore } from '../src/security/consentStore';
@@ -20,6 +24,83 @@ import {
 } from '../src/security/installationToken';
 
 const fetchMock = jest.fn();
+
+type AuthorityState = {
+  nextGeneration: number;
+  activeGeneration: number | null;
+  pendingGeneration: number | null;
+};
+
+type TestAuthorityStore = {
+  read(): Promise<AuthorityState>;
+  reserve(): Promise<number>;
+  finalize(generation: number): Promise<{ activated: boolean; replacedGeneration: number | null }>;
+  retire(generation: number): Promise<boolean>;
+  retireAll(): Promise<number[]>;
+  snapshot(): AuthorityState;
+};
+
+const tokenSlot = (generation: number) => `resume-ai.installation-token.v1.g${generation}`;
+
+function authorityStore(initial: Partial<AuthorityState> = {}): TestAuthorityStore {
+  let state: AuthorityState = {
+    nextGeneration: initial.nextGeneration ?? 1,
+    activeGeneration: initial.activeGeneration ?? null,
+    pendingGeneration: initial.pendingGeneration ?? null,
+  };
+  return {
+    async read() {
+      return { ...state };
+    },
+    async reserve() {
+      const generation = state.nextGeneration;
+      state = { ...state, nextGeneration: generation + 1, pendingGeneration: generation };
+      return generation;
+    },
+    async finalize(generation) {
+      if (state.pendingGeneration !== generation) {
+        return { activated: false, replacedGeneration: state.activeGeneration };
+      }
+      const replacedGeneration = state.activeGeneration;
+      state = { ...state, activeGeneration: generation, pendingGeneration: null };
+      return { activated: true, replacedGeneration };
+    },
+    async retire(generation) {
+      const wasCurrent = state.activeGeneration === generation || state.pendingGeneration === generation;
+      state = {
+        ...state,
+        activeGeneration: state.activeGeneration === generation ? null : state.activeGeneration,
+        pendingGeneration: state.pendingGeneration === generation ? null : state.pendingGeneration,
+      };
+      return wasCurrent;
+    },
+    async retireAll() {
+      const generations = [state.activeGeneration, state.pendingGeneration].filter(
+        (generation): generation is number => generation !== null,
+      );
+      state = { ...state, activeGeneration: null, pendingGeneration: null };
+      return generations;
+    },
+    snapshot() {
+      return { ...state };
+    },
+  };
+}
+
+function createTokenStore(
+  authority = authorityStore(),
+  options: Partial<ConstructorParameters<typeof InstallationTokenStore>[0]> = {},
+) {
+  return {
+    authority,
+    store: new InstallationTokenStore({
+      apiBaseUrl: 'https://api.example.test',
+      fetchImpl: fetchMock,
+      authorityStore: authority,
+      ...options,
+    } as ConstructorParameters<typeof InstallationTokenStore>[0]),
+  };
+}
 
 function deferred<T>() {
   let resolve: (value: T) => void = () => undefined;
@@ -75,23 +156,31 @@ function response(status: number, data: unknown) {
   } as unknown as Response;
 }
 
+function secureTokenSlots(initial: Record<string, string> = {}) {
+  const slots = new Map(Object.entries(initial));
+  jest.mocked(SecureStore.getItemAsync).mockImplementation(async (key) => slots.get(key) ?? null);
+  jest.mocked(SecureStore.setItemAsync).mockImplementation(async (key, value) => {
+    slots.set(key, value);
+  });
+  jest.mocked(SecureStore.deleteItemAsync).mockImplementation(async (key) => {
+    slots.delete(key);
+  });
+  return slots;
+}
+
 describe('installation token boundary', () => {
   beforeEach(() => {
-    jest.clearAllMocks();
-    fetchMock.mockReset();
+    jest.resetAllMocks();
     jest.mocked(SecureStore.getItemAsync).mockResolvedValue(null);
   });
 
   it('stores only the signed installation token in device-only SecureStore', async () => {
-    const store = new InstallationTokenStore({
-      apiBaseUrl: 'https://api.example.test',
-      fetchImpl: fetchMock,
-    });
+    const { store } = createTokenStore();
 
     await store.save('signed-token');
 
     expect(SecureStore.setItemAsync).toHaveBeenCalledWith(
-      INSTALLATION_TOKEN_KEY,
+      tokenSlot(1),
       'signed-token',
       expect.objectContaining({ keychainAccessible: 'when-unlocked-device-only' }),
     );
@@ -103,10 +192,7 @@ describe('installation token boundary', () => {
     fetchMock.mockImplementation(
       () => new Promise<Response>((resolve) => { resolveFetch = resolve; }),
     );
-    const store = new InstallationTokenStore({
-      apiBaseUrl: 'https://api.example.test',
-      fetchImpl: fetchMock,
-    });
+    const { store } = createTokenStore();
     const cancelledCaller = new AbortController();
     const waitingCaller = new AbortController();
 
@@ -127,10 +213,7 @@ describe('installation token boundary', () => {
     fetchMock.mockImplementation(
       () => new Promise<Response>((resolve) => { resolveFetch = resolve; }),
     );
-    const store = new InstallationTokenStore({
-      apiBaseUrl: 'https://api.example.test',
-      fetchImpl: fetchMock,
-    });
+    const { store } = createTokenStore();
     const caller = new AbortController();
     const pending = store.getOrIssue(caller.signal);
     await waitForMockCalls(fetchMock);
@@ -143,18 +226,17 @@ describe('installation token boundary', () => {
 
   it('does not save malformed issuance responses and supports explicit invalidation', async () => {
     fetchMock.mockResolvedValue(response(201, { schemaVersion: 1, installationToken: 'token', extra: true }));
-    const store = new InstallationTokenStore({
-      apiBaseUrl: 'https://api.example.test',
-      fetchImpl: fetchMock,
-    });
+    const { store } = createTokenStore();
 
     await expect(store.getOrIssue(new AbortController().signal)).rejects.toMatchObject({
       category: 'invalid_response',
     });
     expect(SecureStore.setItemAsync).not.toHaveBeenCalled();
 
+    fetchMock.mockResolvedValueOnce(response(201, { schemaVersion: 1, installationToken: 'signed-token' }));
+    await store.getOrIssue(new AbortController().signal);
     await store.clear();
-    expect(SecureStore.deleteItemAsync).toHaveBeenCalledWith(INSTALLATION_TOKEN_KEY);
+    expect(SecureStore.deleteItemAsync).toHaveBeenCalledWith(tokenSlot(2));
   });
 
   it('cancels a hanging SecureStore read promptly and lets a later caller issue a token', async () => {
@@ -163,7 +245,7 @@ describe('installation token boundary', () => {
       .mockImplementationOnce(() => blockedRead.promise)
       .mockResolvedValueOnce(null);
     fetchMock.mockResolvedValueOnce(response(201, { schemaVersion: 1, installationToken: 'fresh-token' }));
-    const store = new InstallationTokenStore({ apiBaseUrl: 'https://api.example.test', fetchImpl: fetchMock });
+    const { store } = createTokenStore();
     const firstController = new AbortController();
     const first = store.getOrIssue(firstController.signal);
     await flushAsync();
@@ -177,6 +259,8 @@ describe('installation token boundary', () => {
       state: 'fulfilled',
       value: 'fresh-token',
     });
+    blockedRead.resolve(null);
+    await flushAsync();
   });
 
   it('detaches an issuance with a hanging response body after cancellation so a later caller starts fresh', async () => {
@@ -184,10 +268,10 @@ describe('installation token boundary', () => {
     fetchMock
       .mockResolvedValueOnce({ status: 201, json: jest.fn(() => blockedBody.promise) } as unknown as Response)
       .mockResolvedValueOnce(response(201, { schemaVersion: 1, installationToken: 'fresh-token' }));
-    const store = new InstallationTokenStore({ apiBaseUrl: 'https://api.example.test', fetchImpl: fetchMock });
+    const { store } = createTokenStore();
     const firstController = new AbortController();
     const first = store.getOrIssue(firstController.signal);
-    await flushAsync();
+    await waitForMockCalls(fetchMock);
     firstController.abort();
 
     await expect(settlePromptly(first)).resolves.toMatchObject({
@@ -199,6 +283,8 @@ describe('installation token boundary', () => {
       value: 'fresh-token',
     });
     expect(fetchMock).toHaveBeenCalledTimes(2);
+    blockedBody.resolve({ schemaVersion: 1, installationToken: 'cancelled-token' });
+    await flushAsync();
   });
 
   it('detaches a hanging token save after cancellation and does not let it poison a later issuance', async () => {
@@ -209,12 +295,12 @@ describe('installation token boundary', () => {
     jest.mocked(SecureStore.setItemAsync)
       .mockImplementationOnce(() => blockedSave.promise)
       .mockResolvedValueOnce(undefined);
-    const store = new InstallationTokenStore({ apiBaseUrl: 'https://api.example.test', fetchImpl: fetchMock });
+    const { store } = createTokenStore();
     const firstController = new AbortController();
     const first = store.getOrIssue(firstController.signal);
     await waitForMockCalls(jest.mocked(SecureStore.setItemAsync));
     expect(SecureStore.setItemAsync).toHaveBeenCalledWith(
-      INSTALLATION_TOKEN_KEY,
+      tokenSlot(1),
       'stale-token',
       expect.any(Object),
     );
@@ -256,12 +342,12 @@ describe('installation token boundary', () => {
     fetchMock
       .mockResolvedValueOnce(response(201, { schemaVersion: 1, installationToken: 'stale-token' }))
       .mockResolvedValueOnce(response(201, { schemaVersion: 1, installationToken: 'fresh-token' }));
-    const store = new InstallationTokenStore({ apiBaseUrl: 'https://api.example.test', fetchImpl: fetchMock });
+    const { store } = createTokenStore();
     const firstController = new AbortController();
     const first = store.getOrIssue(firstController.signal);
     await waitForMockCalls(jest.mocked(SecureStore.setItemAsync));
     expect(SecureStore.setItemAsync).toHaveBeenCalledWith(
-      INSTALLATION_TOKEN_KEY,
+      tokenSlot(1),
       'stale-token',
       expect.any(Object),
     );
@@ -283,6 +369,118 @@ describe('installation token boundary', () => {
 
     await expect(store.getOrIssue(new AbortController().signal)).resolves.toBe('fresh-token');
     expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('keeps a fresh durable generation authoritative after an old delayed save completes', async () => {
+    const delayedOldSave = deferred<void>();
+    const slots = secureTokenSlots();
+    jest.mocked(SecureStore.setItemAsync).mockImplementation(async (key, value) => {
+      if (key === tokenSlot(1) || key === INSTALLATION_TOKEN_KEY) await delayedOldSave.promise;
+      slots.set(key, value);
+    });
+    fetchMock
+      .mockResolvedValueOnce(response(201, { schemaVersion: 1, installationToken: 'cancelled-token' }))
+      .mockResolvedValueOnce(response(201, { schemaVersion: 1, installationToken: 'fresh-token' }));
+    const authority = authorityStore();
+    const { store: oldStore } = createTokenStore(authority);
+    const oldCaller = new AbortController();
+    const oldIssue = oldStore.getOrIssue(oldCaller.signal);
+    await waitForMockCalls(jest.mocked(SecureStore.setItemAsync));
+    oldCaller.abort();
+    await expect(settlePromptly(oldIssue)).resolves.toMatchObject({
+      state: 'rejected',
+      error: { category: 'cancelled' },
+    });
+
+    const { store: freshStore } = createTokenStore(authority);
+    await expect(freshStore.getOrIssue(new AbortController().signal)).resolves.toBe('fresh-token');
+    delayedOldSave.resolve();
+    await flushAsync();
+
+    const { store: restartedStore } = createTokenStore(authority);
+    await expect(restartedStore.getOrIssue(new AbortController().signal)).resolves.toBe('fresh-token');
+    expect(slots.get(tokenSlot(1))).toBe('cancelled-token');
+    expect(slots.get(tokenSlot(2))).toBe('fresh-token');
+  });
+
+  it('keeps a fresh durable generation authoritative after an old exact-slot delete completes', async () => {
+    const delayedOldDelete = deferred<void>();
+    const authority = authorityStore({ nextGeneration: 2, activeGeneration: 1 });
+    const slots = secureTokenSlots({
+      [INSTALLATION_TOKEN_KEY]: 'old-token',
+      [tokenSlot(1)]: 'old-token',
+    });
+    jest.mocked(SecureStore.deleteItemAsync).mockImplementation(async (key) => {
+      if (key === tokenSlot(1) || key === INSTALLATION_TOKEN_KEY) await delayedOldDelete.promise;
+      slots.delete(key);
+    });
+    fetchMock.mockResolvedValueOnce(response(201, { schemaVersion: 1, installationToken: 'fresh-token' }));
+    const { store: oldStore } = createTokenStore(authority);
+    const delayedClear = oldStore.clear();
+    await waitForMockCalls(jest.mocked(SecureStore.deleteItemAsync));
+
+    const { store: freshStore } = createTokenStore(authority);
+    await expect(freshStore.getOrIssue(new AbortController().signal)).resolves.toBe('fresh-token');
+    delayedOldDelete.resolve();
+    await delayedClear;
+
+    const { store: restartedStore } = createTokenStore(authority);
+    await expect(restartedStore.getOrIssue(new AbortController().signal)).resolves.toBe('fresh-token');
+    expect(slots.get(tokenSlot(2))).toBe('fresh-token');
+  });
+
+  it.each([
+    ['reserved', { nextGeneration: 2, activeGeneration: null, pendingGeneration: 1 }],
+    ['saved but not finalized', { nextGeneration: 2, activeGeneration: null, pendingGeneration: 1 }],
+    ['retired', { nextGeneration: 2, activeGeneration: null, pendingGeneration: null }],
+  ] as const)('does not accept a %s generation after restart', async (_boundary, state) => {
+    const authority = authorityStore(state);
+    const slots = secureTokenSlots({
+      [INSTALLATION_TOKEN_KEY]: 'cancelled-token',
+      [tokenSlot(1)]: 'cancelled-token',
+    });
+    fetchMock.mockResolvedValueOnce(response(201, { schemaVersion: 1, installationToken: 'fresh-token' }));
+
+    const { store } = createTokenStore(authority);
+    await expect(store.getOrIssue(new AbortController().signal)).resolves.toBe('fresh-token');
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(slots.get(tokenSlot(2))).toBe('fresh-token');
+  });
+
+  it('accepts only the authority-selected active slot after restart', async () => {
+    const authority = authorityStore({ nextGeneration: 3, activeGeneration: 2, pendingGeneration: 1 });
+    secureTokenSlots({
+      [INSTALLATION_TOKEN_KEY]: 'cancelled-token',
+      [tokenSlot(1)]: 'cancelled-token',
+      [tokenSlot(2)]: 'active-token',
+    });
+    const { store } = createTokenStore(authority);
+
+    await expect(store.getOrIssue(new AbortController().signal)).resolves.toBe('active-token');
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(SecureStore.getItemAsync).toHaveBeenCalledWith(tokenSlot(2));
+    expect(SecureStore.getItemAsync).not.toHaveBeenCalledWith(tokenSlot(1));
+  });
+
+  it('does not let a delayed invalidation for A abort or retire the newer B issuance', async () => {
+    const authority = authorityStore({ nextGeneration: 2, activeGeneration: 1 });
+    secureTokenSlots({ [tokenSlot(1)]: 'token-A' });
+    const delayedB = deferred<Response>();
+    fetchMock.mockImplementationOnce(() => delayedB.promise);
+    const { store } = createTokenStore(authority);
+
+    await expect(store.getOrIssue(new AbortController().signal)).resolves.toBe('token-A');
+    await store.invalidate('token-A');
+    const issueB = store.getOrIssue(new AbortController().signal);
+    await waitForMockCalls(fetchMock);
+    await store.invalidate('token-A');
+    delayedB.resolve(response(201, { schemaVersion: 1, installationToken: 'token-B' }));
+
+    await expect(issueB).resolves.toBe('token-B');
+    await store.invalidate('token-A');
+    const { store: restartedStore } = createTokenStore(authority);
+    await expect(restartedStore.getOrIssue(new AbortController().signal)).resolves.toBe('token-B');
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });
 

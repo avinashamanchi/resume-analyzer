@@ -24,6 +24,16 @@ function response(status: number, data: unknown) {
   } as unknown as Response;
 }
 
+function deferred<T>() {
+  let resolve: (value: T) => void = () => undefined;
+  let reject: (reason?: unknown) => void = () => undefined;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
+
 async function settlePromptly<T>(promise: Promise<T>): Promise<
   | { state: 'fulfilled'; value: T }
   | { state: 'rejected'; error: unknown }
@@ -50,6 +60,7 @@ function createApi(overrides: Partial<ConstructorParameters<typeof ResumeApi>[0]
   const installationTokens = {
     getOrIssue: jest.fn().mockResolvedValue('signed-token'),
     clear: jest.fn().mockResolvedValue(undefined),
+    invalidate: jest.fn().mockResolvedValue(undefined),
   };
   const fetchImpl: FetchMock = jest.fn().mockResolvedValue(response(200, validFixture));
   const activeFetch = (overrides.fetchImpl ?? fetchImpl) as FetchMock;
@@ -180,6 +191,8 @@ describe('ResumeApi multipart boundary', () => {
 
   it.each([
     'https://localhost.',
+    'https://api.internal',
+    'https://printer.local',
     'https://127.0.0.2',
     'https://0x7f000001',
     'https://0177.0.0.1',
@@ -192,6 +205,7 @@ describe('ResumeApi multipart boundary', () => {
     'https://192.0.0.8',
     'https://192.0.2.1',
     'https://198.51.100.1',
+    'https://192.88.99.1',
     'https://224.0.0.1',
     'https://[::]',
     'https://[::1]',
@@ -199,6 +213,10 @@ describe('ResumeApi multipart boundary', () => {
     'https://[::ffff:7f00:1]',
     'https://[fc00::1]',
     'https://[fe80::1]',
+    'https://[100::1]',
+    'https://[fec0::1]',
+    'https://[2001:2::1]',
+    'https://[2002:7f00:1::]',
   ])('rejects non-public API origin %s after URL canonicalization', (origin) => {
     expect(() => validateApiBaseUrl(origin)).toThrow();
   });
@@ -251,7 +269,8 @@ describe('ResumeApi multipart boundary', () => {
         new AbortController().signal,
       ),
     ).rejects.toMatchObject({ category: 'service', code: 'invalid_installation' });
-    expect(installationTokens.clear).toHaveBeenCalledTimes(1);
+    expect(installationTokens.invalidate).toHaveBeenCalledWith('signed-token');
+    expect(installationTokens.clear).not.toHaveBeenCalled();
     expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 
@@ -268,7 +287,8 @@ describe('ResumeApi multipart boundary', () => {
       })),
       installationTokens: {
         getOrIssue: jest.fn().mockResolvedValue('signed-token'),
-        clear: jest.fn(() => neverClears),
+        clear: jest.fn().mockResolvedValue(undefined),
+        invalidate: jest.fn(() => neverClears),
       },
       timeoutMs: 10,
     });
@@ -282,9 +302,59 @@ describe('ResumeApi multipart boundary', () => {
       category: 'service',
       code: 'invalid_installation',
     });
-    expect(installationTokens.clear).toHaveBeenCalledTimes(1);
+    expect(installationTokens.invalidate).toHaveBeenCalledWith('signed-token');
+    expect(installationTokens.clear).not.toHaveBeenCalled();
     expect(jest.getTimerCount()).toBe(0);
     controller.abort();
+  });
+
+  it('passes the exact old request token to a delayed 401 invalidation without disturbing newer token B', async () => {
+    const delayed401 = deferred<Response>();
+    let activeToken = 'token-A';
+    const installationTokens = {
+      getOrIssue: jest.fn(async (_signal: AbortSignal) => activeToken),
+      clear: jest.fn().mockResolvedValue(undefined),
+      invalidate: jest.fn(async (expectedToken: string) => {
+        if (expectedToken === activeToken) activeToken = '';
+      }),
+    };
+    const fetchImpl: FetchMock = jest.fn()
+      .mockResolvedValueOnce(response(200, validFixture))
+      .mockImplementationOnce(() => delayed401.promise);
+    const { api } = createApi({ fetchImpl, installationTokens });
+
+    const first = api.analyze(
+      {
+        source: { kind: 'text', text: 'First resume' },
+        jobDescription: 'Engineer',
+        consentVersion: '2026-08-04.v1',
+      },
+      new AbortController().signal,
+    );
+    const second = api.analyze(
+      {
+        source: { kind: 'text', text: 'Second resume' },
+        jobDescription: 'Engineer',
+        consentVersion: '2026-08-04.v1',
+      },
+      new AbortController().signal,
+    );
+    await expect(first).resolves.toEqual(validFixture);
+
+    activeToken = 'token-B';
+    delayed401.resolve(response(401, {
+      schemaVersion: 1,
+      code: 'invalid_installation',
+      message: 'Session expired.',
+      requestId: validFixture.analysisId,
+      retryable: false,
+    }));
+    await expect(second).rejects.toMatchObject({ category: 'service', code: 'invalid_installation' });
+
+    expect(installationTokens.invalidate).toHaveBeenCalledWith('token-A');
+    expect(activeToken).toBe('token-B');
+    await expect(installationTokens.getOrIssue(new AbortController().signal)).resolves.toBe('token-B');
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
   });
 
   it.each([

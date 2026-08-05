@@ -3,7 +3,13 @@ import * as SecureStore from 'expo-secure-store';
 import { validateApiBaseUrl } from '../api/apiBaseUrl';
 import { InstallationResponseSchema, PublicErrorSchema } from '../domain/contracts';
 import { ResumeApiError } from '../domain/errors';
+import {
+  SQLiteTokenAuthorityStore,
+  type TokenAuthorityStore,
+} from './tokenAuthority';
 
+// A namespace, not a token-bearing SQLite key. Every SecureStore value under
+// it is a signed anonymous token, isolated by its durable generation.
 export const INSTALLATION_TOKEN_KEY = 'resume-ai.installation-token.v1';
 
 type FetchImplementation = (input: string, init: RequestInit) => Promise<Response>;
@@ -12,19 +18,23 @@ export type InstallationTokenStoreOptions = Readonly<{
   apiBaseUrl: string;
   fetchImpl?: FetchImplementation;
   now?: () => number;
+  authorityStore?: TokenAuthorityStore;
 }>;
 
 type InFlightIssue = {
   readonly controller: AbortController;
   readonly callers: Set<symbol>;
-  readonly generation: number;
-  token: string | null;
+  generation: number | null;
   promise: Promise<string>;
 };
 
-type LogicalToken = Readonly<{ generation: number; token: string }>;
+type ActiveToken = Readonly<{ generation: number; token: string }>;
 
 class AbortSignalFailure extends Error {}
+
+export function installationTokenSlot(generation: number): string {
+  return `${INSTALLATION_TOKEN_KEY}.g${generation}`;
+}
 
 function decodeBase64UrlAscii(value: string): string | null {
   if (!/^[A-Za-z0-9_-]+$/.test(value)) return null;
@@ -63,6 +73,10 @@ function isExpiredToken(token: string, now: number): boolean {
   }
 }
 
+function asPromise<T>(operation: () => Promise<T> | T): Promise<T> {
+  return Promise.resolve().then(operation);
+}
+
 function awaitAbortable<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
   if (signal === undefined) return promise;
   if (signal.aborted) return Promise.reject(new AbortSignalFailure());
@@ -86,109 +100,139 @@ function awaitAbortable<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T
   });
 }
 
-function asPromise<T>(operation: () => Promise<T> | T): Promise<T> {
-  return Promise.resolve().then(operation);
-}
-
 export class InstallationTokenStore {
   private readonly apiBaseUrl: string;
   private readonly fetchImpl: FetchImplementation;
   private readonly now: () => number;
-  // SecureStore has no CAS: these establish authority only for this process.
-  // A delayed native write/delete may affect the single backing key after restart.
-  private currentToken: LogicalToken | null = null;
-  private generation = 0;
+  private readonly authorityStore: TokenAuthorityStore;
+  private currentToken: ActiveToken | null = null;
   private inFlight: InFlightIssue | null = null;
-  private readonly retiredTokens = new Set<string>();
 
   constructor(options: InstallationTokenStoreOptions) {
     this.apiBaseUrl = validateApiBaseUrl(options.apiBaseUrl);
     this.fetchImpl = options.fetchImpl ?? fetch;
     this.now = options.now ?? Date.now;
+    this.authorityStore = options.authorityStore ?? new SQLiteTokenAuthorityStore();
   }
 
   async save(token: string, signal?: AbortSignal): Promise<void> {
     const parsed = InstallationResponseSchema.safeParse({ schemaVersion: 1, installationToken: token });
     if (!parsed.success) throw new ResumeApiError('validation');
-    const write = asPromise(() => SecureStore.setItemAsync(INSTALLATION_TOKEN_KEY, parsed.data.installationToken, {
-      keychainAccessible: SecureStore.WHEN_UNLOCKED_THIS_DEVICE_ONLY,
-    }));
+
+    let generation: number | null = null;
+    let finalized = false;
     try {
-      await awaitAbortable(write, signal);
+      generation = await this.awaitAuthority(() => this.authorityStore.reserve(), signal);
+      await this.writeToken(generation, parsed.data.installationToken, signal);
+      const result = await this.awaitAuthority(() => this.authorityStore.finalize(generation!), signal);
+      if (!result.activated) throw new ResumeApiError('cancelled');
+      finalized = true;
+      this.currentToken = { generation, token: parsed.data.installationToken };
     } catch (error) {
-      if (error instanceof AbortSignalFailure) throw new ResumeApiError('cancelled');
-      throw new ResumeApiError('network');
+      if (generation !== null && !finalized) this.retireInBackground(generation);
+      throw this.storageError(error);
     }
   }
 
   async clear(signal?: AbortSignal): Promise<void> {
-    this.invalidateLocal();
-    const deletion = asPromise(() => SecureStore.deleteItemAsync(INSTALLATION_TOKEN_KEY));
+    let generations: number[];
     try {
-      await awaitAbortable(deletion, signal);
+      generations = await this.awaitAuthority(() => this.authorityStore.retireAll(), signal);
+      this.currentToken = null;
     } catch (error) {
-      if (error instanceof AbortSignalFailure) {
-        void deletion.then(() => undefined, () => undefined);
-        throw new ResumeApiError('cancelled');
-      }
-      throw new ResumeApiError('network');
+      throw this.storageError(error);
     }
+    await Promise.all(generations.map((generation) => this.deleteToken(generation, signal)));
   }
 
-  async invalidate(): Promise<void> {
-    this.invalidateLocal();
+  async invalidate(expectedToken: string): Promise<void> {
+    if (typeof expectedToken !== 'string' || expectedToken.length === 0) return;
+    let state;
+    try {
+      state = await asPromise(() => this.authorityStore.read());
+    } catch {
+      return;
+    }
+    if (state.activeGeneration === null) return;
+    const generation = state.activeGeneration;
+    let activeToken: string | null;
+    if (this.currentToken?.generation === generation) {
+      activeToken = this.currentToken.token;
+    } else {
+      try {
+        activeToken = await asPromise(() => SecureStore.getItemAsync(installationTokenSlot(generation)));
+      } catch {
+        return;
+      }
+    }
+    if (activeToken !== expectedToken) return;
+    try {
+      const retired = await asPromise(() => this.authorityStore.retire(generation));
+      if (retired && this.currentToken?.generation === generation) this.currentToken = null;
+    } catch {
+      // A later submit will still ask the server to validate its installation token.
+    }
   }
 
   async getOrIssue(signal: AbortSignal): Promise<string> {
     if (signal.aborted) throw new ResumeApiError('cancelled');
-    const current = this.usableCurrentToken();
-    if (current !== null) return current;
-
-    let stored: string | null;
-    try {
-      stored = await awaitAbortable(
-        asPromise(() => SecureStore.getItemAsync(INSTALLATION_TOKEN_KEY)),
-        signal,
-      );
-    } catch (error) {
-      if (error instanceof AbortSignalFailure) throw new ResumeApiError('cancelled');
-      throw new ResumeApiError('network');
-    }
-    if (signal.aborted) throw new ResumeApiError('cancelled');
-
-    const newerCurrent = this.usableCurrentToken();
-    if (newerCurrent !== null) return newerCurrent;
-    const parsed = InstallationResponseSchema.safeParse({ schemaVersion: 1, installationToken: stored });
-    if (parsed.success && !this.retiredTokens.has(parsed.data.installationToken) && !isExpiredToken(parsed.data.installationToken, this.now())) {
-      this.currentToken = { generation: this.generation, token: parsed.data.installationToken };
-      return parsed.data.installationToken;
-    }
-
+    const active = await this.readActive(signal);
+    if (active !== null) return active;
     const inFlight = this.inFlight ?? this.startIssue();
     return this.joinIssue(inFlight, signal);
   }
 
-  private usableCurrentToken(): string | null {
-    if (this.currentToken === null) return null;
-    if (this.retiredTokens.has(this.currentToken.token) || isExpiredToken(this.currentToken.token, this.now())) {
-      this.retireToken(this.currentToken.token);
-      this.currentToken = null;
-      return null;
+  private async readActive(signal: AbortSignal): Promise<string | null> {
+    let state;
+    try {
+      state = await this.awaitAuthority(() => this.authorityStore.read(), signal);
+    } catch (error) {
+      throw this.storageError(error);
     }
-    return this.currentToken.token;
+    const generation = state.activeGeneration;
+    if (generation === null) return null;
+
+    let token: string | null;
+    if (this.currentToken?.generation === generation) {
+      token = this.currentToken.token;
+    } else {
+      try {
+        token = await awaitAbortable(
+          asPromise(() => SecureStore.getItemAsync(installationTokenSlot(generation))),
+          signal,
+        );
+      } catch (error) {
+        throw this.storageError(error);
+      }
+    }
+    const parsed = InstallationResponseSchema.safeParse({ schemaVersion: 1, installationToken: token });
+    if (parsed.success && !isExpiredToken(parsed.data.installationToken, this.now())) {
+      this.currentToken = { generation, token: parsed.data.installationToken };
+      return parsed.data.installationToken;
+    }
+    try {
+      await this.awaitAuthority(() => this.authorityStore.retire(generation), signal);
+    } catch (error) {
+      throw this.storageError(error);
+    }
+    if (this.currentToken?.generation === generation) this.currentToken = null;
+    return null;
   }
 
   private startIssue(): InFlightIssue {
     const inFlight: InFlightIssue = {
       controller: new AbortController(),
       callers: new Set(),
-      generation: ++this.generation,
-      token: null,
+      generation: null,
       promise: Promise.resolve(''),
     };
     inFlight.promise = this.issue(inFlight).finally(() => {
       if (this.inFlight === inFlight) this.inFlight = null;
     });
+    // All callers may cancel before a non-abortable native operation settles.
+    // Keep that detached rejection observed while each caller still receives its
+    // own cancellation result from joinIssue.
+    void inFlight.promise.catch(() => undefined);
     this.inFlight = inFlight;
     return inFlight;
   }
@@ -236,102 +280,110 @@ export class InstallationTokenStore {
   }
 
   private isCurrent(inFlight: InFlightIssue): boolean {
-    return (
-      this.inFlight === inFlight &&
-      this.generation === inFlight.generation &&
-      inFlight.callers.size > 0 &&
-      !inFlight.controller.signal.aborted
-    );
+    return this.inFlight === inFlight && inFlight.callers.size > 0 && !inFlight.controller.signal.aborted;
   }
 
   private abandon(inFlight: InFlightIssue): void {
-    if (inFlight.token !== null) this.retireToken(inFlight.token);
-    if (this.currentToken?.generation === inFlight.generation) this.currentToken = null;
-    if (this.inFlight === inFlight) {
-      this.inFlight = null;
-      if (this.generation === inFlight.generation) this.generation += 1;
-    }
+    if (this.inFlight === inFlight) this.inFlight = null;
+    if (inFlight.generation !== null) this.retireInBackground(inFlight.generation);
     inFlight.controller.abort();
   }
 
-  private invalidateLocal(): void {
-    const inFlight = this.inFlight;
-    if (inFlight !== null) this.abandon(inFlight);
-    else this.generation += 1;
-    if (this.currentToken !== null) this.retireToken(this.currentToken.token);
-    this.currentToken = null;
-  }
-
-  private retireToken(token: string): void {
-    this.retiredTokens.add(token);
-    if (this.retiredTokens.size > 64) {
-      const oldest = this.retiredTokens.values().next().value;
-      if (typeof oldest === 'string') this.retiredTokens.delete(oldest);
-    }
+  private retireInBackground(generation: number): void {
+    void asPromise(() => this.authorityStore.retire(generation)).catch(() => undefined);
   }
 
   private async issue(inFlight: InFlightIssue): Promise<string> {
-    let response: Response;
+    let finalized = false;
     try {
-      response = await awaitAbortable(
-        asPromise(() => this.fetchImpl(`${this.apiBaseUrl}/v1/installations`, {
-          method: 'POST',
-          signal: inFlight.controller.signal,
-        })),
+      inFlight.generation = await this.awaitAuthority(
+        () => this.authorityStore.reserve(),
         inFlight.controller.signal,
       );
-    } catch (error) {
-      if (error instanceof AbortSignalFailure || inFlight.controller.signal.aborted) {
-        throw new ResumeApiError('cancelled');
-      }
-      throw new ResumeApiError('network');
-    }
-    if (!this.isCurrent(inFlight)) throw new ResumeApiError('cancelled');
+      if (!this.isCurrent(inFlight)) throw new ResumeApiError('cancelled');
 
-    let data: unknown;
-    try {
-      data = await awaitAbortable(asPromise(() => response.json()), inFlight.controller.signal);
-    } catch (error) {
-      if (error instanceof AbortSignalFailure || inFlight.controller.signal.aborted) {
-        throw new ResumeApiError('cancelled');
-      }
-      throw new ResumeApiError('invalid_response');
-    }
-    if (!this.isCurrent(inFlight)) throw new ResumeApiError('cancelled');
-    if (response.status !== 201) {
-      const publicError = PublicErrorSchema.safeParse(data);
-      if (!publicError.success) throw new ResumeApiError('invalid_response');
-      throw new ResumeApiError('service', publicError.data);
-    }
-    const installation = InstallationResponseSchema.safeParse(data);
-    if (!installation.success) throw new ResumeApiError('invalid_response');
-    inFlight.token = installation.data.installationToken;
-    if (!this.isCurrent(inFlight)) {
-      this.retireToken(inFlight.token);
-      throw new ResumeApiError('cancelled');
-    }
-
-    const write = asPromise(() => SecureStore.setItemAsync(INSTALLATION_TOKEN_KEY, inFlight.token!, {
-      keychainAccessible: SecureStore.WHEN_UNLOCKED_THIS_DEVICE_ONLY,
-    }));
-    try {
-      await awaitAbortable(write, inFlight.controller.signal);
-    } catch (error) {
-      if (error instanceof AbortSignalFailure || inFlight.controller.signal.aborted) {
-        this.retireToken(inFlight.token);
-        void write.then(
-          () => this.retireToken(inFlight.token!),
-          () => undefined,
+      let response: Response;
+      try {
+        response = await awaitAbortable(
+          asPromise(() => this.fetchImpl(`${this.apiBaseUrl}/v1/installations`, {
+            method: 'POST',
+            signal: inFlight.controller.signal,
+          })),
+          inFlight.controller.signal,
         );
-        throw new ResumeApiError('cancelled');
+      } catch (error) {
+        if (error instanceof AbortSignalFailure || inFlight.controller.signal.aborted) {
+          throw new ResumeApiError('cancelled');
+        }
+        throw new ResumeApiError('network');
       }
-      throw new ResumeApiError('network');
+      if (!this.isCurrent(inFlight)) throw new ResumeApiError('cancelled');
+
+      let data: unknown;
+      try {
+        data = await awaitAbortable(asPromise(() => response.json()), inFlight.controller.signal);
+      } catch (error) {
+        if (error instanceof AbortSignalFailure || inFlight.controller.signal.aborted) {
+          throw new ResumeApiError('cancelled');
+        }
+        throw new ResumeApiError('invalid_response');
+      }
+      if (!this.isCurrent(inFlight)) throw new ResumeApiError('cancelled');
+      if (response.status !== 201) {
+        const publicError = PublicErrorSchema.safeParse(data);
+        if (!publicError.success) throw new ResumeApiError('invalid_response');
+        throw new ResumeApiError('service', publicError.data);
+      }
+      const installation = InstallationResponseSchema.safeParse(data);
+      if (!installation.success) throw new ResumeApiError('invalid_response');
+
+      await this.writeToken(inFlight.generation, installation.data.installationToken, inFlight.controller.signal);
+      if (!this.isCurrent(inFlight)) throw new ResumeApiError('cancelled');
+      const result = await this.awaitAuthority(
+        () => this.authorityStore.finalize(inFlight.generation!),
+        inFlight.controller.signal,
+      );
+      if (!result.activated || !this.isCurrent(inFlight)) throw new ResumeApiError('cancelled');
+      finalized = true;
+      this.currentToken = { generation: inFlight.generation, token: installation.data.installationToken };
+      return installation.data.installationToken;
+    } catch (error) {
+      if (inFlight.generation !== null && !finalized) this.retireInBackground(inFlight.generation);
+      throw this.storageError(error);
     }
-    if (!this.isCurrent(inFlight)) {
-      this.retireToken(inFlight.token);
-      throw new ResumeApiError('cancelled');
+  }
+
+  private async writeToken(generation: number, token: string, signal?: AbortSignal): Promise<void> {
+    try {
+      await awaitAbortable(
+        asPromise(() => SecureStore.setItemAsync(installationTokenSlot(generation), token, {
+          keychainAccessible: SecureStore.WHEN_UNLOCKED_THIS_DEVICE_ONLY,
+        })),
+        signal,
+      );
+    } catch (error) {
+      throw this.storageError(error);
     }
-    this.currentToken = { generation: inFlight.generation, token: inFlight.token };
-    return inFlight.token;
+  }
+
+  private async deleteToken(generation: number, signal?: AbortSignal): Promise<void> {
+    try {
+      await awaitAbortable(
+        asPromise(() => SecureStore.deleteItemAsync(installationTokenSlot(generation))),
+        signal,
+      );
+    } catch (error) {
+      throw this.storageError(error);
+    }
+  }
+
+  private async awaitAuthority<T>(operation: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+    return awaitAbortable(asPromise(operation), signal);
+  }
+
+  private storageError(error: unknown): ResumeApiError {
+    if (error instanceof ResumeApiError) return error;
+    if (error instanceof AbortSignalFailure) return new ResumeApiError('cancelled');
+    return new ResumeApiError('network');
   }
 }
