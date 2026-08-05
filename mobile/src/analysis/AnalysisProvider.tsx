@@ -34,6 +34,39 @@ type AnalysisProviderProps = Readonly<{
 
 const AnalysisContext = createContext<AnalysisContextValue | null>(null);
 
+type ProviderOwnership = {
+  mounts: number;
+  revision: number;
+  disposing: boolean;
+};
+
+const providerOwnership = new WeakMap<AnalysisCoordinator, ProviderOwnership>();
+
+function retainCoordinator(coordinator: AnalysisCoordinator): () => void {
+  const ownership = providerOwnership.get(coordinator) ?? {
+    mounts: 0,
+    revision: 0,
+    disposing: false,
+  };
+  ownership.mounts += 1;
+  ownership.revision += 1;
+  providerOwnership.set(coordinator, ownership);
+
+  return () => {
+    ownership.mounts = Math.max(0, ownership.mounts - 1);
+    const releaseRevision = ++ownership.revision;
+    queueMicrotask(() => {
+      if (
+        ownership.mounts !== 0 ||
+        ownership.revision !== releaseRevision ||
+        ownership.disposing
+      ) return;
+      ownership.disposing = true;
+      void coordinator.dispose().catch(() => undefined);
+    });
+  };
+}
+
 const nativeAppState: AnalysisAppStatePort = {
   addEventListener(event, listener) {
     return AppState.addEventListener(event, listener);
@@ -52,13 +85,14 @@ export function AnalysisProvider({
   );
 
   useEffect(() => {
+    const releaseCoordinator = retainCoordinator(coordinator);
     void coordinator.initialize().catch(() => undefined);
     const subscription = appState.addEventListener('change', nextState => {
       void coordinator.handleAppState(nextState).catch(() => undefined);
     });
     return () => {
       subscription.remove();
-      void coordinator.dispose().catch(() => undefined);
+      releaseCoordinator();
     };
   }, [appState, coordinator]);
 

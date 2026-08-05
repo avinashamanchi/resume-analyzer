@@ -59,7 +59,7 @@ export type AnalysisCoordinatorOptions = Readonly<{
 }>;
 
 export type AnalysisCommands = Readonly<{
-  selectSource(source: ResumeSource): Promise<void>;
+  selectSource(source: ResumeSource): Promise<SourceSelectionReceipt>;
   setJobDescription(value: string): Promise<void>;
   analyze(): Promise<void>;
   grantConsent(): Promise<void>;
@@ -67,6 +67,10 @@ export type AnalysisCommands = Readonly<{
   cancel(): Promise<void>;
   reset(): Promise<void>;
 }>;
+
+export type SourceSelectionReceipt =
+  | Readonly<{ committed: false }>
+  | Readonly<{ committed: true; sourceIdentity: symbol | null; generation: number }>;
 
 type ActivationPhase = 'consentRead' | 'consentWrite' | 'network';
 
@@ -495,17 +499,17 @@ export class AnalysisCoordinator {
     });
   }
 
-  private selectSource(input: ResumeSource): Promise<void> {
+  private async selectSource(input: ResumeSource): Promise<SourceSelectionReceipt> {
     const prepared = this.prepareIncomingSource(input);
     const isPdfAttempt = input !== null && typeof input === 'object' && input.kind === 'pdf';
     if (isPdfAttempt && this.state.privacyReadiness !== 'ready') {
-      return this.rejectPdfBeforePrivacyReady(prepared);
+      await this.rejectPdfBeforePrivacyReady(prepared);
+      return { committed: false };
     }
-    if (this.state.privacyReadiness === 'blocked') return Promise.resolve();
+    if (this.state.privacyReadiness === 'blocked') return { committed: false };
     if (!this.mounted) {
-      return prepared.claim !== null && prepared.newlyClaimed
-        ? this.cleanupClaim(prepared.claim).then(() => undefined)
-        : Promise.resolve();
+      if (prepared.claim !== null && prepared.newlyClaimed) await this.cleanupClaim(prepared.claim);
+      return { committed: false };
     }
     const previousSource = this.state.source;
     const previousClaim = this.committedPdfClaim;
@@ -513,7 +517,7 @@ export class AnalysisCoordinator {
     let incomingReleased = false;
     const initialization = this.initialize();
 
-    return this.enqueueMutation('selecting', async ({ generation }) => {
+    await this.enqueueMutation('selecting', async ({ generation }) => {
       const releaseIncoming = async (): Promise<boolean> => {
         if (
           incomingReleased ||
@@ -619,6 +623,29 @@ export class AnalysisCoordinator {
         }
       }
     });
+    if (!committed || this.state.mutation !== 'none' || prepared.source === null) {
+      return { committed: false };
+    }
+    const committedSource = this.state.source;
+    if (prepared.source.kind === 'pdf') {
+      return committedSource?.kind === 'pdf' &&
+        committedSource.requestId === prepared.source.requestId &&
+        committedSource.uri === prepared.source.uri &&
+        committedSource.lease === prepared.source.lease
+        ? { committed: true, sourceIdentity: prepared.source.lease, generation: this.state.generation }
+        : { committed: false };
+    }
+    if (prepared.source.kind === 'text') {
+      return committedSource?.kind === 'text' && committedSource.text === prepared.source.text
+        ? { committed: true, sourceIdentity: null, generation: this.state.generation }
+        : { committed: false };
+    }
+    return committedSource?.kind === 'vision_text' &&
+      committedSource.text === prepared.source.text &&
+      committedSource.reviewed === prepared.source.reviewed &&
+      committedSource.pageCount === prepared.source.pageCount
+      ? { committed: true, sourceIdentity: null, generation: this.state.generation }
+      : { committed: false };
   }
 
   private setJobDescription(value: string): Promise<void> {

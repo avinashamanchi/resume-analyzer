@@ -1,5 +1,6 @@
 import { act, fireEvent, render, waitFor } from '@testing-library/react-native';
 import React from 'react';
+import { StyleSheet } from 'react-native';
 
 declare const require: (id: string) => unknown;
 declare const __dirname: string;
@@ -32,6 +33,16 @@ const readyState: AnalysisState = {
   cleanupPending: false,
   mutation: 'none',
 };
+
+function pdfSource(identity: symbol, requestId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa') {
+  return {
+    kind: 'pdf' as const,
+    requestId,
+    uri: `file:///app/cache/resume-ai-v1/${requestId}/11111111-1111-4111-8111-111111111111.pdf`,
+    size: 100,
+    lease: identity,
+  };
+}
 
 function harness(overrides: Record<string, unknown> = {}): any {
   const analysis = {
@@ -75,8 +86,28 @@ describe('native Analyze and Results flows', () => {
     });
     const view = await render(<AppControllerProvider value={values}><AnalyzeScreen /></AppControllerProvider>);
 
-    expect(view.getByRole('dialog', { name: 'AI data consent' })).toBeTruthy();
+    const dialog = view.getByTestId('consent-dialog');
+    expect(dialog.props.accessibilityRole).toBe('dialog');
+    expect(dialog.props.accessibilityViewIsModal).toBe(true);
+    expect(view.getByText(/The selected PDF is uploaded and processed before temporary cleanup runs/i)).toBeTruthy();
+    expect(view.getByText(/does not show the analysis as successful and blocks future analysis/i)).toBeTruthy();
+    expect(view.getByText(/Cleanup cannot undo processing already completed by the Resume\.AI server or Groq/i)).toBeTruthy();
+    expect(view.queryByText(/cleanup.*blocks processing if it cannot complete/i)).toBeNull();
     expect(view.queryByText(/writing power bullets|optimizing|percent/i)).toBeNull();
+  });
+
+  it('keeps consent copy scrollable and its two actions reachable at large text', async () => {
+    const values = harness({
+      analysis: { ...harness().analysis, state: { ...readyState, status: 'consentRequired' } },
+    });
+    const view = await render(<AppControllerProvider value={values}><AnalyzeScreen /></AppControllerProvider>);
+
+    const copyStyle = StyleSheet.flatten(view.getByTestId('consent-scroll').props.contentContainerStyle);
+    const actionsStyle = StyleSheet.flatten(view.getByTestId('consent-actions').props.style);
+    expect(copyStyle.flexGrow).toBe(1);
+    expect(actionsStyle.flexShrink).toBe(0);
+    expect(view.getByRole('button', { name: 'Not now' })).toBeTruthy();
+    expect(view.getByRole('button', { name: 'Agree and analyze' })).toBeTruthy();
   });
 
   it('grants or declines consent only from explicit sheet actions', async () => {
@@ -91,16 +122,85 @@ describe('native Analyze and Results flows', () => {
     expect(values.analysis.commands.declineConsent).toHaveBeenCalledTimes(1);
   });
 
-  it('keeps a selected PDF filename in screen memory and submits only the source', async () => {
-    const values = harness();
-    const source = { kind: 'pdf' as const, requestId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', uri: 'file:///cache/resume.pdf', size: 100, lease: Symbol() };
-    values.actions.pickPdfForDisplay.mockResolvedValueOnce({ source, displayName: 'My Resume.pdf' });
+  it('shows a PDF filename only from an authoritative committed-source identity', async () => {
+    const identity = Symbol('pdf-a');
+    const source = pdfSource(identity);
+    const values = harness({
+      analysis: { ...harness().analysis, state: { ...readyState, source } },
+    });
+    values.actions.pickPdfForDisplay.mockResolvedValueOnce({ sourceIdentity: identity, sourceGeneration: 1, displayName: 'My Resume.pdf' });
     const view = await render(<AppControllerProvider value={values}><AnalyzeScreen /></AppControllerProvider>);
 
     await act(async () => { fireEvent.press(view.getByLabelText('Choose resume PDF')); });
     await waitFor(() => expect(view.getByText('My Resume.pdf')).toBeTruthy());
-    expect(values.analysis.commands.selectSource).toHaveBeenCalledWith(source);
-    expect(JSON.stringify(values.analysis.commands.selectSource.mock.calls)).not.toContain('My Resume.pdf');
+    expect(values.analysis.commands.selectSource).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['consent decline with job text', { status: 'idle', jobDescription: 'private target role' }],
+    ['analysis cancellation', { status: 'cancelled', jobDescription: '' }],
+  ] as const)('clears the committed PDF display after %s consumes its source', async (_label, terminal) => {
+    const identity = Symbol('pdf-a');
+    const values = harness({
+      analysis: { ...harness().analysis, state: { ...readyState, source: pdfSource(identity) } },
+    });
+    values.actions.pickPdfForDisplay.mockResolvedValueOnce({ sourceIdentity: identity, sourceGeneration: 1, displayName: 'Private A.pdf' });
+    const view = await render(<AppControllerProvider value={values}><AnalyzeScreen /></AppControllerProvider>);
+    await act(async () => { fireEvent.press(view.getByLabelText('Choose resume PDF')); });
+    await waitFor(() => expect(view.getByText('Private A.pdf')).toBeTruthy());
+
+    await view.rerender(
+      <AppControllerProvider value={{
+        ...values,
+        analysis: {
+          ...values.analysis,
+          state: {
+            ...readyState,
+            ...terminal,
+            source: null,
+            generation: 2,
+          },
+        },
+      }}><AnalyzeScreen /></AppControllerProvider>,
+    );
+
+    await waitFor(() => expect(view.queryByText('Private A.pdf')).toBeNull());
+  });
+
+  it('keeps the current display after a rejected replacement', async () => {
+    const identityA = Symbol('pdf-a');
+    const values = harness({
+      analysis: { ...harness().analysis, state: { ...readyState, source: pdfSource(identityA) } },
+    });
+    values.actions.pickPdfForDisplay.mockResolvedValueOnce({ sourceIdentity: identityA, sourceGeneration: 1, displayName: 'Private A.pdf' });
+    const view = await render(<AppControllerProvider value={values}><AnalyzeScreen /></AppControllerProvider>);
+    await act(async () => { fireEvent.press(view.getByLabelText('Choose resume PDF')); });
+    await waitFor(() => expect(view.getByText('Private A.pdf')).toBeTruthy());
+
+    values.actions.pickPdfForDisplay.mockResolvedValueOnce(null);
+    await act(async () => { fireEvent.press(view.getByLabelText('Choose resume PDF')); });
+    expect(view.queryByText('Rejected B.pdf')).toBeNull();
+    expect(view.getByText('Private A.pdf')).toBeTruthy();
+  });
+
+  it('drops a stale display identity during a replacement race', async () => {
+    const identityA = Symbol('pdf-a');
+    const identityB = Symbol('pdf-b');
+    const values = harness({
+      analysis: { ...harness().analysis, state: { ...readyState, source: pdfSource(identityA) } },
+    });
+    values.actions.pickPdfForDisplay.mockResolvedValueOnce({ sourceIdentity: identityA, sourceGeneration: 1, displayName: 'Private A.pdf' });
+    const view = await render(<AppControllerProvider value={values}><AnalyzeScreen /></AppControllerProvider>);
+    await act(async () => { fireEvent.press(view.getByLabelText('Choose resume PDF')); });
+    await waitFor(() => expect(view.getByText('Private A.pdf')).toBeTruthy());
+
+    await view.rerender(
+      <AppControllerProvider value={{
+        ...values,
+        analysis: { ...values.analysis, state: { ...readyState, source: pdfSource(identityB, 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'), generation: 3 } },
+      }}><AnalyzeScreen /></AppControllerProvider>,
+    );
+    await waitFor(() => expect(view.queryByText('Private A.pdf')).toBeNull());
   });
 
   it('renders one honest cancellable analyzing state', async () => {

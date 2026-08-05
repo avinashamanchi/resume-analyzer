@@ -18,7 +18,11 @@ export default function AnalyzeScreen() {
   const { analysis, actions } = useAppController();
   const { state, commands } = analysis;
   const [mode, setMode] = useState<SourceMode>(state.source?.kind === 'text' ? 'paste' : 'pdf');
-  const [displayName, setDisplayName] = useState<string | null>(null);
+  const [pdfDisplay, setPdfDisplay] = useState<Readonly<{
+    sourceIdentity: symbol;
+    sourceGeneration: number;
+    displayName: string;
+  }> | null>(null);
   const [pasteText, setPasteText] = useState(state.source?.kind === 'text' ? state.source.text : '');
   const [jobDescription, setJobDescription] = useState(state.jobDescription);
   const [localError, setLocalError] = useState<string | null>(null);
@@ -38,7 +42,7 @@ export default function AnalyzeScreen() {
       state.source === null &&
       state.jobDescription.length === 0
     ) {
-      setDisplayName(null);
+      setPdfDisplay(null);
       setPasteText('');
       setJobDescription('');
       setLocalError(null);
@@ -47,17 +51,22 @@ export default function AnalyzeScreen() {
   }, [state.generation, state.jobDescription, state.source, state.status]);
 
   useEffect(() => {
-    if (mode === 'pdf' && state.status === 'failed' && state.source === null) {
-      setDisplayName(null);
+    if (
+      pdfDisplay !== null &&
+      state.generation >= pdfDisplay.sourceGeneration &&
+      (state.source?.kind !== 'pdf' || state.source.lease !== pdfDisplay.sourceIdentity) &&
+      state.mutation === 'none'
+    ) {
+      setPdfDisplay(null);
     }
-  }, [mode, state.source, state.status]);
+  }, [pdfDisplay, state.generation, state.mutation, state.source]);
 
   const changeMode = async (next: SourceMode) => {
     if (next === mode || busy || state.status === 'analyzing') return;
     setBusy(true);
     setLocalError(null);
     await commands.reset();
-    setDisplayName(null);
+    setPdfDisplay(null);
     setPasteText('');
     setJobDescription('');
     setMode(next);
@@ -71,8 +80,7 @@ export default function AnalyzeScreen() {
     try {
       const picked = await actions.pickPdfForDisplay();
       if (picked !== null) {
-        await commands.selectSource(picked.source);
-        setDisplayName(picked.displayName);
+        setPdfDisplay(picked);
       }
     } catch {
       setLocalError('The PDF could not be selected safely.');
@@ -104,6 +112,11 @@ export default function AnalyzeScreen() {
   };
 
   const working = busy || state.mutation !== 'none';
+  const displayName = pdfDisplay !== null &&
+    state.source?.kind === 'pdf' &&
+    state.source.lease === pdfDisplay.sourceIdentity
+    ? pdfDisplay.displayName
+    : null;
   return (
     <>
       <Screen>

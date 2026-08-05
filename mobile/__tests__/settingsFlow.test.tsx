@@ -48,7 +48,11 @@ describe('native Settings, privacy, and support flows', () => {
     const privacy = await render(<AppControllerProvider value={context}><PrivacyScreen /></AppControllerProvider>);
     const support = await render(<AppControllerProvider value={context}><SupportScreen /></AppControllerProvider>);
     expect(privacy.getByText(/Reports are saved only on this device/i)).toBeTruthy();
-    expect(privacy.getByText(/Groq/i)).toBeTruthy();
+    expect(privacy.getAllByText(/Groq/i).length).toBeGreaterThan(0);
+    expect(privacy.getByText(/The selected PDF is uploaded and processed before temporary cleanup runs/i)).toBeTruthy();
+    expect(privacy.getByText(/does not show the analysis as successful and blocks future analysis/i)).toBeTruthy();
+    expect(privacy.getByText(/Cleanup cannot undo processing already completed by the Resume\.AI server or Groq/i)).toBeTruthy();
+    expect(privacy.queryByText(/processing stops if cleanup cannot be confirmed/i)).toBeNull();
     expect(privacy.queryByText(/delete account|cloud history/i)).toBeNull();
     await act(async () => { fireEvent.press(support.getByRole('button', { name: 'Open public support' })); });
     expect(context.actions.openSupport).toHaveBeenCalledTimes(1);

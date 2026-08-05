@@ -18,7 +18,9 @@ export default function PrivacyScreen() {
       </Card>
       <Card>
         <Text style={uiStyles.sectionTitle}>Temporary handling</Text>
-        <Text style={uiStyles.body}>A selected PDF is copied into app-owned temporary storage for one request. Cleanup is verified and processing stops if cleanup cannot be confirmed. Resume and job text remain in memory for the current app session.</Text>
+        <Text style={uiStyles.body}>A selected PDF is copied into app-owned temporary storage for one request. The selected PDF is uploaded and processed before temporary cleanup runs. After the request ends, Resume.AI verifies removal of its app-owned temporary PDF.</Text>
+        <Text style={uiStyles.body}>If cleanup cannot be verified, Resume.AI does not show the analysis as successful and blocks future analysis until cleanup succeeds. Cleanup cannot undo processing already completed by the Resume.AI server or Groq.</Text>
+        <Text style={uiStyles.body}>Pasted resume and job-description text remain in memory for the current app session.</Text>
       </Card>
       <Card>
         <Text style={uiStyles.sectionTitle}>Anonymous security identifier</Text>

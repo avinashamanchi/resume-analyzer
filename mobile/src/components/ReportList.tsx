@@ -1,5 +1,6 @@
-import React, { useState } from 'react';
-import { Pressable, StyleSheet, Text, View } from 'react-native';
+import React, { useEffect, useRef, useState } from 'react';
+import { Modal, Pressable, StyleSheet, Text, View } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 
 import type { ReportRecord } from '../storage/reportRepository';
 import { tokens } from '../theme/tokens';
@@ -18,9 +19,49 @@ export function ReportList({
 }: Readonly<{
   reports: readonly ReportRecord[];
   onOpen(id: string): void;
-  onDelete(id: string): void;
+  onDelete(id: string): Promise<boolean>;
 }>) {
   const [confirming, setConfirming] = useState<ReportRecord | null>(null);
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+  const mounted = useRef(true);
+
+  useEffect(() => {
+    mounted.current = true;
+    return () => { mounted.current = false; };
+  }, []);
+
+  const openConfirmation = (report: ReportRecord) => {
+    setDeleteError(null);
+    setConfirming(report);
+  };
+
+  const closeConfirmation = () => {
+    if (deleting) return;
+    setDeleteError(null);
+    setConfirming(null);
+  };
+
+  const confirmDelete = async () => {
+    if (confirming === null || deleting) return;
+    const id = confirming.id;
+    setDeleting(true);
+    setDeleteError(null);
+    let deleted = false;
+    try {
+      deleted = await onDelete(id);
+    } catch {
+      deleted = false;
+    }
+    if (!mounted.current) return;
+    setDeleting(false);
+    if (deleted) {
+      setConfirming(null);
+      return;
+    }
+    setDeleteError('The local report was not deleted. Try again.');
+  };
+
   return (
     <View style={styles.list}>
       {reports.map(report => (
@@ -40,18 +81,43 @@ export function ReportList({
           <AppButton
             label="Delete"
             accessibilityLabel={`Delete ${report.title}`}
-            onPress={() => setConfirming(report)}
+            onPress={() => openConfirmation(report)}
             tone="danger"
           />
         </Card>
       ))}
       {confirming !== null ? (
-        <View accessible accessibilityRole="alert" accessibilityLabel="Delete saved report?" style={styles.confirmation}>
-          <Text style={uiStyles.sectionTitle}>Delete saved report?</Text>
-          <Text style={uiStyles.muted}>This removes only this local report. It cannot be undone.</Text>
-          <AppButton label="Keep report" onPress={() => setConfirming(null)} tone="quiet" />
-          <AppButton label="Delete report" onPress={() => { onDelete(confirming.id); setConfirming(null); }} tone="danger" />
-        </View>
+        <Modal
+          visible
+          transparent
+          animationType="fade"
+          onRequestClose={closeConfirmation}
+          statusBarTranslucent>
+          <View style={styles.backdrop}>
+            <Pressable
+              accessible={false}
+              importantForAccessibility="no"
+              style={StyleSheet.absoluteFill}
+              onPress={closeConfirmation}
+            />
+            <SafeAreaView style={styles.safeArea} edges={['top', 'bottom']}>
+              <View
+                testID="delete-report-modal"
+                accessibilityRole={'dialog' as never}
+                accessibilityLabel="Delete saved report?"
+                accessibilityViewIsModal
+                style={styles.confirmation}>
+                <Text accessibilityRole="header" style={uiStyles.sectionTitle}>Delete saved report?</Text>
+                <Text style={uiStyles.muted}>This removes only this local report. It cannot be undone.</Text>
+                {deleteError !== null ? (
+                  <Text accessibilityRole="alert" accessibilityLiveRegion="assertive" style={styles.error}>{deleteError}</Text>
+                ) : null}
+                <AppButton label="Keep report" onPress={closeConfirmation} disabled={deleting} tone="quiet" />
+                <AppButton label="Delete report" onPress={() => { void confirmDelete(); }} disabled={deleting} tone="danger" />
+              </View>
+            </SafeAreaView>
+          </View>
+        </Modal>
       ) : null}
     </View>
   );
@@ -64,7 +130,15 @@ const styles = StyleSheet.create({
   scoreLine: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'baseline', columnGap: 10 },
   score: { color: tokens.color.text, fontSize: 25, lineHeight: 30, fontWeight: '800' },
   scoreLabel: { color: tokens.color.accent, fontSize: 15, lineHeight: 21, fontWeight: '700' },
+  backdrop: {
+    flex: 1,
+    justifyContent: 'flex-end',
+    backgroundColor: 'rgba(0,0,0,0.68)',
+  },
+  safeArea: { flex: 1, justifyContent: 'flex-end' },
   confirmation: {
+    marginHorizontal: 16,
+    marginBottom: 12,
     padding: 18,
     rowGap: tokens.space.sm,
     borderWidth: 1,
@@ -72,4 +146,5 @@ const styles = StyleSheet.create({
     borderRadius: tokens.radius.card,
     backgroundColor: tokens.color.surface,
   },
+  error: { color: tokens.color.danger, fontSize: 15, lineHeight: 22 },
 });

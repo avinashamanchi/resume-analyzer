@@ -31,7 +31,11 @@ export type AppServices = Readonly<{
 }>;
 
 export type AppActions = Readonly<{
-  pickPdfForDisplay(): Promise<PickedPdfForDisplay | null>;
+  pickPdfForDisplay(): Promise<Readonly<{
+    sourceIdentity: symbol;
+    sourceGeneration: number;
+    displayName: string;
+  }> | null>;
   resetConsent(): Promise<void>;
   cleanupCache(): Promise<Readonly<{ verified: boolean; deletedFiles: number }>>;
   shareSummary(result: AnalysisResponse): Promise<void>;
@@ -194,7 +198,20 @@ export function AppControllerRoot({
   }), [deleteAll, deleteReport, error, get, load, reports, saveCurrent, status]);
 
   const actions = useMemo<AppActions>(() => ({
-    pickPdfForDisplay: () => services.documents.pickPdfForDisplay(),
+    async pickPdfForDisplay() {
+      const picked = await services.documents.pickPdfForDisplay();
+      if (picked === null) return null;
+      const receipt = await analysis.commands.selectSource(picked.source);
+      if (
+        !receipt.committed ||
+        receipt.sourceIdentity !== picked.source.lease
+      ) return null;
+      return {
+        sourceIdentity: receipt.sourceIdentity,
+        sourceGeneration: receipt.generation,
+        displayName: picked.displayName,
+      };
+    },
     resetConsent: () => services.consent.clear(),
     async cleanupCache() {
       const result = await services.cache.cleanupAbandonedDetailed();
@@ -212,7 +229,7 @@ export function AppControllerRoot({
     openSupport: () => services.openSupport(),
     serviceAvailable: services.serviceAvailable,
     appVersion: services.appVersion,
-  }), [services]);
+  }), [analysis.commands, services]);
 
   const value = useMemo<AppControllerValue>(
     () => ({ actions, analysis, history }),

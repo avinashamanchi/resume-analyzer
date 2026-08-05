@@ -39,7 +39,7 @@ export default function HistoryScreen() {
         <ReportList
           reports={history.reports}
           onOpen={id => router.push(`/results/${id}`)}
-          onDelete={id => { void history.delete(id); }}
+          onDelete={id => history.delete(id)}
         />
       )}
     </Screen>

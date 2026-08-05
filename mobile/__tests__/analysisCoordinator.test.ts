@@ -208,6 +208,20 @@ describe('analysisReducer transition safety', () => {
 });
 
 describe('review fixes: Task 10 ownership authority', () => {
+  it('returns the exact committed PDF identity and generation as its selection receipt', async () => {
+    const { coordinator } = harness();
+    const source = pdfSource();
+    await coordinator.initialize();
+
+    const selection = await coordinator.commands.selectSource(source);
+
+    expect(selection).toEqual({
+      committed: true,
+      sourceIdentity: source.lease,
+      generation: coordinator.getState().generation,
+    });
+  });
+
   it('rejects a suffix-identical external PDF with zero API calls', async () => {
     const { api, coordinator, pdfOwnership: ownership, tempFiles } = harness();
     await coordinator.initialize();
@@ -216,12 +230,13 @@ describe('review fixes: Task 10 ownership authority', () => {
       uri: `file:///external/resume-ai-v1/${REQUEST_A}/11111111-1111-4111-8111-111111111111.pdf`,
     };
 
-    await coordinator.commands.selectSource(external);
+    const selection = await coordinator.commands.selectSource(external);
     await coordinator.commands.analyze();
 
     expect(ownership.assertOwnedFileUri).toHaveBeenCalledWith(external.uri);
     expect(api.analyze).not.toHaveBeenCalled();
     expect(tempFiles.cleanupRequest).not.toHaveBeenCalled();
+    expect(selection).toEqual({ committed: false });
     expect(coordinator.getState()).toMatchObject({
       status: 'failed',
       source: null,
@@ -507,7 +522,7 @@ describe('review fixes: concurrent staged PDF ownership', () => {
       const selectingB = coordinator.commands.selectSource(pdfSource(REQUEST_B));
       await flushPromises();
 
-      let superseding: Promise<void>;
+      let superseding: Promise<unknown>;
       if (nextCommand === 'reset') superseding = coordinator.commands.reset();
       else if (nextCommand === 'replacement') {
         superseding = coordinator.commands.selectSource(textSource('replacement C'));
@@ -532,9 +547,10 @@ describe('review fixes: concurrent staged PDF ownership', () => {
     await coordinator.initialize();
     await coordinator.commands.selectSource(pdfSource(REQUEST_A));
 
-    await coordinator.commands.selectSource(pdfSource(REQUEST_B));
+    const selection = await coordinator.commands.selectSource(pdfSource(REQUEST_B));
 
     expect(cleanupRequest.mock.calls.map(call => call[0])).toEqual([REQUEST_A, REQUEST_B]);
+    expect(selection).toEqual({ committed: false });
     expect(coordinator.getState()).toMatchObject({
       status: 'failed',
       source: pdfSource(REQUEST_A),
@@ -1066,7 +1082,7 @@ describe('analysis generations and cancellation', () => {
     await coordinator.initialize();
 
     await expect(coordinator.commands.selectSource({ kind: 'text', text: null } as never))
-      .resolves.toBeUndefined();
+      .resolves.toEqual({ committed: false });
     await coordinator.commands.analyze();
 
     expect(api.analyze).not.toHaveBeenCalled();
@@ -1538,9 +1554,11 @@ describe('PDF terminal cleanup', () => {
     await flushPromises();
     const lastReplacement = coordinator.commands.selectSource(textSource('latest'));
     cleanup.resolve({ attempted: 1, deleted: 1, failed: 0, refused: 0 });
-    await Promise.all([firstReplacement, lastReplacement]);
+    const [firstReceipt, lastReceipt] = await Promise.all([firstReplacement, lastReplacement]);
 
     expect(coordinator.getState()).toMatchObject({ source: textSource('latest') });
+    expect(firstReceipt).toEqual({ committed: false });
+    expect(lastReceipt).toEqual({ committed: true, sourceIdentity: null, generation: 3 });
   });
 });
 

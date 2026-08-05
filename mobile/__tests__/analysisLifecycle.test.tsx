@@ -1,5 +1,5 @@
-import { act, render } from '@testing-library/react-native';
-import React from 'react';
+import { act, render, waitFor } from '@testing-library/react-native';
+import React, { StrictMode } from 'react';
 import { Text } from 'react-native';
 
 import validFixture from '../../contracts/fixtures/analysis-valid.json';
@@ -68,6 +68,32 @@ function Probe({ route }: { route: string }) {
 }
 
 describe('AnalysisProvider in-memory lifecycle', () => {
+  it('survives StrictMode replay and disposes exactly once on the real unmount', async () => {
+    const { api, coordinator } = providerHarness();
+    const dispose = jest.spyOn(coordinator, 'dispose');
+    const view = await render(
+      <StrictMode>
+        <AnalysisProvider coordinator={coordinator}>
+          <Probe route="Analyze" />
+        </AnalysisProvider>
+      </StrictMode>,
+    );
+
+    await waitFor(() => expect(view.getByTestId('status').props.children).toBe('idle'));
+    await act(async () => {
+      await coordinator.commands.selectSource({ kind: 'text', text: 'private draft' });
+      await coordinator.commands.analyze();
+    });
+
+    expect(view.getByTestId('status').props.children).toBe('succeeded');
+    expect(api.analyze).toHaveBeenCalledTimes(1);
+    expect(dispose).not.toHaveBeenCalled();
+
+    await view.unmount();
+    await act(async () => { await Promise.resolve(); });
+    expect(dispose).toHaveBeenCalledTimes(1);
+  });
+
   it('keeps an unsent paste draft in memory while navigation content changes', async () => {
     const { consentStore, coordinator } = providerHarness();
     const view = await render(
