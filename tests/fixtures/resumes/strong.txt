@@ -1,0 +1,19 @@
+Avi Example avi@example.com +1 555-111-2222
+
+Professional Summary
+Backend engineer focused on dependable services, careful collaboration, and clear operational documentation.
+
+Experience
+- Built Python Flask APIs that reduced latency by 20%.
+- Developed PostgreSQL services serving 500 users.
+- Automated Docker deployments and improved reliability by 30%.
+- Led Kubernetes migration for 12 customers.
+- Designed REST integrations that handled 2x more requests.
+
+Education
+Bachelor of Science in Computer Science
+
+Technical Skills
+Python Flask PostgreSQL Docker Kubernetes REST APIs Redis testing observability documentation collaboration delivery planning analysis architecture security performance reliability operations communication mentoring ownership quality product systems engineering development deployment monitoring infrastructure platforms services data design integration optimization support management leadership technical problem solving stakeholder alignment iterative learning experimentation innovation practical execution scalable maintainable resilient accessible inclusive thoughtful focused organized precise accountable trusted proactive adaptable curious diligent analytical creative strategic collaborative effective efficient sustainable measurable user centered outcome driven enterprise cloud distributed asynchronous synchronous transactional relational containerized automated tested reviewed documented deployed maintained improved delivered built developed designed optimized supported managed coordinated achieved launched shipped increased reduced drove analyzed.
+
+I translate ambiguous product needs into small delivery milestones, write clear technical decisions, and invite early review from partners who depend on the service. I investigate incidents with structured timelines, prioritize durable fixes, and document useful lessons for future maintainers. I balance delivery speed with secure defaults, observable behavior, and operational ownership. I enjoy simplifying interfaces, reducing unnecessary dependencies, and making reliable systems easier for teammates to understand. My work includes planning migrations, validating data changes, reviewing pull requests, refining test coverage, and improving release checklists. I communicate risks early, share progress honestly, and help teams choose practical next steps. I continue learning distributed-systems patterns, database design, infrastructure automation, and service performance so I can deliver useful software with lasting quality.
