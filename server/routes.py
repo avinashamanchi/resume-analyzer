@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import math
 import time
-from collections.abc import Callable
 from typing import Any
 from uuid import uuid4
 
@@ -83,10 +82,14 @@ def _admit(decision: Any) -> None:
 
 @routes.post("/v1/installations")
 def issue_installation() -> tuple[Response, int]:
-    if request.content_length is not None:
-        if request.content_length > MAX_REQUEST_BYTES:
+    content_length = request.content_length
+    if content_length is None:
+        if request.stream.read(1):
+            raise RequestValidationError()
+    else:
+        if content_length > MAX_REQUEST_BYTES:
             raise RequestValidationError(ErrorCode.FILE_TOO_LARGE)
-        if request.content_length > 0:
+        if content_length > 0:
             raise RequestValidationError()
     services = _services()
     _admit(
@@ -170,8 +173,13 @@ def analyze_resume() -> tuple[Response, int]:
 
 
 def _healthy(service: Any) -> bool:
-    check: Callable[[], object] | None = getattr(service, "healthcheck", None)
-    return check is None or check() is True
+    check = getattr(service, "healthcheck", None)
+    if not callable(check):
+        return False
+    try:
+        return check() is True
+    except Exception:
+        return False
 
 
 @routes.get("/healthz")
@@ -179,10 +187,6 @@ def health() -> tuple[Response, int]:
     services = _services()
     try:
         required_services = (
-            services.pdf_parser,
-            services.scorer,
-            services.ai_gateway,
-            services.installation_tokens,
             services.rate_limiter,
             services.leases,
         )

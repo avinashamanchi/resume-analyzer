@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import io
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Iterator
 from uuid import UUID, uuid4
 
@@ -18,6 +18,7 @@ from server.pdf_parser import ExtractedResume
 from server.rate_limit import RateLimitDecision
 from server.scoring import score_resume
 from werkzeug.datastructures import MultiDict
+from werkzeug.test import EnvironBuilder
 
 
 CONSENT_VERSION = "2026-08-04.v1"
@@ -131,6 +132,7 @@ class FakeRateLimiter:
         self.issue_decision = RateLimitDecision(allowed=True)
         self.analysis_checks: list[tuple[UUID, str]] = []
         self.issue_checks: list[str] = []
+        self.health_checks = 0
 
     def check(self, installation_id: UUID, ip_key: str) -> RateLimitDecision:
         self.analysis_checks.append((installation_id, ip_key))
@@ -141,6 +143,7 @@ class FakeRateLimiter:
         return self.issue_decision
 
     def healthcheck(self) -> bool:
+        self.health_checks += 1
         return True
 
 
@@ -150,6 +153,7 @@ class FakeLeases:
         self.active = False
         self.entries: list[tuple[UUID, UUID, int]] = []
         self.exits = 0
+        self.health_checks = 0
 
     @contextmanager
     def lease(
@@ -166,6 +170,7 @@ class FakeLeases:
                 self.exits += 1
 
     def healthcheck(self) -> bool:
+        self.health_checks += 1
         return True
 
 
@@ -329,6 +334,68 @@ def test_installation_issue_rejects_request_bodies_before_rate_or_issuance(
     assert parsed_error(response).code is expected_code
     assert harness.rate_limiter.issue_checks == []
     assert harness.installation_tokens.issued == 0
+
+
+def test_installation_issue_rejects_unknown_length_stream_body_before_mutation(
+    client: Any,
+    harness: Harness,
+):
+    observed_input = io.BytesIO(b"private streamed body")
+    environ = EnvironBuilder(
+        path="/v1/installations",
+        method="POST",
+        content_type="application/octet-stream",
+    ).get_environ()
+    environ.pop("CONTENT_LENGTH", None)
+    environ["wsgi.input"] = observed_input
+    environ["wsgi.input_terminated"] = True
+
+    app_iter, status, headers = client.run_wsgi_app(environ, buffered=True)
+    response = client.application.response_class(
+        app_iter,
+        status=status,
+        headers=headers,
+    )
+
+    assert response.status_code == 400
+    assert parsed_error(response).code is ErrorCode.INVALID_REQUEST
+    assert observed_input.tell() == 1
+    assert harness.rate_limiter.issue_checks == []
+    assert harness.installation_tokens.issued == 0
+
+
+def test_unknown_length_streamed_analysis_preserves_the_whole_body_cap(
+    client: Any,
+    harness: Harness,
+):
+    boundary = "resume-ai-boundary"
+    body = (
+        f"--{boundary}\r\n"
+        'Content-Disposition: form-data; name="resume_text"\r\n\r\n'
+    ).encode() + b"x" * (11 * 1024 * 1024 + 1)
+    observed_input = io.BytesIO(body)
+    environ = EnvironBuilder(
+        path="/v1/analyses",
+        method="POST",
+        content_type=f"multipart/form-data; boundary={boundary}",
+        headers=authorization(),
+    ).get_environ()
+    environ.pop("CONTENT_LENGTH", None)
+    environ["wsgi.input"] = observed_input
+    environ["wsgi.input_terminated"] = True
+
+    app_iter, status, headers = client.run_wsgi_app(environ, buffered=True)
+    response = client.application.response_class(
+        app_iter,
+        status=status,
+        headers=headers,
+    )
+
+    assert response.status_code == 413
+    assert parsed_error(response).code is ErrorCode.FILE_TOO_LARGE
+    assert observed_input.tell() <= 11 * 1024 * 1024 + 1
+    assert harness.rate_limiter.analysis_checks == []
+    assert harness.ai_gateway.calls == []
 
 
 @pytest.mark.parametrize(
@@ -560,6 +627,45 @@ def test_analysis_headers_are_private_and_cors_is_first_party_only(client: Any):
     assert UUID(allowed.headers["X-Request-ID"]) == REQUEST_ID
 
 
+def test_cors_uses_literal_origin_membership_for_simple_and_preflight_requests(
+    client: Any,
+):
+    allowed_origin = "https://resume.example.com"
+    dot_near_match = "https://resumeXexampleXcom"
+    host_near_match = "https://resume.example.com.evil"
+
+    allowed = client.get("/healthz", headers={"Origin": allowed_origin})
+    near_matches = [
+        client.get("/healthz", headers={"Origin": origin})
+        for origin in (dot_near_match, host_near_match)
+    ]
+    allowed_preflight = client.options(
+        "/v1/analyses",
+        headers={
+            "Origin": allowed_origin,
+            "Access-Control-Request-Method": "POST",
+            "Access-Control-Request-Headers": "Authorization, Content-Type",
+        },
+    )
+    denied_preflight = client.options(
+        "/v1/analyses",
+        headers={
+            "Origin": dot_near_match,
+            "Access-Control-Request-Method": "POST",
+        },
+    )
+
+    assert allowed.headers["Access-Control-Allow-Origin"] == allowed_origin
+    assert allowed_preflight.headers["Access-Control-Allow-Origin"] == allowed_origin
+    assert "POST" in allowed_preflight.headers["Access-Control-Allow-Methods"]
+    assert "Authorization" in allowed_preflight.headers[
+        "Access-Control-Allow-Headers"
+    ]
+    for response in (*near_matches, denied_preflight):
+        assert "Access-Control-Allow-Origin" not in response.headers
+        assert "Access-Control-Allow-Methods" not in response.headers
+
+
 def test_health_is_content_free_and_fails_closed_when_a_check_fails(
     harness: Harness,
 ):
@@ -569,6 +675,8 @@ def test_health_is_content_free_and_fails_closed_when_a_check_fails(
 
     assert healthy.status_code == 200
     assert healthy.get_json() == {"status": "ok"}
+    assert harness.rate_limiter.health_checks == 1
+    assert harness.leases.health_checks == 1
     assert "model" not in healthy.get_data(as_text=True).casefold()
     assert "redis" not in healthy.get_data(as_text=True).casefold()
 
@@ -582,13 +690,103 @@ def test_health_is_content_free_and_fails_closed_when_a_check_fails(
     assert "redis" not in failed.get_data(as_text=True).casefold()
 
 
-@pytest.mark.parametrize("origin", ["*", "https://*.example.com"])
-def test_app_rejects_a_directly_injected_wildcard_cors_setting(
+class MissingHealthcheck:
+    pass
+
+
+class NonCallableHealthcheck:
+    healthcheck = True
+
+
+class NonBooleanHealthcheck:
+    def healthcheck(self) -> int:
+        return 1
+
+
+class RaisingHealthcheck:
+    def healthcheck(self) -> bool:
+        raise RuntimeError("private redis health detail")
+
+
+@pytest.mark.parametrize("field_name", ["rate_limiter", "leases"])
+@pytest.mark.parametrize(
+    "unusable_service",
+    [
+        pytest.param(MissingHealthcheck(), id="missing"),
+        pytest.param(NonCallableHealthcheck(), id="non-callable"),
+        pytest.param(NonBooleanHealthcheck(), id="non-bool"),
+        pytest.param(RaisingHealthcheck(), id="raises"),
+    ],
+)
+def test_health_fails_closed_for_every_unusable_required_check(
+    harness: Harness,
+    field_name: str,
+    unusable_service: object,
+):
+    registry = replace(harness.registry(), **{field_name: unusable_service})
+    app = create_app(settings(), registry)
+    app.config["TESTING"] = True
+
+    response = app.test_client().get("/healthz")
+
+    assert response.status_code == 503
+    error = parsed_error(response)
+    assert error.code is ErrorCode.SERVICE_UNAVAILABLE
+    assert "private redis health detail" not in response.get_data(as_text=True)
+
+
+@pytest.mark.parametrize(
+    "origin",
+    [
+        "*",
+        "https://*.example.com",
+        "https://(resume|evil).example.com",
+        "https://resume|evil.example.com",
+        "https://user:password@resume.example.com",
+        "https://resume.example.com/",
+        "https://resume.example.com/path",
+        "https://resume.example.com?preview=true",
+    ],
+)
+def test_app_rejects_a_directly_injected_noncanonical_cors_setting(
     harness: Harness, origin: str
 ):
-    with pytest.raises(ConfigurationError, match="wildcard"):
+    with pytest.raises(ConfigurationError, match="origin|CORS|wildcard"):
         create_app(
             settings(allowed_web_origins=(origin,)),
+            harness.registry(),
+        )
+
+
+def test_app_normalizes_directly_injected_origins_before_literal_matching(
+    harness: Harness,
+):
+    app = create_app(
+        settings(
+            allowed_web_origins=(
+                "HTTPS://Resume.Example.COM:443",
+                "http://LOCALHOST:80",
+            )
+        ),
+        harness.registry(),
+    )
+
+    configured = app.extensions["resume_ai.settings"]
+    assert configured.allowed_web_origins == (
+        "https://resume.example.com",
+        "http://localhost",
+    )
+
+
+def test_direct_production_settings_cannot_bypass_https_origin_policy_by_case(
+    harness: Harness,
+):
+    with pytest.raises(ConfigurationError, match="HTTPS"):
+        create_app(
+            settings(
+                app_env="PRODUCTION",
+                allowed_web_origins=("http://resume.example.com",),
+            ),
             harness.registry(),
         )
 

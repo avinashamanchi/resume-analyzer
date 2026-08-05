@@ -81,3 +81,49 @@ def test_development_rejects_wildcard_cors_because_only_first_party_origins_are_
                 "ALLOWED_WEB_ORIGINS": origin,
             }
         )
+
+
+@pytest.mark.parametrize(
+    "origin",
+    [
+        "https://(resume|evil).example.com",
+        "https://resume|evil.example.com",
+        "https://user:password@resume.example.com",
+        "https://resume.example.com/",
+        "https://resume.example.com/path",
+        "https://resume.example.com?preview=true",
+        "https://resume.example.com#preview",
+        "https://resume_example.com",
+        "https://resume.example.com:not-a-port",
+    ],
+)
+def test_environment_rejects_noncanonical_or_regex_bearing_cors_origins(
+    origin: str,
+):
+    with pytest.raises(ConfigurationError, match="origin|CORS"):
+        Settings.from_environ(
+            {
+                "APP_ENV": "development",
+                "ALLOWED_WEB_ORIGINS": origin,
+            }
+        )
+
+
+def test_environment_normalizes_cors_origins_to_canonical_literal_values():
+    configured = Settings.from_environ(
+        {
+            "APP_ENV": "development",
+            "ALLOWED_WEB_ORIGINS": (
+                "HTTPS://Resume.Example.COM:443,"
+                "http://LOCALHOST:80,"
+                "https://[2001:0db8::1]:443,"
+                "https://resume.example.com"
+            ),
+        }
+    )
+
+    assert configured.allowed_web_origins == (
+        "https://resume.example.com",
+        "http://localhost",
+        "https://[2001:db8::1]",
+    )

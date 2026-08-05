@@ -1,14 +1,13 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 from uuid import uuid4
 
 from flask import Flask, g, jsonify, request
-from flask_cors import CORS
 from werkzeug.exceptions import BadRequest, HTTPException, RequestEntityTooLarge
 
-from .config import ConfigurationError, Settings
+from .config import ConfigurationError, Settings, canonicalize_origins
 from .errors import ErrorCode, PublicServiceError
 from .privacy import public_error, public_status
 from .request import MAX_REQUEST_BYTES, MemoryOnlyRequest, RequestValidationError
@@ -32,6 +31,9 @@ _CONTENT_SECURITY_POLICY = (
     "default-src 'self'; base-uri 'none'; object-src 'none'; "
     "frame-ancestors 'none'; form-action 'self'"
 )
+_CORS_METHODS = "GET, POST, OPTIONS"
+_CORS_HEADERS = "Authorization, Content-Type"
+_CORS_HEADER_NAMES = frozenset({"authorization", "content-type"})
 
 
 def create_app(
@@ -39,11 +41,25 @@ def create_app(
 ) -> Flask:
     """Create the versioned HTTP application with injected route services."""
     configured_settings = settings or Settings.from_current_environ()
-    if (
-        not configured_settings.allowed_web_origins
-        or any("*" in origin for origin in configured_settings.allowed_web_origins)
-    ):
-        raise ConfigurationError("wildcard CORS origins are forbidden")
+    if not isinstance(configured_settings.app_env, str):
+        raise ConfigurationError(
+            "APP_ENV must be development, testing, or production"
+        )
+    app_env = configured_settings.app_env.strip().casefold()
+    if app_env not in {"development", "testing", "production"}:
+        raise ConfigurationError(
+            "APP_ENV must be development, testing, or production"
+        )
+    canonical_origins = canonicalize_origins(
+        configured_settings.allowed_web_origins,
+        https_only=app_env == "production",
+    )
+    configured_settings = replace(
+        configured_settings,
+        app_env=app_env,
+        allowed_web_origins=canonical_origins,
+    )
+    allowed_origins = frozenset(canonical_origins)
     app = Flask(__name__)
     app.request_class = MemoryOnlyRequest
     app.config.from_mapping(
@@ -57,16 +73,6 @@ def create_app(
     if services is not None:
         app.extensions["resume_ai.services"] = services
 
-    CORS(
-        app,
-        origins=list(configured_settings.allowed_web_origins),
-        methods=["GET", "POST", "OPTIONS"],
-        allow_headers=["Authorization", "Content-Type"],
-        expose_headers=["X-Request-ID"],
-        supports_credentials=False,
-        vary_header=True,
-    )
-
     @app.before_request
     def assign_request_id() -> None:
         g.resume_ai_request_id = uuid4()
@@ -78,6 +84,31 @@ def create_app(
         response.headers["X-Request-ID"] = str(g.resume_ai_request_id)
         if request.path in {"/v1/analyses", "/v1/installations"}:
             response.headers["Cache-Control"] = "no-store"
+        request_origin = request.headers.get("Origin")
+        if request_origin is not None:
+            response.vary.add("Origin")
+        if request_origin in allowed_origins:
+            response.headers["Access-Control-Allow-Origin"] = request_origin
+            response.headers["Access-Control-Expose-Headers"] = "X-Request-ID"
+            if request.method == "OPTIONS":
+                requested_method = request.headers.get(
+                    "Access-Control-Request-Method"
+                )
+                if requested_method in {"GET", "POST", "OPTIONS"}:
+                    response.headers["Access-Control-Allow-Methods"] = _CORS_METHODS
+                requested_headers = request.headers.get(
+                    "Access-Control-Request-Headers"
+                )
+                if requested_headers:
+                    normalized_headers = {
+                        header.strip().casefold()
+                        for header in requested_headers.split(",")
+                        if header.strip()
+                    }
+                    if normalized_headers <= _CORS_HEADER_NAMES:
+                        response.headers["Access-Control-Allow-Headers"] = (
+                            _CORS_HEADERS
+                        )
         return response
 
     def content_free_failure(
