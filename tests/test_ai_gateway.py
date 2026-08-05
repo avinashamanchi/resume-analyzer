@@ -162,6 +162,22 @@ def test_duplicate_unknown_json_member_fails_closed():
     assert caught.value.__context__ is None
 
 
+def test_deeply_nested_json_fails_closed_without_retaining_provider_content():
+    marker = "sensitive-deep-provider-content"
+    content = '{"layer":' * 10_000 + json.dumps(marker) + "}" * 10_000
+    assert len(content.encode("utf-8")) < 300_000
+
+    with pytest.raises(PublicServiceError) as caught:
+        gateway(FakeGroqClient(content=content)).analyze("resume", None, 10.0)
+
+    public_error = caught.value
+    assert public_error.code is ErrorCode.INVALID_AI_RESPONSE
+    assert public_error.retryable is False
+    assert marker not in str(public_error)
+    assert marker not in repr(public_error)
+    assert public_error.__context__ is None
+
+
 def test_unlabeled_simulated_recruiter_comment_fails_closed():
     payload = feedback_fixture() | {
         "simulatedRecruiterComment": "A recruiter may want more outcome metrics."

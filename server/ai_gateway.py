@@ -76,7 +76,14 @@ def _validated_feedback(response: object) -> FeedbackV1 | None:
         if not isinstance(decoded, dict):
             return None
         return FeedbackV1.model_validate(decoded, strict=True)
-    except (AttributeError, IndexError, TypeError, ValueError, ValidationError):
+    except (
+        AttributeError,
+        IndexError,
+        RecursionError,
+        TypeError,
+        ValueError,
+        ValidationError,
+    ):
         return None
 
 
