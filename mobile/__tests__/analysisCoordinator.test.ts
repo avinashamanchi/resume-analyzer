@@ -989,6 +989,149 @@ describe('analysis startup and consent barriers', () => {
 });
 
 describe('quarantined native-picker cleanup recovery', () => {
+  it('accepts a cleanup obligation from a superseded but genuinely issued picker authority', async () => {
+    const cleanupAbandoned = jest.fn(async () => CLEAN);
+    const { coordinator } = harness({
+      tempFiles: {
+        cleanupAbandoned,
+        cleanupRequest: jest.fn(async () => CLEAN),
+      },
+    });
+    await coordinator.initialize();
+    const superseded = coordinator.commands.beginPdfPick(new AbortController().signal);
+    coordinator.commands.beginPdfPick(new AbortController().signal);
+
+    await failAbandonedPick(coordinator, superseded);
+
+    expect(coordinator.getState()).toMatchObject({
+      privacyReadiness: 'blocked',
+      cleanupPending: true,
+      error: { category: 'privacy' },
+    });
+    await expect(coordinator.commands.recoverPrivacyCleanup()).resolves.toBe(true);
+    expect(cleanupAbandoned).toHaveBeenCalledTimes(2);
+  });
+
+  it('ignores a fabricated picker authority without inventing a cleanup obligation', async () => {
+    const cleanupAbandoned = jest.fn(async () => CLEAN);
+    const { coordinator } = harness({
+      tempFiles: {
+        cleanupAbandoned,
+        cleanupRequest: jest.fn(async () => CLEAN),
+      },
+    });
+    await coordinator.initialize();
+
+    await failAbandonedPick(coordinator, Symbol('fabricated'));
+
+    expect(coordinator.getState()).toMatchObject({
+      privacyReadiness: 'ready',
+      cleanupPending: false,
+      error: null,
+    });
+    await expect(coordinator.commands.recoverPrivacyCleanup()).resolves.toBe(false);
+    expect(cleanupAbandoned).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps an abandoned obligation blocked after exact cleanup of a colliding picker lease', async () => {
+    const cleanupAbandoned = jest.fn()
+      .mockResolvedValueOnce(CLEAN)
+      .mockResolvedValueOnce({ attempted: 0, deleted: 0, failed: 0, refused: 1 });
+    const cleanupRequest = jest.fn(async () => CLEAN);
+    const { coordinator } = harness({
+      tempFiles: { cleanupAbandoned, cleanupRequest },
+    });
+    await coordinator.initialize();
+    await coordinator.commands.selectSource(leasedPdfSource(REQUEST_A, LEASE_A));
+    const abandoned = coordinator.commands.beginPdfPick(new AbortController().signal);
+    const collision = coordinator.commands.beginPdfPick(new AbortController().signal);
+    await failAbandonedPick(coordinator, abandoned);
+
+    await expect(coordinator.commands.completePdfPick(
+      collision,
+      leasedPdfSource(REQUEST_A, LEASE_B),
+    )).resolves.toEqual({ committed: false });
+
+    expect(cleanupRequest).toHaveBeenCalledWith(REQUEST_A, LEASE_B);
+    expect(cleanupRequest).not.toHaveBeenCalledWith(REQUEST_A, LEASE_A);
+    expect(coordinator.getState()).toMatchObject({
+      privacyReadiness: 'blocked',
+      cleanupPending: true,
+      error: { category: 'privacy' },
+    });
+    await expect(coordinator.commands.recoverPrivacyCleanup()).resolves.toBe(false);
+    expect(cleanupAbandoned).toHaveBeenCalledTimes(2);
+    expect(coordinator.getState().privacyReadiness).toBe('blocked');
+  });
+
+  it('accepts exact B cleanup refusal only while a different exact A lease remains authoritative', async () => {
+    const cleanupRequest = jest.fn(async (_requestId: string, lease: symbol) =>
+      lease === LEASE_B
+        ? { attempted: 0, deleted: 0, failed: 0, refused: 1 }
+        : CLEAN,
+    );
+    const { coordinator } = harness({
+      tempFiles: {
+        cleanupAbandoned: jest.fn(async () => CLEAN),
+        cleanupRequest,
+      },
+    });
+    await coordinator.initialize();
+    await coordinator.commands.selectSource(leasedPdfSource(REQUEST_A, LEASE_A));
+    const staleSignal = new AbortController();
+    const staleAuthority = coordinator.commands.beginPdfPick(staleSignal.signal);
+    staleSignal.abort();
+
+    await expect(coordinator.commands.completePdfPick(
+      staleAuthority,
+      leasedPdfSource(REQUEST_A, LEASE_B),
+    )).resolves.toEqual({ committed: false });
+
+    expect(cleanupRequest).toHaveBeenCalledTimes(1);
+    expect(cleanupRequest).toHaveBeenCalledWith(REQUEST_A, LEASE_B);
+    expect(coordinator.getState()).toMatchObject({
+      privacyReadiness: 'ready',
+      cleanupPending: false,
+      source: { kind: 'pdf', requestId: REQUEST_A, lease: LEASE_A },
+    });
+  });
+
+  it('blocks a delayed B cleanup refusal after the different A claim has released', async () => {
+    const cleanupB = deferred<CleanupReceipt>();
+    const cleanupRequest = jest.fn((_requestId: string, lease: symbol) =>
+      lease === LEASE_B ? cleanupB.promise : Promise.resolve(CLEAN),
+    );
+    const { coordinator } = harness({
+      tempFiles: {
+        cleanupAbandoned: jest.fn(async () => CLEAN),
+        cleanupRequest,
+      },
+    });
+    await coordinator.initialize();
+    await coordinator.commands.selectSource(leasedPdfSource(REQUEST_A, LEASE_A));
+    const staleSignal = new AbortController();
+    const staleAuthority = coordinator.commands.beginPdfPick(staleSignal.signal);
+    staleSignal.abort();
+    const collision = coordinator.commands.completePdfPick(
+      staleAuthority,
+      leasedPdfSource(REQUEST_A, LEASE_B),
+    );
+    await flushPromises();
+    expect(cleanupRequest).toHaveBeenCalledWith(REQUEST_A, LEASE_B);
+
+    await coordinator.commands.reset();
+    expect(cleanupRequest).toHaveBeenCalledWith(REQUEST_A, LEASE_A);
+    cleanupB.resolve({ attempted: 0, deleted: 0, failed: 0, refused: 1 });
+    await expect(collision).resolves.toEqual({ committed: false });
+
+    expect(coordinator.getState()).toMatchObject({
+      privacyReadiness: 'blocked',
+      cleanupPending: true,
+      source: null,
+      error: { category: 'privacy' },
+    });
+  });
+
   it('keeps an abandoned obligation blocked across reset, lifecycle return, picks, and text selection', async () => {
     const cleanupAbandoned = jest.fn(async () => CLEAN);
     const { coordinator, tempFiles } = harness({

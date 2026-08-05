@@ -251,6 +251,193 @@ describe('native picker operation authority', () => {
     await harness.close();
   });
 
+  it('exact-lease cleans B when B stages before same-request A ownership completes', async () => {
+    const inspectionA = deferred<{
+      requestId: string;
+      uri: string;
+      lease: symbol;
+      exists: boolean;
+      size: number;
+    }>();
+    const pendingB = deferred<PickedPdfForDisplay | null>();
+    const cleanupB = deferred<typeof CLEAN>();
+    const cleanupRequest = jest.fn((_requestId: string, lease: symbol) =>
+      lease === LEASE_B ? cleanupB.promise : Promise.resolve(CLEAN),
+    );
+    const inspectOwnedFileUri = jest.fn((uri: string, requestId: string, lease: symbol) =>
+      lease === LEASE_A
+        ? inspectionA.promise
+        : Promise.resolve({ requestId, uri, lease, exists: true, size: 100 }),
+    );
+    const harness = await controllerHarness({
+      pickPdfForDisplay: jest.fn()
+        .mockResolvedValueOnce(PDF_A)
+        .mockImplementationOnce(() => pendingB.promise),
+      cleanupRequest,
+      inspectOwnedFileUri,
+    });
+    const pickA = harness.value.actions.pickPdfForDisplay(new AbortController().signal);
+    await waitFor(() => expect(inspectOwnedFileUri).toHaveBeenCalledWith(
+      PDF_A.source.uri,
+      REQUEST_A,
+      LEASE_A,
+    ));
+    const pickB = harness.value.actions.pickPdfForDisplay(new AbortController().signal);
+
+    pendingB.resolve(PDF_B_COLLISION);
+    inspectionA.resolve({
+      requestId: REQUEST_A,
+      uri: PDF_A.source.uri,
+      lease: LEASE_A,
+      exists: true,
+      size: 100,
+    });
+
+    await expect(pickA).resolves.toBeNull();
+    let pickBSettled = false;
+    void pickB.finally(() => { pickBSettled = true; });
+    await waitFor(() => expect(cleanupRequest).toHaveBeenCalledWith(REQUEST_A, LEASE_B));
+    expect(pickBSettled).toBe(false);
+    cleanupB.resolve(CLEAN);
+    await expect(pickB).resolves.toBeNull();
+    expect(cleanupRequest.mock.calls).toEqual(expect.arrayContaining([
+      [REQUEST_A, LEASE_A],
+      [REQUEST_A, LEASE_B],
+    ]));
+    expect(cleanupRequest).toHaveBeenCalledTimes(2);
+    expect(harness.coordinator.getState()).toMatchObject({
+      source: null,
+      cleanupPending: false,
+    });
+
+    const publicBoundary = JSON.stringify({
+      pickA: await pickA,
+      pickB: await pickB,
+      state: harness.coordinator.getState(),
+    });
+    for (const privateValue of [
+      REQUEST_A,
+      PDF_A.source.uri,
+      'Private A.pdf',
+      'Private B.pdf',
+      'lease-a',
+      'lease-b',
+      'private inspection cause',
+    ]) expect(publicBoundary).not.toContain(privateValue);
+    await harness.close();
+  });
+
+  it.each(['refusal', 'failure', 'timeout'] as const)(
+    'blocks privacy when same-request B exact cleanup ends in %s after A releases',
+    async cleanupOutcome => {
+      const inspectionA = deferred<{
+        requestId: string;
+        uri: string;
+        lease: symbol;
+        exists: boolean;
+        size: number;
+      }>();
+      const pendingB = deferred<PickedPdfForDisplay | null>();
+      const cleanupRequest = jest.fn((_requestId: string, lease: symbol) => {
+        if (lease === LEASE_A) return Promise.resolve(CLEAN);
+        if (cleanupOutcome === 'refusal') {
+          return Promise.resolve({ attempted: 0, deleted: 0, failed: 0, refused: 1 });
+        }
+        if (cleanupOutcome === 'failure') {
+          return Promise.resolve({ attempted: 1, deleted: 0, failed: 1, refused: 0 });
+        }
+        return new Promise<never>(() => undefined);
+      });
+      const inspectOwnedFileUri = jest.fn((uri: string, requestId: string, lease: symbol) =>
+        lease === LEASE_A
+          ? inspectionA.promise
+          : Promise.resolve({ requestId, uri, lease, exists: true, size: 100 }),
+      );
+      const harness = await controllerHarness({
+        pickPdfForDisplay: jest.fn()
+          .mockResolvedValueOnce(PDF_A)
+          .mockImplementationOnce(() => pendingB.promise),
+        cleanupRequest,
+        cleanupTimeoutMs: 20,
+        inspectOwnedFileUri,
+      });
+      const pickA = harness.value.actions.pickPdfForDisplay(new AbortController().signal);
+      await waitFor(() => expect(inspectOwnedFileUri).toHaveBeenCalledTimes(1));
+      const pickB = harness.value.actions.pickPdfForDisplay(new AbortController().signal);
+      pendingB.resolve(PDF_B_COLLISION);
+      inspectionA.resolve({
+        requestId: REQUEST_A,
+        uri: PDF_A.source.uri,
+        lease: LEASE_A,
+        exists: true,
+        size: 100,
+      });
+
+      await expect(pickB).resolves.toBeNull();
+      await expect(pickA).resolves.toBeNull();
+      expect(cleanupRequest).toHaveBeenCalledWith(REQUEST_A, LEASE_A);
+      expect(cleanupRequest).toHaveBeenCalledWith(REQUEST_A, LEASE_B);
+      expect(harness.coordinator.getState()).toMatchObject({
+        status: 'failed',
+        privacyReadiness: 'blocked',
+        source: null,
+        cleanupPending: true,
+        error: {
+          category: 'privacy',
+          message: 'Temporary resume data could not be removed safely.',
+          retryable: false,
+        },
+      });
+      await harness.close();
+    },
+  );
+
+  it('allows same-request B to commit once when A fully releases before B adoption starts', async () => {
+    const inspectionA = deferred<{
+      requestId: string;
+      uri: string;
+      lease: symbol;
+      exists: boolean;
+      size: number;
+    }>();
+    const pendingB = deferred<PickedPdfForDisplay | null>();
+    const harness = await controllerHarness({
+      pickPdfForDisplay: jest.fn()
+        .mockResolvedValueOnce(PDF_A)
+        .mockImplementationOnce(() => pendingB.promise),
+      inspectOwnedFileUri: jest.fn((uri: string, requestId: string, lease: symbol) =>
+        lease === LEASE_A
+          ? inspectionA.promise
+          : Promise.resolve({ requestId, uri, lease, exists: true, size: 100 }),
+      ),
+    });
+    const pickA = harness.value.actions.pickPdfForDisplay(new AbortController().signal);
+    await waitFor(() => expect(harness.coordinator.getState().mutation).toBe('selecting'));
+    const pickB = harness.value.actions.pickPdfForDisplay(new AbortController().signal);
+    inspectionA.resolve({
+      requestId: REQUEST_A,
+      uri: PDF_A.source.uri,
+      lease: LEASE_A,
+      exists: true,
+      size: 100,
+    });
+    await expect(pickA).resolves.toBeNull();
+
+    pendingB.resolve(PDF_B_COLLISION);
+
+    await expect(pickB).resolves.toMatchObject({
+      sourceIdentity: LEASE_B,
+      displayName: 'Private B.pdf',
+    });
+    expect(harness.cleanupRequest).toHaveBeenCalledWith(REQUEST_A, LEASE_A);
+    expect(harness.cleanupRequest).not.toHaveBeenCalledWith(REQUEST_A, LEASE_B);
+    expect(harness.coordinator.getState().source).toMatchObject({
+      requestId: REQUEST_A,
+      lease: LEASE_B,
+    });
+    await harness.close();
+  });
+
   it('a stale colliding request cleans only its old lease and cannot revoke the latest lease', async () => {
     const pendingA = deferred<PickedPdfForDisplay | null>();
     const pickPdfForDisplay = jest.fn()

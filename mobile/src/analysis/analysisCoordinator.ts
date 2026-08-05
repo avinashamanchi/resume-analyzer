@@ -453,6 +453,13 @@ export class AnalysisCoordinator {
       this.ownedPdfRequestIds.has(claim.requestId);
   }
 
+  private isPdfClaimProvenStale(claim: PdfClaim): boolean {
+    const current = this.pdfClaims.get(claim.requestId);
+    return current !== undefined &&
+      current.lease !== claim.lease &&
+      this.isPdfClaimCurrent(current);
+  }
+
   private prepareIncomingSource(
     source: unknown,
     purpose: 'adopt' | 'discard' = 'adopt',
@@ -583,19 +590,29 @@ export class AnalysisCoordinator {
       return { committed: false };
     }
     if (!this.pdfPickIsCurrent(authority)) {
-      const discarded = this.prepareIncomingSource(source, 'discard');
-      if (discarded.claim !== null && discarded.newlyClaimed) {
-        const cleaned = await this.cleanupClaim(discarded.claim);
-        if (!cleaned) {
-          this.pickerCleanupFailures.set(discarded.claim.lease, discarded.claim);
-          this.blockPrivacy();
-        }
-      }
+      await this.discardPdfPickSource(source);
       return { committed: false };
     }
-    const receipt = await this.selectSource(source);
+    const prepared = this.prepareIncomingSource(source);
+    const receipt = await this.selectPreparedSource(source, prepared);
     if (this.pendingPdfPick?.authority === authority) this.releasePendingPdfPick();
-    return receipt;
+    if (receipt.committed && receipt.sourceIdentity === source.lease) return receipt;
+    if (prepared.claim === null) await this.discardPdfPickSource(source);
+    return { committed: false };
+  }
+
+  private async discardPdfPickSource(source: PdfSource): Promise<void> {
+    const discarded = this.prepareIncomingSource(source, 'discard');
+    if (discarded.claim === null || !discarded.newlyClaimed) {
+      this.abandonedCleanupRequired = true;
+      this.blockPrivacy();
+      return;
+    }
+    const cleaned = await this.cleanupClaim(discarded.claim);
+    if (!cleaned) {
+      this.pickerCleanupFailures.set(discarded.claim.lease, discarded.claim);
+      this.blockPrivacy();
+    }
   }
 
   private async failPdfPick(
@@ -713,6 +730,13 @@ export class AnalysisCoordinator {
 
   private async selectSource(input: ResumeSource): Promise<SourceSelectionReceipt> {
     const prepared = this.prepareIncomingSource(input);
+    return this.selectPreparedSource(input, prepared);
+  }
+
+  private async selectPreparedSource(
+    input: ResumeSource,
+    prepared: PreparedSource,
+  ): Promise<SourceSelectionReceipt> {
     const isPdfAttempt = input !== null && typeof input === 'object' && input.kind === 'pdf';
     if (isPdfAttempt && this.state.privacyReadiness !== 'ready') {
       await this.rejectPdfBeforePrivacyReady(prepared);
@@ -1373,7 +1397,7 @@ export class AnalysisCoordinator {
     try {
       const receipt = await this.boundedCleanup(() =>
         this.tempFiles.cleanupRequest(claim.requestId, claim.lease));
-      if (isStaleLeaseReceipt(receipt) && !this.isPdfClaimCurrent(claim)) {
+      if (isStaleLeaseReceipt(receipt) && this.isPdfClaimProvenStale(claim)) {
         this.cleanupFailures.delete(claim.lease);
         return true;
       }
