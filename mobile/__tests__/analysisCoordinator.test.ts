@@ -1096,6 +1096,91 @@ describe('quarantined native-picker cleanup recovery', () => {
     });
   });
 
+  it('recovers a failed colliding B when retry proves B stale under current A', async () => {
+    const cleanupRequest = jest.fn()
+      .mockResolvedValueOnce({ attempted: 1, deleted: 0, failed: 1, refused: 0 })
+      .mockResolvedValueOnce({ attempted: 0, deleted: 0, failed: 0, refused: 1 });
+    const { coordinator } = harness({
+      tempFiles: {
+        cleanupAbandoned: jest.fn(async () => CLEAN),
+        cleanupRequest,
+      },
+    });
+    await coordinator.initialize();
+    await coordinator.commands.selectSource(leasedPdfSource(REQUEST_A, LEASE_A));
+    const staleSignal = new AbortController();
+    const staleAuthority = coordinator.commands.beginPdfPick(staleSignal.signal);
+    staleSignal.abort();
+    await coordinator.commands.completePdfPick(
+      staleAuthority,
+      leasedPdfSource(REQUEST_A, LEASE_B),
+    );
+    expect(coordinator.getState().privacyReadiness).toBe('blocked');
+
+    await expect(coordinator.commands.recoverPrivacyCleanup()).resolves.toBe(true);
+
+    expect(cleanupRequest.mock.calls).toEqual([
+      [REQUEST_A, LEASE_B],
+      [REQUEST_A, LEASE_B],
+    ]);
+    expect(coordinator.getState()).toMatchObject({
+      status: 'ready',
+      privacyReadiness: 'ready',
+      cleanupPending: false,
+      source: { kind: 'pdf', requestId: REQUEST_A, lease: LEASE_A },
+      error: null,
+    });
+  });
+
+  it('keeps unproven B refusal blocked without touching current A or B claims', async () => {
+    const cleanupRequest = jest.fn()
+      .mockResolvedValueOnce({ attempted: 1, deleted: 0, failed: 1, refused: 0 })
+      .mockResolvedValueOnce({ attempted: 0, deleted: 0, failed: 0, refused: 1 })
+      .mockResolvedValueOnce(CLEAN);
+    const { coordinator } = harness({
+      tempFiles: {
+        cleanupAbandoned: jest.fn(async () => CLEAN),
+        cleanupRequest,
+      },
+    });
+    await coordinator.initialize();
+    await coordinator.commands.selectSource(leasedPdfSource(REQUEST_A, LEASE_A));
+    const staleSignal = new AbortController();
+    const staleAuthority = coordinator.commands.beginPdfPick(staleSignal.signal);
+    staleSignal.abort();
+    await coordinator.commands.completePdfPick(
+      staleAuthority,
+      leasedPdfSource(REQUEST_B, LEASE_B),
+    );
+
+    await expect(coordinator.commands.recoverPrivacyCleanup()).resolves.toBe(false);
+
+    expect(cleanupRequest.mock.calls).toEqual([
+      [REQUEST_B, LEASE_B],
+      [REQUEST_B, LEASE_B],
+    ]);
+    expect(coordinator.getState()).toMatchObject({
+      privacyReadiness: 'blocked',
+      cleanupPending: true,
+      source: { kind: 'pdf', requestId: REQUEST_A, lease: LEASE_A },
+      error: { category: 'privacy' },
+    });
+
+    await expect(coordinator.commands.recoverPrivacyCleanup()).resolves.toBe(true);
+    expect(cleanupRequest.mock.calls).toEqual([
+      [REQUEST_B, LEASE_B],
+      [REQUEST_B, LEASE_B],
+      [REQUEST_B, LEASE_B],
+    ]);
+    expect(coordinator.getState()).toMatchObject({
+      status: 'ready',
+      privacyReadiness: 'ready',
+      cleanupPending: false,
+      source: { kind: 'pdf', requestId: REQUEST_A, lease: LEASE_A },
+      error: null,
+    });
+  });
+
   it('blocks a delayed B cleanup refusal after the different A claim has released', async () => {
     const cleanupB = deferred<CleanupReceipt>();
     const cleanupRequest = jest.fn((_requestId: string, lease: symbol) =>

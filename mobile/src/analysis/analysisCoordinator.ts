@@ -1399,6 +1399,7 @@ export class AnalysisCoordinator {
         this.tempFiles.cleanupRequest(claim.requestId, claim.lease));
       if (isStaleLeaseReceipt(receipt) && this.isPdfClaimProvenStale(claim)) {
         this.cleanupFailures.delete(claim.lease);
+        this.pickerCleanupFailures.delete(claim.lease);
         return true;
       }
       if (!isVerifiedCleanupReceipt(receipt)) {
