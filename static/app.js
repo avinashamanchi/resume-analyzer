@@ -128,7 +128,6 @@ async function issueInstallation(owner) {
   if (!lifecycle.owns(owner)) return null;
   if (response.status !== 201) throw new Error(stableError(data, "A temporary browser token could not be issued. Try again later."));
   const installation = validateInstallationResponse(data);
-  if (!lifecycle.owns(owner)) return null;
   saveToken(installation.installationToken);
   return installation.installationToken;
 }
@@ -209,7 +208,6 @@ async function submitAnalysis(event) {
       throw new Error(stableError(data, "The review could not be completed. You may submit again when ready."));
     }
     const analysis = validateAnalysisResponse(data, payload.context);
-    if (!lifecycle.owns(owner)) return;
     lifecycle.applyIfCurrent(owner, () => renderReport(analysis));
   } catch (error) {
     if (!lifecycle.owns(owner)) return;

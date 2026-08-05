@@ -66,6 +66,21 @@ test("uses audited Unicode casefold equivalence when rejecting keyword overlap",
   finalSigma.feedback.matchedKeywords = ["ΟΣ"];
   finalSigma.feedback.missingKeywords = ["οσ"];
   assert.throws(() => contract.validateAnalysisResponse(finalSigma, { hasJobDescription: true }));
+
+  const cyrillicCasefold = copy(fixture);
+  cyrillicCasefold.feedback.matchedKeywords = ["ᲀ"];
+  cyrillicCasefold.feedback.missingKeywords = ["в"];
+  assert.throws(() => contract.validateAnalysisResponse(cyrillicCasefold, { hasJobDescription: true }));
+
+  const compatibilityExpansion = copy(fixture);
+  compatibilityExpansion.feedback.matchedKeywords = ["ﬃ"];
+  compatibilityExpansion.feedback.missingKeywords = ["FFI"];
+  assert.throws(() => contract.validateAnalysisResponse(compatibilityExpansion, { hasJobDescription: true }));
+
+  const distinct = copy(fixture);
+  distinct.feedback.matchedKeywords = ["Straße"];
+  distinct.feedback.missingKeywords = ["STRASSE X"];
+  assert.deepEqual(contract.validateAnalysisResponse(distinct, { hasJobDescription: true }), distinct);
 });
 
 test("validates installation and public error contracts fail closed", () => {

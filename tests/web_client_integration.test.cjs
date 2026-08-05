@@ -51,7 +51,7 @@ class TestFormData {
 
 function response(status, body) { return { status, json: () => body }; }
 
-function boot({ sessionToken = null } = {}) {
+function boot({ sessionToken = null, invalidateOnStorageWrite = false } = {}) {
   const elements = new Map();
   const add = (selector, element = new Element()) => { elements.set(selector, element); return element; };
   const form = add("#analysis-form", new Element());
@@ -74,10 +74,16 @@ function boot({ sessionToken = null } = {}) {
     if (!step) throw new Error("Unexpected fetch");
     return step;
   };
+  const validatorCalls = { installation: 0, analysis: 0, error: 0 };
+  const contractSpy = {
+    validateAnalysisResponse(...arguments_) { validatorCalls.analysis += 1; return contract.validateAnalysisResponse(...arguments_); },
+    validateInstallationResponse(...arguments_) { validatorCalls.installation += 1; return contract.validateInstallationResponse(...arguments_); },
+    validatePublicError(...arguments_) { validatorCalls.error += 1; return contract.validatePublicError(...arguments_); }
+  };
   const context = {
     AbortController,
     FormData: TestFormData,
-    ResumeAIContract: contract,
+    ResumeAIContract: contractSpy,
     ResumeAILifecycle: lifecycle,
     crypto: { randomUUID: () => "8ec8a3bc-7a15-4b75-9f94-a5353a2a2f9b" },
     document: {
@@ -87,7 +93,14 @@ function boot({ sessionToken = null } = {}) {
     },
     fetch,
     queueMicrotask: (callback) => callback(),
-    sessionStorage: { getItem: (key) => storage.get(key) || null, setItem: (key, value) => storage.set(key, value), removeItem: (key) => storage.delete(key) },
+    sessionStorage: {
+      getItem: (key) => storage.get(key) || null,
+      setItem: (key, value) => {
+        storage.set(key, value);
+        if (invalidateOnStorageWrite) textInput.dispatch("input");
+      },
+      removeItem: (key) => storage.delete(key)
+    },
     window: { addEventListener: (type, listener) => windowListeners.set(type, listener) }
   };
   context.globalThis = context;
@@ -98,7 +111,7 @@ function boot({ sessionToken = null } = {}) {
   consent.checked = true;
   return {
     form, textInput, jobDescription, error: elements.get("#form-error"), report: elements.get("#report"), status: elements.get("#request-status"), analyze: elements.get("#analyze-button"), cancel: elements.get("#cancel-button"),
-    enqueue: (step) => fetchSteps.push(step), fetchCalls, storage,
+    enqueue: (step) => fetchSteps.push(step), fetchCalls, storage, validatorCalls,
     pagehide: () => windowListeners.get("pagehide")(),
     reset: () => form.dispatch("reset")
   };
@@ -121,6 +134,86 @@ test("actual app wiring prevents a stale installation JSON body from storing a t
 
   assert.equal(app.storage.has("resume-ai.installation-token.v1"), false);
   assert.equal(app.fetchCalls.length, 1);
+  assert.equal(app.report.hidden, true);
+  assert.equal(app.error.hidden, true);
+});
+
+test("actual app guard after installation fetch skips response JSON when ownership is invalidated", async () => {
+  const app = boot();
+  const installationFetch = deferred();
+  let jsonCalls = 0;
+  app.enqueue(installationFetch.promise);
+  app.form.dispatch("submit");
+  await ticks();
+  installationFetch.resolve({ status: 201, json: () => { jsonCalls += 1; return Promise.resolve({ schemaVersion: 1, installationToken: "token" }); } });
+  app.textInput.dispatch("input");
+  await ticks();
+
+  assert.equal(jsonCalls, 0);
+  assert.equal(app.validatorCalls.installation, 0);
+  assert.equal(app.storage.has("resume-ai.installation-token.v1"), false);
+  assert.equal(app.fetchCalls.length, 1);
+});
+
+test("actual app guard after installation JSON skips validation, storage, and analysis when ownership is invalidated", async () => {
+  const app = boot();
+  const installationJson = deferred();
+  let jsonCalls = 0;
+  app.enqueue(Promise.resolve({ status: 201, json: () => { jsonCalls += 1; return installationJson.promise; } }));
+  app.form.dispatch("submit");
+  await ticks();
+  assert.equal(jsonCalls, 1);
+  app.textInput.dispatch("input");
+  installationJson.resolve({ schemaVersion: 1, installationToken: "token" });
+  await ticks();
+
+  assert.equal(app.validatorCalls.installation, 0);
+  assert.equal(app.storage.has("resume-ai.installation-token.v1"), false);
+  assert.equal(app.fetchCalls.length, 1);
+});
+
+test("actual app guard after installationToken await skips analysis after a storage-triggered invalidation", async () => {
+  const app = boot({ invalidateOnStorageWrite: true });
+  app.enqueue(Promise.resolve(response(201, Promise.resolve({ schemaVersion: 1, installationToken: "token" }))));
+  app.form.dispatch("submit");
+  await ticks();
+
+  assert.equal(app.validatorCalls.installation, 1);
+  assert.equal(app.storage.get("resume-ai.installation-token.v1"), "token");
+  assert.equal(app.fetchCalls.length, 1);
+});
+
+test("actual app guard after analysis fetch skips response JSON when ownership is invalidated", async () => {
+  const app = boot({ sessionToken: "session-token" });
+  const analysisFetch = deferred();
+  let jsonCalls = 0;
+  app.enqueue(analysisFetch.promise);
+  app.form.dispatch("submit");
+  await ticks();
+  analysisFetch.resolve({ status: 200, json: () => { jsonCalls += 1; return Promise.resolve(copy(fixture)); } });
+  app.textInput.dispatch("input");
+  await ticks();
+
+  assert.equal(jsonCalls, 0);
+  assert.equal(app.validatorCalls.analysis, 0);
+  assert.equal(app.report.hidden, true);
+  assert.equal(app.error.hidden, true);
+});
+
+test("actual app guard after analysis JSON skips validation, rendering, and stale errors when ownership is invalidated", async () => {
+  const app = boot({ sessionToken: "session-token" });
+  const analysisJson = deferred();
+  let jsonCalls = 0;
+  app.enqueue(Promise.resolve({ status: 500, json: () => { jsonCalls += 1; return analysisJson.promise; } }));
+  app.form.dispatch("submit");
+  await ticks();
+  assert.equal(jsonCalls, 1);
+  app.textInput.dispatch("input");
+  analysisJson.resolve({ schemaVersion: 1, code: "ai_unavailable", message: "Unavailable", requestId: fixture.analysisId, retryable: true });
+  await ticks();
+
+  assert.equal(app.validatorCalls.analysis, 0);
+  assert.equal(app.validatorCalls.error, 0);
   assert.equal(app.report.hidden, true);
   assert.equal(app.error.hidden, true);
 });

@@ -1,10 +1,13 @@
 "use strict";
 
 (function exposeContract(root, factory) {
-  const api = factory();
+  const unicodeCasefold = typeof module === "object" && module.exports
+    ? require("./unicode_casefold.js")
+    : root && root.ResumeAIUnicodeCasefold;
+  const api = factory(unicodeCasefold);
   if (typeof module === "object" && module.exports) module.exports = api;
   if (root) root.ResumeAIContract = api;
-})(typeof globalThis === "object" ? globalThis : null, function createContract() {
+})(typeof globalThis === "object" ? globalThis : null, function createContract(unicodeCasefold) {
   const ERROR_CODES = new Set([
     "invalid_request", "invalid_installation", "rate_limited", "request_in_progress",
     "unsupported_file", "file_too_large", "pdf_too_many_pages", "pdf_encrypted",
@@ -14,17 +17,6 @@
   ]);
   const SOURCE_TYPES = new Set(["pdf", "text", "vision_text"]);
   const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
-  const CASEFOLD_EQUIVALENTS = Object.freeze({
-    "ß": "ss",
-    "ς": "σ",
-    "ϐ": "β",
-    "ϑ": "θ",
-    "ϕ": "φ",
-    "ϖ": "π",
-    "ϰ": "κ",
-    "ϱ": "ρ",
-    "ϵ": "ε"
-  });
 
   function invalid() { throw new Error("The service returned an invalid response."); }
   function plainObject(value) {
@@ -55,12 +47,23 @@
     if (!Array.isArray(value) || value.length < minimum || value.length > maximum) invalid();
     return value.map(item);
   }
+  function requireUnicodeCasefold() {
+    if (!unicodeCasefold || typeof unicodeCasefold.casefoldCharacter !== "function" || typeof unicodeCasefold.isPythonStripCharacter !== "function" || !Number.isInteger(unicodeCasefold.mappingCount) || unicodeCasefold.mappingCount < 1) invalid();
+  }
   function normalizedTerm(value) {
+    requireUnicodeCasefold();
+    const codePoints = Array.from(value.normalize("NFKC"));
+    let start = 0;
+    let end = codePoints.length;
+    while (start < end && unicodeCasefold.isPythonStripCharacter(codePoints[start])) start += 1;
+    while (end > start && unicodeCasefold.isPythonStripCharacter(codePoints[end - 1])) end -= 1;
     let folded = "";
-    for (const character of value.normalize("NFKC").trim().toLocaleLowerCase("und")) {
-      folded += CASEFOLD_EQUIVALENTS[character] || character;
+    for (const character of codePoints.slice(start, end)) {
+      const mapped = unicodeCasefold.casefoldCharacter(character);
+      if (typeof mapped !== "string") invalid();
+      folded += mapped;
     }
-    return folded.normalize("NFKC");
+    return folded;
   }
   function labelFor(score) {
     if (score < 50) return "Needs work";
@@ -94,6 +97,7 @@
   }
 
   function validateFeedback(value) {
+    requireUnicodeCasefold();
     exactKeys(value, ["matchedKeywords", "missingKeywords", "strengths", "improvements", "powerBullets", "summary", "simulatedRecruiterComment"]);
     const matchedKeywords = list(value.matchedKeywords, 0, 20, (item) => text(item, 1, 600));
     const missingKeywords = list(value.missingKeywords, 0, 20, (item) => text(item, 1, 600));
