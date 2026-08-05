@@ -162,20 +162,35 @@ def test_duplicate_unknown_json_member_fails_closed():
     assert caught.value.__context__ is None
 
 
-def test_deeply_nested_json_fails_closed_without_retaining_provider_content():
-    marker = "sensitive-deep-provider-content"
-    content = '{"layer":' * 10_000 + json.dumps(marker) + "}" * 10_000
+def test_deeply_nested_json_fails_closed_without_retaining_sensitive_content():
+    resume_marker = "sensitive-resume-input-marker"
+    job_marker = "sensitive-job-description-marker"
+    provider_marker = "sensitive-provider-response-marker"
+    content = (
+        '{"layer":' * 10_000 + json.dumps(provider_marker) + "}" * 10_000
+    )
     assert len(content.encode("utf-8")) < 300_000
 
     with pytest.raises(PublicServiceError) as caught:
-        gateway(FakeGroqClient(content=content)).analyze("resume", None, 10.0)
+        gateway(FakeGroqClient(content=content)).analyze(
+            resume_marker,
+            job_marker,
+            10.0,
+        )
 
     public_error = caught.value
     assert public_error.code is ErrorCode.INVALID_AI_RESPONSE
     assert public_error.retryable is False
-    assert marker not in str(public_error)
-    assert marker not in repr(public_error)
+    public_surfaces = (
+        str(public_error),
+        repr(public_error),
+        repr(public_error.__context__),
+        repr(public_error.__cause__),
+    )
+    for marker in (resume_marker, job_marker, provider_marker):
+        assert all(marker not in surface for surface in public_surfaces)
     assert public_error.__context__ is None
+    assert public_error.__cause__ is None
 
 
 def test_unlabeled_simulated_recruiter_comment_fails_closed():
