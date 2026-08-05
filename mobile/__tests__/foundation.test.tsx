@@ -4,6 +4,9 @@ import type { ReactNode } from 'react';
 import { TabsLayout } from '../app/(tabs)/_layout';
 import { tokens } from '../src/theme/tokens';
 
+const easConfig = require('../eas.json');
+const packageManifest = require('../package.json');
+
 jest.mock('expo-router', () => {
   const React = require('react');
   const { Pressable, View } = require('react-native');
@@ -43,5 +46,13 @@ describe('native foundation', () => {
     expect(tokens.color.icon).toMatch(/^#[0-9A-F]{6}$/);
     expect(tokens.color.danger).toMatch(/^#[0-9A-F]{6}$/);
     expect(tokens.color.warning).toMatch(/^#[0-9A-F]{6}$/);
+  });
+
+  it('pairs development builds with the native dev client and exact React test renderer', () => {
+    expect(easConfig.build.development.developmentClient).toBe(true);
+    expect(packageManifest.dependencies['expo-dev-client']).toBeDefined();
+    expect(packageManifest.devDependencies['react-test-renderer']).toBe(
+      packageManifest.dependencies.react,
+    );
   });
 });
