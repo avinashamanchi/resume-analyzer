@@ -96,3 +96,35 @@ $ git diff --check
 ## Concerns
 
 No known Task 1 defects. The application intentionally has no product routes yet; endpoint registration and concrete services are deferred to Task 6.
+
+## Fix Round 1
+
+### Changes
+
+- Made `ScoreComponentsV1.keywords` required while retaining `int | None`, so Pydantic now matches the canonical JSON Schema: omitted is invalid and explicit `null` remains valid.
+- Strengthened production Redis URL validation to require a `redis`/`rediss` scheme plus both a netloc and parsed hostname.
+- Added focused parity and hostless-Redis regression tests.
+
+### TDD evidence
+
+The exact Task 1 command first failed for both intended regressions:
+
+```text
+FAILED tests/test_config.py::test_production_rejects_hostless_redis_url - Failed: DID NOT RAISE <class 'server.config.ConfigurationError'>
+FAILED tests/test_contracts.py::test_analysis_contract_requires_keywords_but_allows_explicit_null - Failed: DID NOT RAISE <class 'pydantic_core._pydantic_core.ValidationError'>
+2 failed, 13 passed in 0.11s
+```
+
+After the minimal contract and URL-validation changes, the same command was GREEN:
+
+```text
+$ uv run pytest tests/test_config.py tests/test_contracts.py -q
+...............                                                          [100%]
+15 passed in 0.07s
+```
+
+### Self-review
+
+- The null regression changes the readiness score and label to 70/`Good`, so it proves explicit null acceptance without bypassing score-total or label consistency.
+- Hostless `redis://` and malformed authority-only Redis URLs are rejected without weakening the existing missing-Redis, scheme, CORS, deadline, debug, or secret checks.
+- `git diff --check` completed with exit 0 after the GREEN test run.

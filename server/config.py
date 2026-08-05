@@ -117,8 +117,13 @@ class Settings:
             )
         if not self.redis_url:
             raise ConfigurationError("REDIS_URL is required in production")
-        if urlsplit(self.redis_url).scheme not in {"redis", "rediss"}:
-            raise ConfigurationError("REDIS_URL must use redis or rediss")
+        parsed_redis_url = urlsplit(self.redis_url)
+        if (
+            parsed_redis_url.scheme not in {"redis", "rediss"}
+            or not parsed_redis_url.netloc
+            or not parsed_redis_url.hostname
+        ):
+            raise ConfigurationError("REDIS_URL must use redis or rediss with a host")
         if "*" in self.allowed_web_origins:
             raise ConfigurationError("wildcard CORS origins are forbidden in production")
         if any(urlsplit(origin).scheme != "https" for origin in self.allowed_web_origins):

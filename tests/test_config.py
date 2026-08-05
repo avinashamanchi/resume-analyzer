@@ -24,6 +24,11 @@ def test_production_rejects_missing_secrets():
         Settings.from_environ({"APP_ENV": "production"})
 
 
+def test_production_rejects_hostless_redis_url():
+    with pytest.raises(ConfigurationError, match="REDIS_URL"):
+        Settings.from_environ(production_environ(REDIS_URL="redis://"))
+
+
 @pytest.mark.parametrize(
     ("overrides", "message"),
     [

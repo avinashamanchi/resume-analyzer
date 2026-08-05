@@ -31,6 +31,23 @@ def test_analysis_contract_rejects_noncanonical_score_label():
         AnalysisResponseV1.model_validate(payload)
 
 
+def test_analysis_contract_requires_keywords_but_allows_explicit_null():
+    payload = fixture("analysis-valid.json")
+    payload["score"] = {
+        **payload["score"],
+        "readinessScore": 70,
+        "label": "Good",
+        "components": {**payload["score"]["components"]},
+    }
+    payload["score"]["components"].pop("keywords")
+
+    with pytest.raises(ValidationError, match="keywords"):
+        AnalysisResponseV1.model_validate(payload)
+
+    payload["score"]["components"]["keywords"] = None
+    assert AnalysisResponseV1.model_validate(payload).score.components.keywords is None
+
+
 def test_public_error_uses_a_stable_code_and_no_unknown_fields():
     error = PublicErrorV1(
         schemaVersion=1,

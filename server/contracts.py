@@ -27,7 +27,7 @@ class ScoreComponentsV1(StrictContract):
     structure: int = Field(ge=0, le=30)
     impact: int = Field(ge=0, le=40)
     readability: int = Field(ge=0, le=30)
-    keywords: int | None = Field(default=None, ge=0, le=25)
+    keywords: int | None = Field(ge=0, le=25)
 
 
 class ScoreV1(StrictContract):
