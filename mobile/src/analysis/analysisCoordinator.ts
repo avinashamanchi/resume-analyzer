@@ -37,6 +37,12 @@ export type AnalysisTempFilesPort = Readonly<{
 
 export type PdfOwnershipPort = Readonly<{
   assertOwnedFileUri(uri: unknown): { requestId: string; uri: string };
+  inspectOwnedFileUri(uri: unknown): Promise<{
+    requestId: string;
+    uri: string;
+    exists: boolean;
+    size: number;
+  }>;
 }>;
 
 export type AnalysisCoordinatorOptions = Readonly<{
@@ -75,10 +81,17 @@ type ConsentContinuation = Readonly<{
   sourceRevision: number;
 }>;
 
+type PdfClaim = Readonly<{
+  requestId: string;
+  uri: string;
+  epoch: number;
+}>;
+
 type PreparedSource = Readonly<{
   source: ResumeSource | null;
   claimedRequestId: string | null;
   newlyClaimed: boolean;
+  claim: PdfClaim | null;
 }>;
 
 type MutationContext = Readonly<{
@@ -204,7 +217,10 @@ export class AnalysisCoordinator {
   private disposal: Promise<void> | null = null;
   private mutationTail: Promise<void> = Promise.resolve();
   private mounted = true;
-  private committedPdfRequestId: string | null = null;
+  private nextPdfClaimEpoch = 0;
+  private committedPdfClaim: PdfClaim | null = null;
+  private readonly pdfClaims = new Map<string, PdfClaim>();
+  private readonly retiredPdfRequestIds = new Set<string>();
   private readonly ownedPdfRequestIds = new Set<string>();
   private readonly cleanupFailures = new Set<string>();
   private readonly cleanupOperations = new Map<string, Promise<boolean>>();
@@ -333,6 +349,15 @@ export class AnalysisCoordinator {
       this.state.mutation === 'none';
   }
 
+  private isPdfClaimCurrent(claim: PdfClaim): boolean {
+    const current = this.pdfClaims.get(claim.requestId);
+    return current !== undefined &&
+      current.epoch === claim.epoch &&
+      current.uri === claim.uri &&
+      !this.retiredPdfRequestIds.has(claim.requestId) &&
+      this.ownedPdfRequestIds.has(claim.requestId);
+  }
+
   private prepareIncomingSource(source: unknown): PreparedSource {
     if (source !== null && typeof source === 'object' && !Array.isArray(source)) {
       const candidate = source as Record<string, unknown>;
@@ -341,7 +366,7 @@ export class AnalysisCoordinator {
         try {
           asserted = this.pdfOwnership.assertOwnedFileUri(candidate.uri);
         } catch {
-          return { source: null, claimedRequestId: null, newlyClaimed: false };
+          return { source: null, claimedRequestId: null, newlyClaimed: false, claim: null };
         }
         if (
           asserted === null ||
@@ -349,14 +374,22 @@ export class AnalysisCoordinator {
           typeof asserted.requestId !== 'string' ||
           !REQUEST_ID_PATTERN.test(asserted.requestId) ||
           typeof asserted.uri !== 'string'
-        ) return { source: null, claimedRequestId: null, newlyClaimed: false };
+        ) return { source: null, claimedRequestId: null, newlyClaimed: false, claim: null };
 
-        const alreadyOwned = this.ownedPdfRequestIds.has(asserted.requestId);
-        if (alreadyOwned && asserted.requestId !== this.committedPdfRequestId) {
-          return { source: null, claimedRequestId: null, newlyClaimed: false };
+        if (
+          this.retiredPdfRequestIds.has(asserted.requestId) ||
+          this.ownedPdfRequestIds.has(asserted.requestId) ||
+          this.cleanupOperations.has(asserted.requestId)
+        ) {
+          return { source: null, claimedRequestId: null, newlyClaimed: false, claim: null };
         }
-        const newlyClaimed = !alreadyOwned;
+        const claim = Object.freeze({
+          requestId: asserted.requestId,
+          uri: asserted.uri,
+          epoch: ++this.nextPdfClaimEpoch,
+        });
         this.ownedPdfRequestIds.add(asserted.requestId);
+        this.pdfClaims.set(asserted.requestId, claim);
         const sizeIsValid = typeof candidate.size === 'number' &&
           Number.isSafeInteger(candidate.size) &&
           candidate.size > 0 &&
@@ -365,7 +398,12 @@ export class AnalysisCoordinator {
           candidate.requestId !== asserted.requestId ||
           !sizeIsValid
         ) {
-          return { source: null, claimedRequestId: asserted.requestId, newlyClaimed };
+          return {
+            source: null,
+            claimedRequestId: asserted.requestId,
+            newlyClaimed: true,
+            claim,
+          };
         }
         return {
           source: Object.freeze({
@@ -375,7 +413,8 @@ export class AnalysisCoordinator {
             size: candidate.size as number,
           }),
           claimedRequestId: asserted.requestId,
-          newlyClaimed,
+          newlyClaimed: true,
+          claim,
         };
       }
     }
@@ -383,16 +422,43 @@ export class AnalysisCoordinator {
       source: snapshotNonPdfSource(source),
       claimedRequestId: null,
       newlyClaimed: false,
+      claim: null,
     };
+  }
+
+  private async verifyLivePdfClaim(source: ResumeSource, claim: PdfClaim | null): Promise<boolean> {
+    if (source.kind !== 'pdf' || claim === null || !this.isPdfClaimCurrent(claim)) return false;
+    let inspected: Awaited<ReturnType<PdfOwnershipPort['inspectOwnedFileUri']>>;
+    try {
+      inspected = await this.pdfOwnership.inspectOwnedFileUri(claim.uri);
+    } catch {
+      return false;
+    }
+    return this.isPdfClaimCurrent(claim) &&
+      inspected !== null &&
+      typeof inspected === 'object' &&
+      inspected.requestId === claim.requestId &&
+      inspected.uri === claim.uri &&
+      inspected.exists === true &&
+      inspected.size === source.size;
+  }
+
+  private rejectPdfBeforePrivacyReady(prepared: PreparedSource): Promise<void> {
+    if (prepared.claimedRequestId === null || !prepared.newlyClaimed) return Promise.resolve();
+    return this.cleanupRequest(prepared.claimedRequestId).then(clean => {
+      if (!clean && this.mounted && this.state.privacyReadiness === 'checking') {
+        this.dispatch({ type: 'initializationFailed', error: privacyError() });
+      }
+    });
   }
 
   private selectSource(input: ResumeSource): Promise<void> {
     const prepared = this.prepareIncomingSource(input);
-    if (this.state.privacyReadiness === 'blocked') {
-      return prepared.claimedRequestId !== null && prepared.newlyClaimed
-        ? this.cleanupRequest(prepared.claimedRequestId).then(() => undefined)
-        : Promise.resolve();
+    const isPdfAttempt = input !== null && typeof input === 'object' && input.kind === 'pdf';
+    if (isPdfAttempt && this.state.privacyReadiness !== 'ready') {
+      return this.rejectPdfBeforePrivacyReady(prepared);
     }
+    if (this.state.privacyReadiness === 'blocked') return Promise.resolve();
     if (!this.mounted) {
       return prepared.claimedRequestId !== null && prepared.newlyClaimed
         ? this.cleanupRequest(prepared.claimedRequestId).then(() => undefined)
@@ -418,7 +484,7 @@ export class AnalysisCoordinator {
         await initialization;
         if (!this.isCurrentMutation(generation) || this.state.privacyReadiness !== 'ready') return;
 
-        const unrelatedClean = await this.cleanupUncommitted(prepared.claimedRequestId);
+        const unrelatedClean = await this.cleanupUncommitted(prepared.claim);
         if (!this.isCurrentMutation(generation)) return;
         if (!unrelatedClean) {
           const incomingClean = await releaseIncoming();
@@ -435,10 +501,7 @@ export class AnalysisCoordinator {
         }
 
         let previousConsumed = false;
-        const reselectsSamePdf = prepared.source?.kind === 'pdf' &&
-          previousSource?.kind === 'pdf' &&
-          prepared.source.requestId === previousSource.requestId;
-        if (previousSource?.kind === 'pdf' && !reselectsSamePdf) {
+        if (previousSource?.kind === 'pdf') {
           previousConsumed = await this.cleanupRequest(previousSource.requestId);
           if (!this.isCurrentMutation(generation)) return;
           if (!previousConsumed) {
@@ -469,12 +532,32 @@ export class AnalysisCoordinator {
           return;
         }
 
-        if (!this.isCurrentMutation(generation)) return;
+        if (
+          prepared.source.kind === 'pdf' &&
+          !(await this.verifyLivePdfClaim(prepared.source, prepared.claim))
+        ) {
+          const incomingClean = await releaseIncoming();
+          if (!this.isCurrentMutation(generation)) return;
+          this.dispatch({
+            type: 'analysisFailed',
+            generation,
+            error: incomingClean ? validationError() : privacyError(),
+            consumeSource: previousSource?.kind !== 'pdf' || previousConsumed,
+            cleanupPending: !incomingClean || this.cleanupFailures.size > 0,
+          });
+          return;
+        }
+
+        if (
+          !this.isCurrentMutation(generation) ||
+          (prepared.source.kind === 'pdf' &&
+            (prepared.claim === null || !this.isPdfClaimCurrent(prepared.claim)))
+        ) return;
         committed = true;
         if (prepared.source.kind === 'pdf') {
-          this.committedPdfRequestId = prepared.source.requestId;
+          this.committedPdfClaim = prepared.claim;
         } else {
-          this.committedPdfRequestId = null;
+          this.committedPdfClaim = null;
         }
         this.dispatch({ type: 'sourceReady', generation, source: prepared.source });
       } finally {
@@ -874,7 +957,7 @@ export class AnalysisCoordinator {
         this.dispatchPrivacyFailure(generation, false);
         return;
       }
-      this.committedPdfRequestId = null;
+      this.committedPdfClaim = null;
       this.dispatch({ type: 'reset', generation });
     });
   }
@@ -898,7 +981,7 @@ export class AnalysisCoordinator {
     await this.cleanupAllOwned();
     this.active = null;
     this.listeners.clear();
-    this.committedPdfRequestId = null;
+    this.committedPdfClaim = null;
     this.state = {
       ...createInitialAnalysisState(),
       privacyReadiness: this.state.privacyReadiness,
@@ -916,10 +999,16 @@ export class AnalysisCoordinator {
     });
   }
 
-  private async cleanupUncommitted(exceptRequestId: string | null = null): Promise<boolean> {
+  private async cleanupUncommitted(exceptClaim: PdfClaim | null = null): Promise<boolean> {
     let clean = true;
     for (const requestId of [...this.ownedPdfRequestIds]) {
-      if (requestId === this.committedPdfRequestId || requestId === exceptRequestId) continue;
+      const isCommitted = this.committedPdfClaim !== null &&
+        this.committedPdfClaim.requestId === requestId &&
+        this.isPdfClaimCurrent(this.committedPdfClaim);
+      const isExcepted = exceptClaim !== null &&
+        exceptClaim.requestId === requestId &&
+        this.isPdfClaimCurrent(exceptClaim);
+      if (isCommitted || isExcepted) continue;
       if (!(await this.cleanupRequest(requestId))) clean = false;
     }
     return clean;
@@ -934,6 +1023,11 @@ export class AnalysisCoordinator {
   }
 
   private cleanupRequest(requestId: string): Promise<boolean> {
+    const claim = this.pdfClaims.get(requestId);
+    if (claim !== undefined) {
+      this.pdfClaims.delete(requestId);
+      if (this.committedPdfClaim === claim) this.committedPdfClaim = null;
+    }
     const current = this.cleanupOperations.get(requestId);
     if (current !== undefined) return current;
     const operation = this.performCleanupRequest(requestId);
@@ -955,7 +1049,7 @@ export class AnalysisCoordinator {
       }
       this.cleanupFailures.delete(requestId);
       this.ownedPdfRequestIds.delete(requestId);
-      if (this.committedPdfRequestId === requestId) this.committedPdfRequestId = null;
+      this.retiredPdfRequestIds.add(requestId);
       return true;
     } catch {
       this.cleanupFailures.add(requestId);

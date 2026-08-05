@@ -19,6 +19,13 @@ export type FileInspection = Readonly<{
   header: Uint8Array;
 }>;
 
+export type OwnedFileInspection = Readonly<{
+  requestId: string;
+  uri: string;
+  exists: boolean;
+  size: number;
+}>;
+
 export type DirectoryEntry = Readonly<{
   uri: string;
   kind: 'file' | 'directory';
@@ -221,6 +228,31 @@ export class TempFileRegistry {
     const fileId = filename.slice(0, -4);
     if (!FILE_ID_PATTERN.test(fileId)) throw privacyError('invalid_cache_file');
     return { requestId, uri: location.uri };
+  }
+
+  async inspectOwnedFileUri(uri: unknown): Promise<OwnedFileInspection> {
+    const owned = this.assertOwnedFileUri(uri);
+    let inspection: FileInspection;
+    try {
+      inspection = await this.fileSystem.inspectFile(owned.uri);
+    } catch {
+      throw privacyError('cache_file_inspection_failed');
+    }
+    if (
+      inspection === null ||
+      typeof inspection !== 'object' ||
+      typeof inspection.exists !== 'boolean' ||
+      !Number.isSafeInteger(inspection.size) ||
+      inspection.size < 0
+    ) {
+      throw privacyError('cache_file_inspection_failed');
+    }
+    return {
+      requestId: owned.requestId,
+      uri: owned.uri,
+      exists: inspection.exists,
+      size: inspection.size,
+    };
   }
 
   async createRequest(requestId: string): Promise<string> {

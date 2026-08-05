@@ -61,13 +61,24 @@ function visionSource(reviewed: boolean): ResumeSource {
 }
 
 function pdfOwnership() {
+  const missing = new Set<string>();
+  const assertOwnedFileUri = jest.fn((uri: unknown) => {
+    if (typeof uri !== 'string') throw new Error('not owned');
+    const match = OWNED_PDF_PATTERN.exec(uri);
+    if (match === null) throw new Error('not owned');
+    return { requestId: match[1], uri };
+  });
   return {
-    assertOwnedFileUri: jest.fn((uri: unknown) => {
-      if (typeof uri !== 'string') throw new Error('not owned');
-      const match = OWNED_PDF_PATTERN.exec(uri);
-      if (match === null) throw new Error('not owned');
-      return { requestId: match[1], uri };
+    assertOwnedFileUri,
+    inspectOwnedFileUri: jest.fn(async (uri: unknown) => {
+      const owned = assertOwnedFileUri(uri);
+      return {
+        ...owned,
+        exists: !missing.has(owned.requestId),
+        size: 1_024,
+      };
     }),
+    markMissing(requestId: string) { missing.add(requestId); },
   };
 }
 
@@ -168,6 +179,12 @@ describe('review fixes: Task 10 ownership authority', () => {
   it('requires ownership authority to return the exact declared request ID', async () => {
     const ownership = {
       assertOwnedFileUri: jest.fn((uri: unknown) => ({ requestId: REQUEST_B, uri: String(uri) })),
+      inspectOwnedFileUri: jest.fn(async (uri: unknown) => ({
+        requestId: REQUEST_B,
+        uri: String(uri),
+        exists: true,
+        size: 1_024,
+      })),
     };
     const { api, coordinator, tempFiles } = harness({ pdfOwnership: ownership });
     await coordinator.initialize();
@@ -473,6 +490,125 @@ describe('review fixes: concurrent staged PDF ownership', () => {
   });
 });
 
+describe('review fixes: live single-use PDF ownership', () => {
+  it('never recommits the same PDF while Analyze cleanup is deleting it', async () => {
+    const deletion = deferred<CleanupReceipt>();
+    const ownership = pdfOwnership();
+    const cleanupRequest = jest.fn(async (requestId: string) => {
+      const receipt = await deletion.promise;
+      ownership.markMissing(requestId);
+      return receipt;
+    });
+    const { api, coordinator } = harness({
+      pdfOwnership: ownership,
+      tempFiles: { cleanupAbandoned: jest.fn(async () => CLEAN), cleanupRequest },
+      cleanupTimeoutMs: 1_000,
+    });
+    await coordinator.initialize();
+    await coordinator.commands.selectSource(pdfSource());
+
+    const analysis = coordinator.commands.analyze();
+    await flushPromises();
+    expect(api.analyze).toHaveBeenCalledTimes(1);
+    const staleReselection = coordinator.commands.selectSource(pdfSource());
+
+    deletion.resolve({ attempted: 1, deleted: 1, failed: 0, refused: 0 });
+    await Promise.all([analysis, staleReselection]);
+    const callsAfterCleanup = api.analyze.mock.calls.length;
+    await coordinator.commands.analyze();
+
+    expect(coordinator.getState()).not.toMatchObject({
+      status: 'ready',
+      source: { kind: 'pdf', requestId: REQUEST_A },
+    });
+    expect(api.analyze).toHaveBeenCalledTimes(callsAfterCleanup);
+  });
+
+  it('never recommits the same PDF while reset cleanup is deleting it', async () => {
+    const deletion = deferred<CleanupReceipt>();
+    const ownership = pdfOwnership();
+    const cleanupRequest = jest.fn(async (requestId: string) => {
+      const receipt = await deletion.promise;
+      ownership.markMissing(requestId);
+      return receipt;
+    });
+    const { api, coordinator } = harness({
+      pdfOwnership: ownership,
+      tempFiles: { cleanupAbandoned: jest.fn(async () => CLEAN), cleanupRequest },
+      cleanupTimeoutMs: 1_000,
+    });
+    await coordinator.initialize();
+    await coordinator.commands.selectSource(pdfSource());
+
+    const reset = coordinator.commands.reset();
+    await flushPromises();
+    const staleReselection = coordinator.commands.selectSource(pdfSource());
+    deletion.resolve({ attempted: 1, deleted: 1, failed: 0, refused: 0 });
+    await Promise.all([reset, staleReselection]);
+    await coordinator.commands.analyze();
+
+    expect(coordinator.getState()).not.toMatchObject({
+      status: 'ready',
+      source: { kind: 'pdf', requestId: REQUEST_A },
+    });
+    expect(api.analyze).not.toHaveBeenCalled();
+  });
+
+  it('never recommits the same PDF while source-replacement cleanup is deleting it', async () => {
+    const deletion = deferred<CleanupReceipt>();
+    const ownership = pdfOwnership();
+    const cleanupRequest = jest.fn(async (requestId: string) => {
+      const receipt = await deletion.promise;
+      ownership.markMissing(requestId);
+      return receipt;
+    });
+    const { api, coordinator } = harness({
+      pdfOwnership: ownership,
+      tempFiles: { cleanupAbandoned: jest.fn(async () => CLEAN), cleanupRequest },
+      cleanupTimeoutMs: 1_000,
+    });
+    await coordinator.initialize();
+    await coordinator.commands.selectSource(pdfSource());
+
+    const replacement = coordinator.commands.selectSource(textSource('replacement text'));
+    await flushPromises();
+    const staleReselection = coordinator.commands.selectSource(pdfSource());
+    deletion.resolve({ attempted: 1, deleted: 1, failed: 0, refused: 0 });
+    await Promise.all([replacement, staleReselection]);
+    await coordinator.commands.analyze();
+
+    expect(coordinator.getState()).not.toMatchObject({
+      status: 'ready',
+      source: { kind: 'pdf', requestId: REQUEST_A },
+    });
+    expect(api.analyze).not.toHaveBeenCalled();
+  });
+
+  it('permanently rejects a stale PDF source after its cleanup completed', async () => {
+    const ownership = pdfOwnership();
+    const cleanupRequest = jest.fn(async (requestId: string) => {
+      ownership.markMissing(requestId);
+      return { attempted: 1, deleted: 1, failed: 0, refused: 0 };
+    });
+    const { api, coordinator } = harness({
+      pdfOwnership: ownership,
+      tempFiles: { cleanupAbandoned: jest.fn(async () => CLEAN), cleanupRequest },
+    });
+    await coordinator.initialize();
+    await coordinator.commands.selectSource(pdfSource());
+    await coordinator.commands.reset();
+
+    await coordinator.commands.selectSource(pdfSource());
+    await coordinator.commands.analyze();
+
+    expect(coordinator.getState()).not.toMatchObject({
+      status: 'ready',
+      source: { kind: 'pdf', requestId: REQUEST_A },
+    });
+    expect(api.analyze).not.toHaveBeenCalled();
+  });
+});
+
 describe('analysis startup and consent barriers', () => {
   it('awaits abandoned cleanup before enabling source selection', async () => {
     const recovery = deferred<CleanupReceipt>();
@@ -490,6 +626,38 @@ describe('analysis startup and consent barriers', () => {
     recovery.resolve({ attempted: 2, deleted: 2, failed: 0, refused: 0 });
     await selection;
     expect(coordinator.getState()).toMatchObject({ privacyReadiness: 'ready', status: 'ready' });
+  });
+
+  it('rejects and cleans a PDF selected while abandoned cleanup is still checking privacy', async () => {
+    const recovery = deferred<void>();
+    const ownership = pdfOwnership();
+    const cleanupAbandoned = jest.fn(async () => {
+      await recovery.promise;
+      ownership.markMissing(REQUEST_A);
+      return { attempted: 1, deleted: 1, failed: 0, refused: 0 };
+    });
+    const cleanupRequest = jest.fn(async (requestId: string) => {
+      await recovery.promise;
+      ownership.markMissing(requestId);
+      return CLEAN;
+    });
+    const { api, coordinator } = harness({
+      pdfOwnership: ownership,
+      tempFiles: { cleanupAbandoned, cleanupRequest },
+      cleanupTimeoutMs: 1_000,
+    });
+
+    const initialization = coordinator.initialize();
+    const selection = coordinator.commands.selectSource(pdfSource());
+    await flushPromises();
+    expect(coordinator.getState().privacyReadiness).toBe('checking');
+    recovery.resolve();
+    await Promise.all([initialization, selection]);
+    await coordinator.commands.analyze();
+
+    expect(cleanupRequest).toHaveBeenCalledWith(REQUEST_A);
+    expect(coordinator.getState().source).toBeNull();
+    expect(api.analyze).not.toHaveBeenCalled();
   });
 
   it.each([

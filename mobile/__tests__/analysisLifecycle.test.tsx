@@ -40,6 +40,10 @@ function providerHarness() {
       if (match === null) throw new Error('not owned');
       return { requestId: match[1], uri };
     },
+    async inspectOwnedFileUri(uri: unknown) {
+      const owned = this.assertOwnedFileUri(uri);
+      return { ...owned, exists: true, size: 1_024 };
+    },
   };
   const coordinator = new AnalysisCoordinator({ api, consentStore, tempFiles, pdfOwnership });
   return { api, consentStore, coordinator, tempFiles };

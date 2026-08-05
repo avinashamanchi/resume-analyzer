@@ -14,6 +14,12 @@ class RegistryFileSystem implements TempFileSystem {
   entries: Array<{ uri: string; kind: 'file' | 'directory' }> = [];
   deleteFailures = new Set<string>();
   deleted: string[] = [];
+  inspected: string[] = [];
+  inspection: FileInspection = {
+    exists: true,
+    size: 1,
+    header: new Uint8Array([0x25, 0x50, 0x44, 0x46, 0x2d]),
+  };
   listFailure = false;
   deleteNoop = false;
 
@@ -32,12 +38,9 @@ class RegistryFileSystem implements TempFileSystem {
 
   async copyFile(): Promise<void> {}
 
-  async inspectFile(): Promise<FileInspection> {
-    return {
-      exists: true,
-      size: 1,
-      header: new Uint8Array([0x25, 0x50, 0x44, 0x46, 0x2d]),
-    };
+  async inspectFile(uri: string): Promise<FileInspection> {
+    this.inspected.push(uri);
+    return this.inspection;
   }
 
   async deleteDirectory(uri: string): Promise<void> {
@@ -103,6 +106,24 @@ describe('TempFileRegistry request isolation', () => {
     const uri = `${requestUri(REQUEST_A)}/11111111-1111-4111-8111-111111111111.pdf`;
 
     expect(registry.assertOwnedFileUri(uri)).toEqual({ requestId: REQUEST_A, uri });
+  });
+
+  it('reports live existence and size only after reasserting the exact owned PDF URI', async () => {
+    const { fileSystem, registry } = harness();
+    const uri = `${requestUri(REQUEST_A)}/11111111-1111-4111-8111-111111111111.pdf`;
+    fileSystem.inspection = {
+      exists: true,
+      size: 4_096,
+      header: new Uint8Array([0x25, 0x50, 0x44, 0x46, 0x2d]),
+    };
+
+    await expect(registry.inspectOwnedFileUri(uri)).resolves.toEqual({
+      requestId: REQUEST_A,
+      uri,
+      exists: true,
+      size: 4_096,
+    });
+    expect(fileSystem.inspected).toEqual([uri]);
   });
 });
 
