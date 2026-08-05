@@ -2,6 +2,7 @@ import { validateApiBaseUrl } from './apiBaseUrl';
 import { CONSENT_VERSION } from '../domain/consent';
 import { parseAnalysisResponse, PublicErrorSchema, type AnalysisResponse } from '../domain/contracts';
 import { ResumeApiError } from '../domain/errors';
+import type { InstallationTokenAcquisitionObserver } from '../security/installationToken';
 import {
   codePointLength,
   isNonBlankPythonText,
@@ -35,7 +36,7 @@ export type AnalyzeRequest = Readonly<{
 }>;
 
 export type InstallationTokenProvider = Readonly<{
-  getOrIssue(signal: AbortSignal): Promise<string>;
+  getOrIssue(signal: AbortSignal, observer?: InstallationTokenAcquisitionObserver): Promise<string>;
   clear(): Promise<void>;
   invalidate(expectedToken: string): Promise<void>;
 }>;
@@ -54,6 +55,7 @@ type MultipartPayload = Readonly<{
 }>;
 
 class AbortSignalFailure extends Error {}
+class TokenAcquisitionIndeterminateFailure extends Error {}
 
 function defaultRequestId(): string {
   const randomUuid = globalThis.crypto?.randomUUID;
@@ -173,6 +175,34 @@ async function awaitAbortable<T>(promise: Promise<T>, signal: AbortSignal): Prom
   });
 }
 
+function awaitTokenAcquisition<T>(
+  promise: Promise<T>,
+  signal: AbortSignal,
+  commitStarted: () => boolean,
+): Promise<T> {
+  if (signal.aborted) {
+    return Promise.reject(commitStarted() ? new TokenAcquisitionIndeterminateFailure() : new AbortSignalFailure());
+  }
+  return new Promise<T>((resolve, reject) => {
+    const abort = () => {
+      cleanup();
+      reject(commitStarted() ? new TokenAcquisitionIndeterminateFailure() : new AbortSignalFailure());
+    };
+    const cleanup = () => signal.removeEventListener('abort', abort);
+    signal.addEventListener('abort', abort, { once: true });
+    promise.then(
+      (value) => {
+        cleanup();
+        resolve(value);
+      },
+      (error: unknown) => {
+        cleanup();
+        reject(error);
+      },
+    );
+  });
+}
+
 async function parseJsonOnce(response: Response, signal: AbortSignal): Promise<unknown> {
   try {
     return await awaitAbortable(response.json(), signal);
@@ -219,11 +249,18 @@ export class ResumeApi {
     }, this.timeoutMs);
 
     try {
-      // The token store owns its explicit commit phase: wrapping it in a
-      // second abort race could report cancellation while its authority
-      // finalize later commits. It still receives the controller signal for
-      // pre-commit cancellation and timeout handling.
-      const token = await this.installationTokens.getOrIssue(controller.signal);
+      let tokenCommitStarted = false;
+      const observer: InstallationTokenAcquisitionObserver = {
+        onCommit: () => { tokenCommitStarted = true; },
+      };
+      const token = await awaitTokenAcquisition(
+        this.installationTokens.getOrIssue(controller.signal, observer),
+        controller.signal,
+        () => tokenCommitStarted,
+      );
+      // A provider may settle in the same turn as caller or timeout abort.
+      // Never send sensitive analysis input with an already-aborted signal.
+      if (controller.signal.aborted) throw new AbortSignalFailure();
       const response = await awaitAbortable(
         this.fetchImpl(`${this.apiBaseUrl}/v1/analyses`, {
           method: 'POST',
@@ -248,7 +285,15 @@ export class ResumeApi {
       }
       throw new ResumeApiError('service', publicError.data);
     } catch (error) {
-      if (error instanceof ResumeApiError) throw error;
+      if (error instanceof TokenAcquisitionIndeterminateFailure) {
+        throw new ResumeApiError('indeterminate', { retryable: true });
+      }
+      if (error instanceof ResumeApiError) {
+        if (error.category === 'cancelled' && controller.signal.aborted) {
+          throw new ResumeApiError(timedOut ? 'timeout' : 'cancelled');
+        }
+        throw error;
+      }
       if (error instanceof AbortSignalFailure || controller.signal.aborted) {
         throw new ResumeApiError(timedOut ? 'timeout' : 'cancelled');
       }

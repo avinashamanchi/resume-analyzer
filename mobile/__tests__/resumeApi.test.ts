@@ -56,6 +56,25 @@ async function settlePromptly<T>(promise: Promise<T>): Promise<
   }
 }
 
+async function outcomeAfterMicrotasks<T>(promise: Promise<T>): Promise<
+  | { state: 'fulfilled'; value: T }
+  | { state: 'rejected'; error: unknown }
+  | { state: 'pending' }
+> {
+  let outcome:
+    | { state: 'fulfilled'; value: T }
+    | { state: 'rejected'; error: unknown }
+    | undefined;
+  void promise.then(
+    (value) => { outcome = { state: 'fulfilled', value }; },
+    (error: unknown) => { outcome = { state: 'rejected', error }; },
+  );
+  for (let turn = 0; turn < 12 && outcome === undefined; turn += 1) {
+    await Promise.resolve();
+  }
+  return outcome ?? { state: 'pending' };
+}
+
 function createApi(overrides: Partial<ConstructorParameters<typeof ResumeApi>[0]> = {}) {
   const installationTokens = {
     getOrIssue: jest.fn().mockResolvedValue('signed-token'),
@@ -407,6 +426,7 @@ describe('ResumeApi multipart boundary', () => {
       caller.signal,
     );
     await Promise.resolve();
+    await Promise.resolve();
     jest.advanceTimersByTime(10);
     await expect(pending).rejects.toMatchObject({ category: 'timeout' });
     expect((fetchImpl.mock.calls[0][1] as RequestInit).signal?.aborted).toBe(true);
@@ -422,5 +442,74 @@ describe('ResumeApi multipart boundary', () => {
     caller.abort();
     await expect(cancelled).rejects.toMatchObject({ category: 'cancelled' });
     expect(jest.getTimerCount()).toBe(0);
+  });
+
+  it('bounds a never-settling pre-commit token acquisition with the API timeout', async () => {
+    jest.useFakeTimers();
+    const neverIssues = new Promise<string>(() => undefined);
+    const { api, fetchImpl } = createApi({
+      installationTokens: {
+        getOrIssue: jest.fn(() => neverIssues),
+        clear: jest.fn().mockResolvedValue(undefined),
+        invalidate: jest.fn().mockResolvedValue(undefined),
+      },
+      timeoutMs: 10,
+    });
+
+    try {
+      const pending = api.analyze(
+        { source: { kind: 'text', text: 'Resume' }, consentVersion: '2026-08-04.v1' },
+        new AbortController().signal,
+      );
+      jest.advanceTimersByTime(10);
+
+      await expect(outcomeAfterMicrotasks(pending)).resolves.toMatchObject({
+        state: 'rejected',
+        error: { category: 'timeout' },
+      });
+      expect(fetchImpl).not.toHaveBeenCalled();
+      expect(jest.getTimerCount()).toBe(0);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('returns an indeterminate token outcome and never starts analysis after a late commit', async () => {
+    jest.useFakeTimers();
+    const lateToken = deferred<string>();
+    const commitStarted = deferred<void>();
+    const { api, fetchImpl } = createApi({
+      installationTokens: {
+        getOrIssue: jest.fn((_signal: AbortSignal, lifecycle?: { onCommit(): void }) => {
+          lifecycle?.onCommit();
+          commitStarted.resolve();
+          return lateToken.promise;
+        }),
+        clear: jest.fn().mockResolvedValue(undefined),
+        invalidate: jest.fn().mockResolvedValue(undefined),
+      },
+      timeoutMs: 10,
+    });
+
+    try {
+      const pending = api.analyze(
+        { source: { kind: 'text', text: 'Resume' }, consentVersion: '2026-08-04.v1' },
+        new AbortController().signal,
+      );
+      await commitStarted.promise;
+      jest.advanceTimersByTime(10);
+
+      await expect(outcomeAfterMicrotasks(pending)).resolves.toMatchObject({
+        state: 'rejected',
+        error: { category: 'indeterminate', retryable: true },
+      });
+      lateToken.resolve('late-token');
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(fetchImpl).not.toHaveBeenCalled();
+      expect(jest.getTimerCount()).toBe(0);
+    } finally {
+      jest.useRealTimers();
+    }
   });
 });

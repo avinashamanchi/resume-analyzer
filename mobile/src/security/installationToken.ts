@@ -23,11 +23,18 @@ export type InstallationTokenStoreOptions = Readonly<{
   authorityStore?: TokenAuthorityStore;
 }>;
 
+export type InstallationTokenAcquisitionObserver = Readonly<{
+  // Fired synchronously after the store enters its non-abortable finalize
+  // phase and before the authority transition starts.
+  onCommit(): void;
+}>;
+
 type IssuePhase = 'issuing' | 'committing' | 'cancelling';
 
 type InFlightIssue = {
   readonly controller: AbortController;
   readonly callers: Set<symbol>;
+  readonly observers: Set<InstallationTokenAcquisitionObserver>;
   generation: number | null;
   phase: IssuePhase;
   retirement: Promise<void> | null;
@@ -194,12 +201,12 @@ export class InstallationTokenStore {
     }
   }
 
-  async getOrIssue(signal: AbortSignal): Promise<string> {
+  async getOrIssue(signal: AbortSignal, observer?: InstallationTokenAcquisitionObserver): Promise<string> {
     if (signal.aborted) throw new ResumeApiError('cancelled');
     const active = await this.readActive(signal);
     if (active !== null) return active;
     const inFlight = this.inFlight ?? this.startIssue();
-    return this.joinIssue(inFlight, signal);
+    return this.joinIssue(inFlight, signal, observer);
   }
 
   private async readActive(signal?: AbortSignal): Promise<string | null> {
@@ -262,6 +269,7 @@ export class InstallationTokenStore {
     const inFlight: InFlightIssue = {
       controller: new AbortController(),
       callers: new Set(),
+      observers: new Set(),
       generation: null,
       phase: 'issuing',
       retirement: null,
@@ -278,15 +286,24 @@ export class InstallationTokenStore {
     return inFlight;
   }
 
-  private joinIssue(inFlight: InFlightIssue, signal: AbortSignal): Promise<string> {
+  private joinIssue(
+    inFlight: InFlightIssue,
+    signal: AbortSignal,
+    observer?: InstallationTokenAcquisitionObserver,
+  ): Promise<string> {
     const caller = Symbol('installation-token-caller');
     inFlight.callers.add(caller);
+    if (observer !== undefined) {
+      inFlight.observers.add(observer);
+      if (inFlight.phase === 'committing') this.notifyCommit(observer);
+    }
     return new Promise<string>((resolve, reject) => {
       let settled = false;
       let cancelling = false;
       const removeCaller = () => {
         signal.removeEventListener('abort', cancel);
         inFlight.callers.delete(caller);
+        if (observer !== undefined) inFlight.observers.delete(observer);
       };
       const cancel = () => {
         if (settled || cancelling) return;
@@ -347,6 +364,19 @@ export class InstallationTokenStore {
       inFlight.callers.size > 0 &&
       !inFlight.controller.signal.aborted
     );
+  }
+
+  private notifyCommit(observer: InstallationTokenAcquisitionObserver): void {
+    try {
+      observer.onCommit();
+    } catch {
+      // Observers only let callers bound their own wait; they never control
+      // the durable authority transition.
+    }
+  }
+
+  private notifyCommitObservers(inFlight: InFlightIssue): void {
+    for (const observer of inFlight.observers) this.notifyCommit(observer);
   }
 
   private async cancelBeforeCommit(inFlight: InFlightIssue): Promise<void> {
@@ -419,6 +449,7 @@ export class InstallationTokenStore {
       // phase. From here, cancellation waits for a known durable outcome and a
       // successful finalize wins over the caller's late abort.
       inFlight.phase = 'committing';
+      this.notifyCommitObservers(inFlight);
       const result = await this.awaitAuthority(() => this.authorityStore.finalize(inFlight.generation!));
       if (!result.activated) throw new ResumeApiError('cancelled');
       finalized = true;

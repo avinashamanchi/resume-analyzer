@@ -18,6 +18,7 @@ jest.mock('expo-sqlite', () => ({
 import * as SecureStore from 'expo-secure-store';
 import { openDatabaseAsync } from 'expo-sqlite';
 
+import { ResumeApi } from '../src/api/resumeApi';
 import { CONSENT_VERSION, ConsentStore } from '../src/security/consentStore';
 import {
   INSTALLATION_TOKEN_KEY,
@@ -104,6 +105,23 @@ function createTokenStore(
   };
 }
 
+function createApiForTokenStore(store: InstallationTokenStore, fetchImpl: jest.Mock = jest.fn()) {
+  return new ResumeApi({
+    apiBaseUrl: 'https://api.example.test',
+    installationTokens: store,
+    fetchImpl,
+    timeoutMs: 10,
+    requestId: () => 'd2719b54-1e17-4c9f-b85f-7e510a0af30b',
+  });
+}
+
+function analyzeWithTokenStore(api: ResumeApi): Promise<unknown> {
+  return api.analyze(
+    { source: { kind: 'text', text: 'Resume' }, consentVersion: '2026-08-04.v1' },
+    new AbortController().signal,
+  );
+}
+
 function deferred<T>() {
   let resolve: (value: T) => void = () => undefined;
   let reject: (reason?: unknown) => void = () => undefined;
@@ -141,6 +159,25 @@ async function settlePromptly<T>(promise: Promise<T>): Promise<
   } finally {
     if (timer !== undefined) clearTimeout(timer);
   }
+}
+
+async function outcomeAfterMicrotasks<T>(promise: Promise<T>): Promise<
+  | { state: 'fulfilled'; value: T }
+  | { state: 'rejected'; error: unknown }
+  | { state: 'pending' }
+> {
+  let outcome:
+    | { state: 'fulfilled'; value: T }
+    | { state: 'rejected'; error: unknown }
+    | undefined;
+  void promise.then(
+    (value) => { outcome = { state: 'fulfilled', value }; },
+    (error: unknown) => { outcome = { state: 'rejected', error }; },
+  );
+  for (let turn = 0; turn < 12 && outcome === undefined; turn += 1) {
+    await Promise.resolve();
+  }
+  return outcome ?? { state: 'pending' };
 }
 
 async function waitForMockCalls(mock: { mock: { calls: unknown[][] } }, minimum = 1): Promise<void> {
@@ -604,6 +641,208 @@ describe('installation token boundary', () => {
     const authority = new SQLiteTokenAuthorityStore();
 
     await expect(authority.read()).rejects.toThrow('Token authority');
+  });
+
+  it('bounds a never-settling committed finalize as an indeterminate API outcome', async () => {
+    jest.useFakeTimers();
+    const authority = authorityStore();
+    const finalizeStarted = deferred<void>();
+    authority.finalize = async () => {
+      finalizeStarted.resolve();
+      return new Promise(() => undefined);
+    };
+    secureTokenSlots();
+    fetchMock.mockResolvedValueOnce(response(201, { schemaVersion: 1, installationToken: 'token-A' }));
+    const analysisFetch = jest.fn();
+    const api = createApiForTokenStore(createTokenStore(authority).store, analysisFetch);
+
+    try {
+      const pending = analyzeWithTokenStore(api);
+      await finalizeStarted.promise;
+      jest.advanceTimersByTime(10);
+
+      await expect(outcomeAfterMicrotasks(pending)).resolves.toMatchObject({
+        state: 'rejected',
+        error: { category: 'indeterminate', retryable: true },
+      });
+      expect(analysisFetch).not.toHaveBeenCalled();
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('bounds a finalize rejection after timeout without starting analysis', async () => {
+    jest.useFakeTimers();
+    const authority = authorityStore();
+    const finalizeStarted = deferred<void>();
+    const finalizeGate = deferred<{ activated: boolean; replacedGeneration: number | null }>();
+    authority.finalize = async () => {
+      finalizeStarted.resolve();
+      return finalizeGate.promise;
+    };
+    secureTokenSlots();
+    fetchMock.mockResolvedValueOnce(response(201, { schemaVersion: 1, installationToken: 'token-A' }));
+    const analysisFetch = jest.fn();
+    const api = createApiForTokenStore(createTokenStore(authority).store, analysisFetch);
+
+    try {
+      const pending = analyzeWithTokenStore(api);
+      await finalizeStarted.promise;
+      jest.advanceTimersByTime(10);
+      const outcome = await outcomeAfterMicrotasks(pending);
+      finalizeGate.reject(new Error('finalize failed'));
+      await flushAsync();
+
+      expect(outcome).toMatchObject({
+        state: 'rejected',
+        error: { category: 'indeterminate', retryable: true },
+      });
+      expect(analysisFetch).not.toHaveBeenCalled();
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('maps a never-settling pre-commit retirement to the API timeout', async () => {
+    jest.useFakeTimers();
+    const authority = authorityStore();
+    const retireStarted = deferred<void>();
+    authority.retire = async () => {
+      retireStarted.resolve();
+      return new Promise(() => undefined);
+    };
+    const saveStarted = deferred<void>();
+    const blockedSave = deferred<void>();
+    secureTokenSlots();
+    jest.mocked(SecureStore.setItemAsync).mockImplementationOnce(() => {
+      saveStarted.resolve();
+      return blockedSave.promise;
+    });
+    fetchMock.mockResolvedValueOnce(response(201, { schemaVersion: 1, installationToken: 'token-A' }));
+    const analysisFetch = jest.fn();
+    const api = createApiForTokenStore(createTokenStore(authority).store, analysisFetch);
+
+    try {
+      const pending = analyzeWithTokenStore(api);
+      await saveStarted.promise;
+      jest.advanceTimersByTime(10);
+      await retireStarted.promise;
+
+      await expect(outcomeAfterMicrotasks(pending)).resolves.toMatchObject({
+        state: 'rejected',
+        error: { category: 'timeout' },
+      });
+      expect(analysisFetch).not.toHaveBeenCalled();
+    } finally {
+      blockedSave.resolve();
+      jest.useRealTimers();
+    }
+  });
+
+  it('maps a rejected pre-commit retirement to the API timeout', async () => {
+    jest.useFakeTimers();
+    const authority = authorityStore();
+    const retireStarted = deferred<void>();
+    const retireGate = deferred<boolean>();
+    authority.retire = async () => {
+      retireStarted.resolve();
+      return retireGate.promise;
+    };
+    const saveStarted = deferred<void>();
+    const blockedSave = deferred<void>();
+    secureTokenSlots();
+    jest.mocked(SecureStore.setItemAsync).mockImplementationOnce(() => {
+      saveStarted.resolve();
+      return blockedSave.promise;
+    });
+    fetchMock.mockResolvedValueOnce(response(201, { schemaVersion: 1, installationToken: 'token-A' }));
+    const analysisFetch = jest.fn();
+    const api = createApiForTokenStore(createTokenStore(authority).store, analysisFetch);
+
+    try {
+      const pending = analyzeWithTokenStore(api);
+      await saveStarted.promise;
+      jest.advanceTimersByTime(10);
+      await retireStarted.promise;
+      const outcome = await outcomeAfterMicrotasks(pending);
+      retireGate.reject(new Error('retire failed'));
+      blockedSave.resolve();
+      await flushAsync();
+
+      expect(outcome).toMatchObject({ state: 'rejected', error: { category: 'timeout' } });
+      expect(analysisFetch).not.toHaveBeenCalled();
+    } finally {
+      blockedSave.resolve();
+      jest.useRealTimers();
+    }
+  });
+
+  it('bounds a never-settling post-finalize authority confirmation as indeterminate', async () => {
+    jest.useFakeTimers();
+    const authority = authorityStore();
+    const originalRead = authority.read.bind(authority);
+    const confirmationStarted = deferred<void>();
+    authority.read = async () => {
+      if (authority.snapshot().activeGeneration === 1) {
+        confirmationStarted.resolve();
+        return new Promise(() => undefined);
+      }
+      return originalRead();
+    };
+    secureTokenSlots();
+    fetchMock.mockResolvedValueOnce(response(201, { schemaVersion: 1, installationToken: 'token-A' }));
+    const analysisFetch = jest.fn();
+    const api = createApiForTokenStore(createTokenStore(authority).store, analysisFetch);
+
+    try {
+      const pending = analyzeWithTokenStore(api);
+      await confirmationStarted.promise;
+      jest.advanceTimersByTime(10);
+
+      await expect(outcomeAfterMicrotasks(pending)).resolves.toMatchObject({
+        state: 'rejected',
+        error: { category: 'indeterminate', retryable: true },
+      });
+      expect(analysisFetch).not.toHaveBeenCalled();
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('bounds a rejected post-finalize authority confirmation without starting analysis', async () => {
+    jest.useFakeTimers();
+    const authority = authorityStore();
+    const originalRead = authority.read.bind(authority);
+    const confirmationStarted = deferred<void>();
+    const confirmationGate = deferred<AuthorityState>();
+    authority.read = async () => {
+      if (authority.snapshot().activeGeneration === 1) {
+        confirmationStarted.resolve();
+        return confirmationGate.promise;
+      }
+      return originalRead();
+    };
+    secureTokenSlots();
+    fetchMock.mockResolvedValueOnce(response(201, { schemaVersion: 1, installationToken: 'token-A' }));
+    const analysisFetch = jest.fn();
+    const api = createApiForTokenStore(createTokenStore(authority).store, analysisFetch);
+
+    try {
+      const pending = analyzeWithTokenStore(api);
+      await confirmationStarted.promise;
+      jest.advanceTimersByTime(10);
+      const outcome = await outcomeAfterMicrotasks(pending);
+      confirmationGate.reject(new Error('confirmation failed'));
+      await flushAsync();
+
+      expect(outcome).toMatchObject({
+        state: 'rejected',
+        error: { category: 'indeterminate', retryable: true },
+      });
+      expect(analysisFetch).not.toHaveBeenCalled();
+    } finally {
+      jest.useRealTimers();
+    }
   });
 
   it('does not let a delayed invalidation for A abort or retire the newer B issuance', async () => {

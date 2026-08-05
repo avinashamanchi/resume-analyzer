@@ -1,6 +1,7 @@
 export type StableErrorCategory =
   | 'cancelled'
   | 'timeout'
+  | 'indeterminate'
   | 'validation'
   | 'network'
   | 'service'
@@ -15,6 +16,7 @@ export type StableErrorDetails = Readonly<{
 const MESSAGES: Readonly<Record<StableErrorCategory, string>> = Object.freeze({
   cancelled: 'The request was cancelled.',
   timeout: 'The request timed out.',
+  indeterminate: 'The anonymous session is being reconciled. Try again.',
   validation: 'The selected material is not supported.',
   network: 'The service could not be reached.',
   service: 'The service could not complete the request.',
