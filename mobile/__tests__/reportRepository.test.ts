@@ -1,0 +1,325 @@
+import validFixture from '../../contracts/fixtures/analysis-valid.json';
+
+import type { AnalysisResponse } from '../src/domain/contracts';
+import type { CleanupReceipt } from '../src/documents/tempFileRegistry';
+import {
+  LocalStorageError,
+  ReportRepository,
+  type ReportRecord,
+} from '../src/storage/reportRepository';
+
+import { FakeReportDatabase, versionOneReportColumns } from '../test-utils/fakeReportDatabase';
+
+const FIRST_ID = '8ec8a3bc-7a15-4b75-9f94-a5353a2a2f9b';
+const SECOND_ID = 'ffffffff-ffff-4fff-8fff-ffffffffffff';
+const CLEAN: CleanupReceipt = { attempted: 0, deleted: 0, failed: 0, refused: 0 };
+
+function copy<T>(value: T): T {
+  return JSON.parse(JSON.stringify(value)) as T;
+}
+
+function result(id = FIRST_ID): AnalysisResponse {
+  return { ...copy(validFixture), analysisId: id } as AnalysisResponse;
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason: unknown) => void;
+  const promise = new Promise<T>((onResolve, onReject) => {
+    resolve = onResolve;
+    reject = onReject;
+  });
+  return { promise, resolve, reject };
+}
+
+function harness(options: {
+  database?: FakeReportDatabase;
+  cleanup?: () => Promise<unknown>;
+  now?: () => Date;
+  cleanupTimeoutMs?: number;
+} = {}) {
+  const database = options.database ?? new FakeReportDatabase();
+  const cleanupAbandoned = jest.fn(async () =>
+    (await (options.cleanup ?? (async () => CLEAN))()) as CleanupReceipt
+  );
+  const openDatabase = jest.fn(async () => database);
+  const repository = new ReportRepository({
+    openDatabase,
+    tempFiles: { cleanupAbandoned },
+    now: options.now ?? (() => new Date('2026-08-05T19:20:30.000Z')),
+    cleanupTimeoutMs: options.cleanupTimeoutMs,
+  });
+  return { cleanupAbandoned, database, openDatabase, repository };
+}
+
+function expectLocalStorageError(error: unknown): void {
+  expect(error).toBeInstanceOf(LocalStorageError);
+  expect(error).toMatchObject({ category: 'local_storage' });
+  expect(String(error)).toBe('LocalStorageError: Local report storage could not complete the operation.');
+}
+
+describe('report schema migration', () => {
+  it('creates exact version-one tables inside an exclusive transaction', async () => {
+    const { database, repository } = harness();
+
+    await repository.initialize();
+
+    expect(database.userVersion).toBe(1);
+    expect(database.tables).toEqual(['metadata', 'reports']);
+    expect(database.columns.reports).toEqual(versionOneReportColumns);
+    expect(database.metadata).toEqual([{ key: 'schema_version', value: '1' }]);
+    expect(database.calls[0]?.sql).toBe('BEGIN EXCLUSIVE');
+    expect(database.calls.filter(call => call.sql === 'BEGIN EXCLUSIVE')).toHaveLength(1);
+  });
+
+  it('initializes idempotently without reopening or rewriting version one', async () => {
+    const database = FakeReportDatabase.versionOne();
+    const { openDatabase, repository } = harness({ database });
+
+    await Promise.all([repository.initialize(), repository.initialize()]);
+
+    expect(openDatabase).toHaveBeenCalledTimes(1);
+    expect(database.calls.filter(call => call.sql === 'BEGIN EXCLUSIVE')).toHaveLength(1);
+    expect(database.calls.some(call => /^INSERT INTO metadata/.test(call.sql))).toBe(false);
+  });
+
+  it.each([
+    ['future user version', () => { const db = FakeReportDatabase.versionOne(); db.userVersion = 2; return db; }],
+    ['future metadata version', () => { const db = FakeReportDatabase.versionOne(); db.metadata[0] = { key: 'schema_version', value: '2' }; return db; }],
+    ['unexpected table', () => { const db = FakeReportDatabase.versionOne(); db.tables.push('private_drafts'); return db; }],
+    ['missing column', () => { const db = FakeReportDatabase.versionOne(); db.columns.reports = db.columns.reports.slice(0, -1); return db; }],
+    ['extra column', () => { const db = FakeReportDatabase.versionOne(); db.columns.reports = [...db.columns.reports, { cid: 7, name: 'resume_text', type: 'TEXT', notnull: 0, dflt_value: null, pk: 0 }]; return db; }],
+    ['changed column declaration', () => { const db = FakeReportDatabase.versionOne(); db.columns.reports = db.columns.reports.map(column => column.name === 'title' ? { ...column, notnull: 0 } : column); return db; }],
+    ['unexpected metadata', () => { const db = FakeReportDatabase.versionOne(); db.metadata.push({ key: 'request_id', value: FIRST_ID }); return db; }],
+    ['version-zero legacy table', () => { const db = new FakeReportDatabase(); db.tables = ['reports']; return db; }],
+  ])('fails closed for %s without destructive downgrade', async (_name, createDatabase) => {
+    const database = createDatabase();
+    const original = copy({ tables: database.tables, rows: database.rows, metadata: database.metadata });
+    const { repository } = harness({ database });
+
+    const error = await repository.initialize().catch(reason => reason as unknown);
+    expectLocalStorageError(error);
+    expect({ tables: database.tables, rows: database.rows, metadata: database.metadata }).toEqual(original);
+  });
+});
+
+describe('report projection reads and writes', () => {
+  it('saves a strict report projection with a local-date default title', async () => {
+    const { repository } = harness({ now: () => new Date(2026, 7, 5, 12, 34, 56, 789) });
+    await repository.initialize();
+
+    const saved = await repository.save({ result: result() });
+
+    expect(saved).toEqual<ReportRecord>({
+      id: FIRST_ID,
+      title: 'Resume analysis — 2026-08-05',
+      createdAt: new Date(2026, 7, 5, 12, 34, 56, 789).toISOString(),
+      sourceType: 'text',
+      score: result().score,
+      feedback: result().feedback,
+    });
+  });
+
+  it('supports a bounded explicit title and deterministic newest-first ordering', async () => {
+    let current = new Date('2026-08-05T10:00:00.000Z');
+    const { repository } = harness({ now: () => current });
+    await repository.initialize();
+    await repository.save({ result: result(FIRST_ID), title: 'First report' });
+    current = new Date('2026-08-06T10:00:00.000Z');
+    await repository.save({ result: result(SECOND_ID), title: 'Second report' });
+
+    expect((await repository.list()).map(record => record.id)).toEqual([SECOND_ID, FIRST_ID]);
+    expect(await repository.get(FIRST_ID)).toMatchObject({ id: FIRST_ID, title: 'First report' });
+  });
+
+  it('breaks equal-timestamp ordering ties by descending report ID', async () => {
+    const { repository } = harness();
+    await repository.initialize();
+    await repository.save({ result: result(FIRST_ID) });
+    await repository.save({ result: result(SECOND_ID) });
+
+    expect((await repository.list()).map(record => record.id)).toEqual([SECOND_ID, FIRST_ID]);
+  });
+
+  it('rejects duplicate report IDs instead of overwriting an earlier record', async () => {
+    const { repository } = harness();
+    await repository.initialize();
+    await repository.save({ result: result(), title: 'Original' });
+
+    await expect(repository.save({ result: result(), title: 'Replacement' })).rejects.toMatchObject({ category: 'local_storage' });
+    expect(await repository.get(FIRST_ID)).toMatchObject({ title: 'Original' });
+  });
+
+  it.each([
+    ['future row version', { schema_version: 2 }],
+    ['invalid UUID', { id: 'PRIVATE-ID' }],
+    ['invalid date', { created_at: 'August 5' }],
+    ['invalid source', { source_type: 'camera' }],
+    ['blank title', { title: '   ' }],
+    ['extra column', { resume_text: 'private resume' }],
+    ['missing column', { feedback_json: undefined }],
+    ['invalid score JSON', { score_json: '{private' }],
+    ['invalid score shape', { score_json: JSON.stringify({ ...validFixture.score, label: 'Needs work' }) }],
+    ['invalid feedback shape', { feedback_json: '{}' }],
+    ['oversized score JSON', { score_json: 'x'.repeat(16_385) }],
+    ['oversized feedback JSON', { feedback_json: 'x'.repeat(131_073) }],
+  ])('rejects %s with a stable content-free read error', async (_name, change) => {
+    const database = FakeReportDatabase.versionOne();
+    database.rows.push({
+      id: FIRST_ID,
+      schema_version: 1,
+      title: 'Resume analysis — 2026-08-05',
+      created_at: '2026-08-05T19:20:30.000Z',
+      source_type: 'text',
+      score_json: JSON.stringify(validFixture.score),
+      feedback_json: JSON.stringify(validFixture.feedback),
+      ...change,
+    });
+    if ('feedback_json' in change && change.feedback_json === undefined) {
+      delete database.rows[0].feedback_json;
+    }
+    const { repository } = harness({ database });
+    await repository.initialize();
+
+    const error = await repository.list().catch(reason => reason as unknown);
+    expectLocalStorageError(error);
+    expect(JSON.stringify(error)).not.toContain('private');
+  });
+
+  it.each([
+    ['invalid analysis response', { result: { ...validFixture, sourceType: 'camera' } }],
+    ['invalid title whitespace', { result: validFixture, title: ' padded ' }],
+    ['invalid title control character', { result: validFixture, title: 'private\ttitle' }],
+    ['oversized title', { result: validFixture, title: '💼'.repeat(81) }],
+  ])('rejects %s before issuing an insert', async (_name, input) => {
+    const { database, repository } = harness();
+    await repository.initialize();
+
+    await expect(repository.save(input)).rejects.toMatchObject({ category: 'local_storage' });
+    expect(database.calls.some(call => /^INSERT INTO reports/.test(call.sql))).toBe(false);
+  });
+});
+
+describe('serialized deletion and lifecycle', () => {
+  it('uses parameterized IDs and returns exact missing/existing delete counts', async () => {
+    const { database, repository } = harness();
+    await repository.initialize();
+    await repository.save({ result: result() });
+
+    await expect(repository.delete(SECOND_ID)).resolves.toBe(0);
+    await expect(repository.delete(FIRST_ID)).resolves.toBe(1);
+
+    const deletes = database.calls.filter(call => call.sql === 'DELETE FROM reports WHERE id = ?');
+    expect(deletes.map(call => call.params)).toEqual([[SECOND_ID], [FIRST_ID]]);
+  });
+
+  it.each([
+    ['cleanup rejection', async () => { throw new Error('private disk path'); }],
+    ['failed cleanup', async () => ({ attempted: 1, deleted: 0, failed: 1, refused: 0 })],
+    ['refused cleanup', async () => ({ attempted: 0, deleted: 0, failed: 0, refused: 1 })],
+    ['untruthful cleanup', async () => ({ attempted: 2, deleted: 1, failed: 0, refused: 0 })],
+    ['malformed cleanup', async () => ({ attempted: -1, deleted: -1, failed: 0, refused: 0, path: 'private' })],
+  ])('rolls back report deletion for %s', async (_name, cleanup) => {
+    const { repository } = harness({ cleanup });
+    await repository.initialize();
+    await repository.save({ result: result() });
+
+    await expect(repository.deleteAll()).rejects.toMatchObject({ category: 'local_storage' });
+    expect(await repository.list()).toHaveLength(1);
+  });
+
+  it('rolls back report deletion when required temp cleanup times out', async () => {
+    const { repository } = harness({ cleanup: () => new Promise(() => undefined), cleanupTimeoutMs: 5 });
+    await repository.initialize();
+    await repository.save({ result: result() });
+
+    await expect(repository.deleteAll()).rejects.toMatchObject({ category: 'local_storage' });
+    expect(await repository.list()).toHaveLength(1);
+  });
+
+  it('returns only truthful committed report and temp-file counts', async () => {
+    const cleanup: CleanupReceipt = { attempted: 2, deleted: 2, failed: 0, refused: 0 };
+    const { repository } = harness({ cleanup: async () => cleanup });
+    await repository.initialize();
+    await repository.save({ result: result(FIRST_ID) });
+    await repository.save({ result: result(SECOND_ID) });
+
+    await expect(repository.deleteAll()).resolves.toEqual({
+      deletedReports: 2,
+      deletedTempFiles: 2,
+      failures: 0,
+    });
+    await expect(repository.list()).resolves.toEqual([]);
+  });
+
+  it('does not claim report deletion when the database fails before or after cleanup', async () => {
+    const before = FakeReportDatabase.versionOne();
+    before.rows.push({ id: FIRST_ID });
+    before.failNext = /^SELECT COUNT/;
+    const beforeHarness = harness({ database: before });
+    await beforeHarness.repository.initialize();
+    await expect(beforeHarness.repository.deleteAll()).rejects.toMatchObject({ category: 'local_storage' });
+    expect(beforeHarness.cleanupAbandoned).not.toHaveBeenCalled();
+    expect(before.rows).toHaveLength(1);
+
+    const afterHarness = harness({ database: FakeReportDatabase.versionOne() });
+    await afterHarness.repository.initialize();
+    await afterHarness.repository.save({ result: result() });
+    afterHarness.database.failCommit = true;
+    await expect(afterHarness.repository.deleteAll()).rejects.toMatchObject({ category: 'local_storage' });
+    expect(afterHarness.cleanupAbandoned).toHaveBeenCalledTimes(1);
+    expect(afterHarness.database.rows).toHaveLength(1);
+  });
+
+  it('serializes authorized save, delete, read, delete-all, and close without use-after-close', async () => {
+    const insert = deferred<void>();
+    const { database, repository } = harness();
+    await repository.initialize();
+    database.beforeInsert = () => insert.promise;
+
+    const saving = repository.save({ result: result(FIRST_ID) });
+    const deleting = repository.delete(FIRST_ID);
+    const savingAgain = repository.save({ result: result(SECOND_ID) });
+    const listing = repository.list();
+    const deletingAll = repository.deleteAll();
+    const closing = repository.close();
+    await Promise.resolve();
+
+    expect(database.closeCount).toBe(0);
+    insert.resolve();
+    await saving;
+    await expect(deleting).resolves.toBe(1);
+    await savingAgain;
+    await expect(listing).resolves.toEqual([expect.objectContaining({ id: SECOND_ID })]);
+    await expect(deletingAll).resolves.toEqual({ deletedReports: 1, deletedTempFiles: 0, failures: 0 });
+    await closing;
+    expect(database.closeCount).toBe(1);
+    expect(database.rows).toEqual([]);
+  });
+
+  it('rejects new work once close is requested and closes once during initialization', async () => {
+    const opened = deferred<FakeReportDatabase>();
+    const database = FakeReportDatabase.versionOne();
+    const repository = new ReportRepository({
+      openDatabase: () => opened.promise,
+      tempFiles: { cleanupAbandoned: async () => CLEAN },
+    });
+    const initializing = repository.initialize();
+    const closing = repository.close();
+
+    await expect(repository.list()).rejects.toMatchObject({ category: 'local_storage' });
+    opened.resolve(database);
+    await initializing;
+    await closing;
+    await repository.close();
+    expect(database.closeCount).toBe(1);
+    await expect(repository.get(FIRST_ID)).rejects.toMatchObject({ category: 'local_storage' });
+  });
+
+  it('rejects operations before initialization with no implicit database open', async () => {
+    const { openDatabase, repository } = harness();
+
+    await expect(repository.list()).rejects.toMatchObject({ category: 'local_storage' });
+    expect(openDatabase).not.toHaveBeenCalled();
+  });
+});
