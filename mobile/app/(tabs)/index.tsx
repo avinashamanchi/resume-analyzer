@@ -1,6 +1,6 @@
 import { useRouter } from 'expo-router';
 import React, { useEffect, useRef, useState } from 'react';
-import { StyleSheet, Text, TextInput, View } from 'react-native';
+import { Keyboard, StyleSheet, Text, TextInput, View } from 'react-native';
 
 import { useAppController } from '../../src/controllers/AppController';
 import { AnalysisStatus } from '../../src/components/AnalysisStatus';
@@ -103,6 +103,7 @@ export default function AnalyzeScreen() {
         throw new Error(INPUT_ERROR);
       }
       await commands.setJobDescription(jobDescription);
+      Keyboard.dismiss();
       await commands.analyze();
     } catch {
       setLocalError(INPUT_ERROR);

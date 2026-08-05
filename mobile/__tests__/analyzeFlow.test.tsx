@@ -1,6 +1,6 @@
 import { act, fireEvent, render, waitFor } from '@testing-library/react-native';
 import React from 'react';
-import { StyleSheet } from 'react-native';
+import { Keyboard, StyleSheet } from 'react-native';
 
 declare const require: (id: string) => unknown;
 declare const __dirname: string;
@@ -80,6 +80,8 @@ function harness(overrides: Record<string, unknown> = {}): any {
 }
 
 describe('native Analyze and Results flows', () => {
+  afterEach(() => { jest.restoreAllMocks(); });
+
   it('shows consent before analysis and never claims fake phases', async () => {
     const values = harness({
       analysis: { ...harness().analysis, state: { ...readyState, status: 'consentRequired' } },
@@ -248,13 +250,31 @@ describe('native Analyze and Results flows', () => {
   });
 
   it('rejects pasted NUL input before selecting or uploading', async () => {
+    const dismiss = jest.spyOn(Keyboard, 'dismiss');
     const values = harness();
     const view = await render(<AppControllerProvider value={values}><AnalyzeScreen /></AppControllerProvider>);
     await act(async () => { fireEvent.press(view.getByRole('tab', { name: 'Paste text' })); });
     await act(async () => { fireEvent.changeText(view.getByLabelText('Paste resume text'), 'private\0resume'); });
     await act(async () => { fireEvent.press(view.getByRole('button', { name: 'Analyze resume' })); });
     expect(values.analysis.commands.selectSource).not.toHaveBeenCalled();
+    expect(dismiss).not.toHaveBeenCalled();
     expect(view.getByText('Check the resume and job-description limits before analyzing.')).toBeTruthy();
+  });
+
+  it('dismisses the focused keyboard after validation and immediately before requesting consent', async () => {
+    const dismiss = jest.spyOn(Keyboard, 'dismiss');
+    const values = harness();
+    const view = await render(<AppControllerProvider value={values}><AnalyzeScreen /></AppControllerProvider>);
+    await act(async () => { fireEvent.press(view.getByRole('tab', { name: 'Paste text' })); });
+    await act(async () => { fireEvent.changeText(view.getByLabelText('Paste resume text'), 'Validated resume text'); });
+    await act(async () => { fireEvent.changeText(view.getByLabelText('Optional job description'), 'Validated role text'); });
+
+    await act(async () => { fireEvent.press(view.getByRole('button', { name: 'Analyze resume' })); });
+
+    expect(dismiss).toHaveBeenCalledTimes(1);
+    expect(values.analysis.commands.analyze).toHaveBeenCalledTimes(1);
+    expect(dismiss.mock.invocationCallOrder[0]).toBeLessThan(values.analysis.commands.analyze.mock.invocationCallOrder[0]);
+    expect(values.analysis.commands.setJobDescription.mock.invocationCallOrder[0]).toBeLessThan(dismiss.mock.invocationCallOrder[0]);
   });
 
   it('navigates only when the coordinator owns a succeeded result', async () => {

@@ -1,10 +1,12 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Modal, Pressable, StyleSheet, Text, View } from 'react-native';
+import { AccessibilityInfo, Modal, Pressable, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import type { ReportRecord } from '../storage/reportRepository';
 import { tokens } from '../theme/tokens';
 import { AppButton, Card, uiStyles } from './primitives';
+
+const DELETE_FAILURE_MESSAGE = 'The local report was not deleted. Try again.';
 
 function reportDate(value: string): string {
   const date = new Date(value);
@@ -59,7 +61,12 @@ export function ReportList({
       setConfirming(null);
       return;
     }
-    setDeleteError('The local report was not deleted. Try again.');
+    setDeleteError(DELETE_FAILURE_MESSAGE);
+    try {
+      AccessibilityInfo.announceForAccessibility(DELETE_FAILURE_MESSAGE);
+    } catch {
+      // The visible, content-free alert remains available if native announcement fails.
+    }
   };
 
   return (

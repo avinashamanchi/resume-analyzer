@@ -1,5 +1,6 @@
 import { act, fireEvent, render, waitFor } from '@testing-library/react-native';
 import React from 'react';
+import { AccessibilityInfo } from 'react-native';
 
 import validFixture from '../../contracts/fixtures/analysis-valid.json';
 
@@ -15,7 +16,19 @@ const actions = {
 };
 const analysis = { state: { result: null }, commands: {} } as any;
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((onResolve, onReject) => {
+    resolve = onResolve;
+    reject = onReject;
+  });
+  return { promise, resolve, reject };
+}
+
 describe('native History flow', () => {
+  afterEach(() => { jest.restoreAllMocks(); });
+
   it('directs a person from an empty local history back to Analyze', async () => {
     const history = { status: 'ready', reports: [], error: null, load: jest.fn(), get: jest.fn(), saveCurrent: jest.fn(), delete: jest.fn(), deleteAll: jest.fn() } as any;
     const view = await render(<AppControllerProvider value={{ actions, analysis, history }}><HistoryScreen /></AppControllerProvider>);
@@ -37,6 +50,8 @@ describe('native History flow', () => {
   });
 
   it('keeps separate VoiceOver actions reachable and recovers after a failed deletion in a long list', async () => {
+    const announce = jest.spyOn(AccessibilityInfo, 'announceForAccessibility');
+    announce.mockClear();
     const reports = Array.from({ length: 20 }, (_, index) => ({
       ...validFixture,
       id: `00000000-0000-4000-8000-${String(index).padStart(12, '0')}`,
@@ -58,6 +73,8 @@ describe('native History flow', () => {
 
     await act(async () => { fireEvent.press(view.getByRole('button', { name: 'Delete report' })); });
     await waitFor(() => expect(view.getByRole('alert').props.children).toBe('The local report was not deleted. Try again.'));
+    expect(announce).toHaveBeenCalledTimes(1);
+    expect(announce).toHaveBeenCalledWith('The local report was not deleted. Try again.');
     expect(view.getByTestId('delete-report-modal')).toBeTruthy();
     expect(view.getByText('Resume analysis 20')).toBeTruthy();
 
@@ -65,5 +82,49 @@ describe('native History flow', () => {
     await waitFor(() => expect(view.queryByTestId('delete-report-modal')).toBeNull());
     expect(history.delete).toHaveBeenNthCalledWith(1, reports[19].id);
     expect(history.delete).toHaveBeenNthCalledWith(2, reports[19].id);
+    expect(announce).toHaveBeenCalledTimes(1);
+  });
+
+  it('announces one safe failure when deletion rejects and keeps the modal recoverable', async () => {
+    const announce = jest.spyOn(AccessibilityInfo, 'announceForAccessibility');
+    announce.mockClear();
+    const privateCause = new Error('sqlite path /private/resume-ai.db');
+    const report = { ...validFixture, id: validFixture.analysisId, title: 'Resume analysis', createdAt: '2026-08-05T19:20:30.000Z' };
+    const history = {
+      status: 'ready', reports: [report], error: null, load: jest.fn(), get: jest.fn(), saveCurrent: jest.fn(),
+      delete: jest.fn().mockRejectedValueOnce(privateCause), deleteAll: jest.fn(),
+    } as any;
+    const view = await render(<AppControllerProvider value={{ actions, analysis, history }}><HistoryScreen /></AppControllerProvider>);
+
+    await act(async () => { fireEvent.press(view.getByRole('button', { name: 'Delete Resume analysis' })); });
+    await act(async () => { fireEvent.press(view.getByRole('button', { name: 'Delete report' })); });
+
+    await waitFor(() => expect(view.getByText('The local report was not deleted. Try again.')).toBeTruthy());
+    expect(view.getByTestId('delete-report-modal')).toBeTruthy();
+    expect(announce).toHaveBeenCalledTimes(1);
+    expect(announce).toHaveBeenCalledWith('The local report was not deleted. Try again.');
+    expect(JSON.stringify(announce.mock.calls)).not.toContain(privateCause.message);
+  });
+
+  it('does not announce or move accessibility focus after an in-flight deletion unmounts', async () => {
+    const pendingDelete = deferred<boolean>();
+    const announce = jest.spyOn(AccessibilityInfo, 'announceForAccessibility');
+    const focus = jest.spyOn(AccessibilityInfo, 'setAccessibilityFocus');
+    announce.mockClear();
+    focus.mockClear();
+    const report = { ...validFixture, id: validFixture.analysisId, title: 'Resume analysis', createdAt: '2026-08-05T19:20:30.000Z' };
+    const history = {
+      status: 'ready', reports: [report], error: null, load: jest.fn(), get: jest.fn(), saveCurrent: jest.fn(),
+      delete: jest.fn(() => pendingDelete.promise), deleteAll: jest.fn(),
+    } as any;
+    const view = await render(<AppControllerProvider value={{ actions, analysis, history }}><HistoryScreen /></AppControllerProvider>);
+    await act(async () => { fireEvent.press(view.getByRole('button', { name: 'Delete Resume analysis' })); });
+    await act(async () => { fireEvent.press(view.getByRole('button', { name: 'Delete report' })); });
+
+    await view.unmount();
+    await act(async () => { pendingDelete.resolve(false); await pendingDelete.promise; });
+
+    expect(announce).not.toHaveBeenCalled();
+    expect(focus).not.toHaveBeenCalled();
   });
 });
