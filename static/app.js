@@ -169,6 +169,7 @@ function requestPayload() {
   formData.append("consent_version", CONSENT_VERSION);
   formData.append("request_id", crypto.randomUUID());
   const roleText = jobDescription.value.trim();
+  const context = Object.freeze({ hasJobDescription: roleText.length > 0 });
   if (roleText) formData.append("job_description", roleText);
   if (state.mode === "pdf") {
     formData.append("resume_pdf", state.file, state.file.name);
@@ -176,7 +177,7 @@ function requestPayload() {
     formData.append("resume_text", textInput.value.trim());
     formData.append("source_type", "text");
   }
-  return formData;
+  return Object.freeze({ formData, context });
 }
 
 async function submitAnalysis(event) {
@@ -185,6 +186,7 @@ async function submitAnalysis(event) {
   const validationError = localValidation();
   if (validationError) { showError(validationError); return; }
 
+  const payload = requestPayload();
   const owner = lifecycle.begin(new AbortController());
   report.hidden = true;
   setBusy(true);
@@ -195,7 +197,7 @@ async function submitAnalysis(event) {
     const response = await fetch("/v1/analyses", {
       method: "POST",
       headers: { Authorization: `Installation ${token}` },
-      body: requestPayload(),
+      body: payload.formData,
       signal: owner.controller.signal,
       credentials: "same-origin"
     });
@@ -206,7 +208,7 @@ async function submitAnalysis(event) {
       if (response.status === 401) clearToken();
       throw new Error(stableError(data, "The review could not be completed. You may submit again when ready."));
     }
-    const analysis = validateAnalysisResponse(data);
+    const analysis = validateAnalysisResponse(data, payload.context);
     if (!lifecycle.owns(owner)) return;
     lifecycle.applyIfCurrent(owner, () => renderReport(analysis));
   } catch (error) {

@@ -14,10 +14,23 @@
   ]);
   const SOURCE_TYPES = new Set(["pdf", "text", "vision_text"]);
   const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+  const CASEFOLD_EQUIVALENTS = Object.freeze({
+    "ß": "ss",
+    "ς": "σ",
+    "ϐ": "β",
+    "ϑ": "θ",
+    "ϕ": "φ",
+    "ϖ": "π",
+    "ϰ": "κ",
+    "ϱ": "ρ",
+    "ϵ": "ε"
+  });
 
   function invalid() { throw new Error("The service returned an invalid response."); }
   function plainObject(value) {
-    return value !== null && typeof value === "object" && !Array.isArray(value) && Object.getPrototypeOf(value) === Object.prototype;
+    if (value === null || typeof value !== "object" || Array.isArray(value) || Object.prototype.toString.call(value) !== "[object Object]") return false;
+    const prototype = Object.getPrototypeOf(value);
+    return prototype === null || Function.prototype.toString.call(prototype.constructor) === Function.prototype.toString.call(Object);
   }
   function exactKeys(value, keys) {
     if (!plainObject(value)) invalid();
@@ -42,7 +55,13 @@
     if (!Array.isArray(value) || value.length < minimum || value.length > maximum) invalid();
     return value.map(item);
   }
-  function normalizedTerm(value) { return value.normalize("NFKC").trim().toLowerCase(); }
+  function normalizedTerm(value) {
+    let folded = "";
+    for (const character of value.normalize("NFKC").trim().toLocaleLowerCase("und")) {
+      folded += CASEFOLD_EQUIVALENTS[character] || character;
+    }
+    return folded.normalize("NFKC");
+  }
   function labelFor(score) {
     if (score < 50) return "Needs work";
     if (score < 70) return "Developing";
@@ -50,7 +69,7 @@
     return "Strong";
   }
 
-  function validateScore(value) {
+  function validateScore(value, hasJobDescription) {
     exactKeys(value, ["scoreVersion", "readinessScore", "label", "components", "explanations"]);
     if (value.scoreVersion !== "resume-readiness-v1") invalid();
     const readinessScore = integer(value.readinessScore, 0, 100);
@@ -62,6 +81,7 @@
       readability: integer(value.components.readability, 0, 30),
       keywords: value.components.keywords === null ? null : integer(value.components.keywords, 0, 25)
     };
+    if ((components.keywords === null) === hasJobDescription) invalid();
     const total = components.structure + components.impact + components.readability + (components.keywords || 0);
     if (total !== readinessScore) invalid();
     return {
@@ -92,14 +112,16 @@
     };
   }
 
-  function validateAnalysisResponse(value) {
+  function validateAnalysisResponse(value, context) {
+    exactKeys(context, ["hasJobDescription"]);
+    if (typeof context.hasJobDescription !== "boolean") invalid();
     exactKeys(value, ["schemaVersion", "analysisId", "sourceType", "score", "feedback"]);
     if (value.schemaVersion !== 1 || !SOURCE_TYPES.has(value.sourceType)) invalid();
     return {
       schemaVersion: 1,
       analysisId: canonicalUuid(value.analysisId),
       sourceType: value.sourceType,
-      score: validateScore(value.score),
+      score: validateScore(value.score, context.hasJobDescription),
       feedback: validateFeedback(value.feedback)
     };
   }

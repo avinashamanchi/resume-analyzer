@@ -70,6 +70,8 @@ def web_client():
         ("/", "text/html"),
         ("/static/styles.css", "text/css"),
         ("/static/app.js", "text/javascript"),
+        ("/static/contract.js", "text/javascript"),
+        ("/static/lifecycle.js", "text/javascript"),
         ("/static/privacy.html", "text/html"),
         ("/static/support.html", "text/html"),
     ],
