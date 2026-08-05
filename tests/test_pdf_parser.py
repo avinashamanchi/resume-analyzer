@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 import io
+import json
 import multiprocessing
 import os
+import signal
+import struct
 import tempfile
+import threading
 import time
 from pathlib import Path
 from unittest.mock import Mock
@@ -16,6 +20,7 @@ from server.pdf_parser import (
     IsolatedPdfWorker,
     ParsedPdf,
     PdfLimits,
+    _pdf_worker_entry,
     extract_pdf_text,
 )
 
@@ -39,6 +44,62 @@ class ReadTrackingStream(io.BytesIO):
     def read(self, size: int = -1) -> bytes:
         self.read_sizes.append(size)
         return super().read(size)
+
+
+class ShortReadingStream(ReadTrackingStream):
+    def __init__(self, value: bytes, chunk_size: int) -> None:
+        super().__init__(value)
+        self.chunk_size = chunk_size
+
+    def read(self, size: int = -1) -> bytes:
+        return super().read(min(size, self.chunk_size))
+
+
+class FixedRequestPipe:
+    def __init__(self, payload: bytes) -> None:
+        self.payload = payload
+        self.closed = False
+
+    def recv_bytes(self, maxlength: int) -> bytes:
+        assert len(self.payload) <= maxlength
+        return self.payload
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class CapturingResponsePipe:
+    def __init__(self) -> None:
+        self.sent_payloads: list[bytes] = []
+        self.closed = False
+
+    def send_bytes(self, payload: bytes) -> None:
+        self.sent_payloads.append(payload)
+
+    def close(self) -> None:
+        self.closed = True
+
+
+def build_pdf(objects: list[bytes]) -> bytes:
+    document = bytearray(b"%PDF-1.4\n")
+    offsets = [0]
+    for object_id, body in enumerate(objects, start=1):
+        offsets.append(len(document))
+        document.extend(f"{object_id} 0 obj\n".encode())
+        document.extend(body)
+        document.extend(b"\nendobj\n")
+    xref_offset = len(document)
+    document.extend(f"xref\n0 {len(objects) + 1}\n".encode())
+    document.extend(b"0000000000 65535 f \n")
+    for offset in offsets[1:]:
+        document.extend(f"{offset:010d} 00000 n \n".encode())
+    document.extend(
+        (
+            f"trailer\n<< /Size {len(objects) + 1} /Root 1 0 R >>\n"
+            f"startxref\n{xref_offset}\n%%EOF\n"
+        ).encode()
+    )
+    return bytes(document)
 
 
 def blank_pdf(page_count: int, *, malformed_page_after: bool = False) -> bytes:
@@ -73,25 +134,37 @@ def blank_pdf(page_count: int, *, malformed_page_after: bool = False) -> bytes:
             b"/Rotate /Broken /Resources << >> >>"
         )
 
-    document = bytearray(b"%PDF-1.4\n")
-    offsets = [0]
-    for object_id, body in enumerate(objects, start=1):
-        offsets.append(len(document))
-        document.extend(f"{object_id} 0 obj\n".encode())
-        document.extend(body)
-        document.extend(b"\nendobj\n")
-    xref_offset = len(document)
-    document.extend(f"xref\n0 {len(objects) + 1}\n".encode())
-    document.extend(b"0000000000 65535 f \n")
-    for offset in offsets[1:]:
-        document.extend(f"{offset:010d} 00000 n \n".encode())
-    document.extend(
+    return build_pdf(objects)
+
+
+def text_pdf(*page_texts: str) -> bytes:
+    page_ids = [3 + index * 2 for index in range(len(page_texts))]
+    font_id = 3 + len(page_texts) * 2
+    objects: list[bytes] = [
+        b"<< /Type /Catalog /Pages 2 0 R >>",
         (
-            f"trailer\n<< /Size {len(objects) + 1} /Root 1 0 R >>\n"
-            f"startxref\n{xref_offset}\n%%EOF\n"
-        ).encode()
-    )
-    return bytes(document)
+            b"<< /Type /Pages /Kids ["
+            + b" ".join(f"{page_id} 0 R".encode() for page_id in page_ids)
+            + f"] /Count {len(page_ids)} >>".encode()
+        ),
+    ]
+    for page_id, text in zip(page_ids, page_texts, strict=True):
+        content_id = page_id + 1
+        content = f"BT /F1 10 Tf 72 720 Td ({text}) Tj ET".encode()
+        objects.extend(
+            [
+                (
+                    b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] "
+                    b"/Resources << /Font << /F1 "
+                    + f"{font_id} 0 R >> >> /Contents {content_id} 0 R >>".encode()
+                ),
+                f"<< /Length {len(content)} >>\nstream\n".encode()
+                + content
+                + b"\nendstream",
+            ]
+        )
+    objects.append(b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>")
+    return build_pdf(objects)
 
 
 def crashing_worker(request_pipe, response_pipe, limits, timeout_seconds):
@@ -104,6 +177,36 @@ def hanging_worker(request_pipe, response_pipe, limits, timeout_seconds):
         time.sleep(1)
 
 
+def never_reading_worker(request_pipe, response_pipe, limits, timeout_seconds):
+    while True:
+        time.sleep(1)
+
+
+def partial_response_worker(request_pipe, response_pipe, limits, timeout_seconds):
+    request_pipe.recv_bytes(limits.max_bytes + 1)
+    os.write(response_pipe.fileno(), struct.pack("!i", 64) + b"{")
+    while True:
+        time.sleep(1)
+
+
+def watchdog_expired(signum, frame):
+    raise AssertionError("parser exceeded external test watchdog")
+
+
+def open_fd_count() -> int | None:
+    descriptor_root = Path("/dev/fd")
+    return len(list(descriptor_root.iterdir())) if descriptor_root.exists() else None
+
+
+def initialize_spawn_runtime() -> None:
+    try:
+        IsolatedPdfWorker(process_target=crashing_worker).parse(
+            blank_pdf(page_count=1), timeout_seconds=1.0
+        )
+    except PublicServiceError:
+        pass
+
+
 @pytest.fixture(autouse=True)
 def assert_no_child_or_temp_file_leak(tmp_path, monkeypatch):
     temp_root = tmp_path / "parser-temp"
@@ -111,6 +214,9 @@ def assert_no_child_or_temp_file_leak(tmp_path, monkeypatch):
     monkeypatch.setenv("TMPDIR", str(temp_root))
     child_pids_before = {
         child.pid for child in multiprocessing.active_children() if child.pid is not None
+    }
+    thread_ids_before = {
+        thread.ident for thread in threading.enumerate() if thread.ident is not None
     }
 
     yield
@@ -121,6 +227,12 @@ def assert_no_child_or_temp_file_leak(tmp_path, monkeypatch):
         if child.pid is not None and child.pid not in child_pids_before
     ]
     assert leaked_children == []
+    leaked_threads = [
+        thread
+        for thread in threading.enumerate()
+        if thread.ident is not None and thread.ident not in thread_ids_before
+    ]
+    assert leaked_threads == []
     assert list(temp_root.iterdir()) == []
 
 
@@ -182,6 +294,20 @@ def test_reads_only_the_byte_limit_plus_one_and_closes_the_stream():
 
     assert caught.value.code == "file_too_large"
     assert stream.read_sizes == [limits.max_bytes + 1]
+    assert stream.closed is True
+
+
+def test_repeatedly_reads_a_short_reading_stream_until_the_limit_plus_one():
+    limits = PdfLimits()
+    stream = ShortReadingStream(
+        b"%PDF-" + b"x" * (limits.max_bytes - 4), chunk_size=4_096
+    )
+
+    with pytest.raises(PublicServiceError) as caught:
+        extract_pdf_text(stream, declared_size=1, filename="resume.pdf")
+
+    assert caught.value.code == "file_too_large"
+    assert sum(stream.read_sizes) >= limits.max_bytes + 1
     assert stream.closed is True
 
 
@@ -263,3 +389,60 @@ def test_terminates_and_joins_a_hung_child_at_the_deadline():
 
     assert caught.value.code == "pdf_timeout"
     assert time.monotonic() - started_at < 1.5
+
+
+def test_deadline_covers_a_maximum_size_request_when_child_never_reads():
+    limits = PdfLimits()
+    worker = IsolatedPdfWorker(process_target=never_reading_worker)
+    bounded_payload = b"%PDF-" + b"x" * (limits.max_bytes - 5)
+    initialize_spawn_runtime()
+    started_at = time.monotonic()
+    fd_count_before = open_fd_count()
+    previous_handler = signal.signal(signal.SIGALRM, watchdog_expired)
+    signal.setitimer(signal.ITIMER_REAL, 1.5)
+
+    try:
+        with pytest.raises(PublicServiceError) as caught:
+            worker.parse(bounded_payload, timeout_seconds=0.2)
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, previous_handler)
+
+    assert caught.value.code == "pdf_timeout"
+    assert time.monotonic() - started_at < 1.0
+    assert open_fd_count() == fd_count_before
+
+
+def test_deadline_covers_partial_response_frame_and_cleans_helper_resources():
+    worker = IsolatedPdfWorker(process_target=partial_response_worker)
+    initialize_spawn_runtime()
+    started_at = time.monotonic()
+    fd_count_before = open_fd_count()
+    previous_handler = signal.signal(signal.SIGALRM, watchdog_expired)
+    signal.setitimer(signal.ITIMER_REAL, 1.5)
+
+    try:
+        with pytest.raises(PublicServiceError) as caught:
+            worker.parse(blank_pdf(page_count=1), timeout_seconds=0.2)
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, previous_handler)
+
+    assert caught.value.code == "pdf_timeout"
+    assert time.monotonic() - started_at < 1.0
+    assert open_fd_count() == fd_count_before
+
+
+def test_child_rejects_cumulative_code_points_before_success_ipc():
+    payload = text_pdf("A" * 15_000, "B" * 15_000)
+    request_pipe = FixedRequestPipe(payload)
+    response_pipe = CapturingResponsePipe()
+
+    _pdf_worker_entry(request_pipe, response_pipe, PdfLimits(), timeout_seconds=2.0)
+
+    assert [json.loads(payload) for payload in response_pipe.sent_payloads] == [
+        ["error", "resume_too_long"]
+    ]
+    assert len(response_pipe.sent_payloads[0]) < 100
+    assert request_pipe.closed is True
+    assert response_pipe.closed is True

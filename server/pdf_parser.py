@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import io
+import json
 import math
 import multiprocessing
 import sys
+import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -16,6 +18,7 @@ from .errors import ErrorCode, PublicServiceError
 
 PDF_PARSE_TIMEOUT_SECONDS = 5.0
 _MAX_CHILD_ADDRESS_SPACE_BYTES = 512 * 1024 * 1024
+_MAX_RESPONSE_BYTES = 12 * 30_000 + 1_024
 
 
 @dataclass(frozen=True, slots=True)
@@ -37,9 +40,22 @@ class ExtractedResume:
     page_count: int
 
 
+@dataclass(slots=True)
+class _IpcExchangeResult:
+    response_bytes: bytes | None = None
+    failed: bool = False
+
+
 WorkerTarget: TypeAlias = Callable[
     [Connection, Connection, PdfLimits, float], None
 ]
+
+
+def _close_connection(connection: Connection) -> None:
+    try:
+        connection.close()
+    except OSError:
+        pass
 
 
 def _apply_child_resource_limits(timeout_seconds: float) -> None:
@@ -66,6 +82,7 @@ def _parse_pdf_bytes(pdf_bytes: bytes, limits: PdfLimits) -> ParsedPdf:
     opened_pages: list[Page] = []
     pdf_stream = io.BytesIO(pdf_bytes)
     pdf = None
+    code_point_count = 0
     try:
         pdf = pdfplumber.open(pdf_stream)
         initial_doctop = 0
@@ -82,7 +99,17 @@ def _parse_pdf_bytes(pdf_bytes: bytes, limits: PdfLimits) -> ParsedPdf:
             )
             opened_pages.append(page)
             extracted = (page.extract_text() or "").replace("\r\n", "\n")
-            page_text.append(extracted.replace("\r", "\n"))
+            normalized = extracted.replace("\r", "\n")
+            if "\x00" in normalized:
+                raise PublicServiceError(ErrorCode.PDF_INVALID)
+            separator_code_points = 1 if page_text else 0
+            if (
+                code_point_count + separator_code_points + len(normalized)
+                > limits.max_code_points
+            ):
+                raise PublicServiceError(ErrorCode.RESUME_TOO_LONG)
+            page_text.append(normalized)
+            code_point_count += separator_code_points + len(normalized)
             initial_doctop += page.height
     except PDFPasswordIncorrect:
         raise PublicServiceError(ErrorCode.PDF_ENCRYPTED) from None
@@ -112,22 +139,56 @@ def _pdf_worker_entry(
     timeout_seconds: float,
 ) -> None:
     pdf_bytes: bytes | None = None
+    parsed: ParsedPdf | None = None
+    response: list[str | int] | None = None
+    response_bytes: bytes | None = None
     try:
         _apply_child_resource_limits(timeout_seconds)
         pdf_bytes = request_pipe.recv_bytes(limits.max_bytes + 1)
         parsed = _parse_pdf_bytes(pdf_bytes, limits)
-        response_pipe.send(("ok", parsed.text, parsed.page_count))
+        response = ["ok", parsed.text, parsed.page_count]
     except PublicServiceError as error:
-        response_pipe.send(("error", error.code.value))
+        response = ["error", error.code.value]
     except BaseException:
-        try:
-            response_pipe.send(("error", ErrorCode.PDF_INVALID.value))
-        except (BrokenPipeError, EOFError, OSError):
-            pass
+        response = ["error", ErrorCode.PDF_INVALID.value]
+    try:
+        response_bytes = json.dumps(
+            response, ensure_ascii=False, separators=(",", ":")
+        ).encode("utf-8")
+        response_pipe.send_bytes(response_bytes)
+    except (BrokenPipeError, EOFError, OSError):
+        pass
     finally:
         pdf_bytes = None
-        request_pipe.close()
-        response_pipe.close()
+        parsed = None
+        response = None
+        response_bytes = None
+        _close_connection(request_pipe)
+        _close_connection(response_pipe)
+
+
+def _exchange_ipc(
+    request_pipe: Connection,
+    response_pipe: Connection,
+    pdf_bytes: bytes,
+    result: _IpcExchangeResult,
+) -> None:
+    try:
+        request_pipe.send_bytes(pdf_bytes)
+    except (BrokenPipeError, EOFError, OSError):
+        result.failed = True
+        _close_connection(response_pipe)
+        return
+    finally:
+        _close_connection(request_pipe)
+
+    try:
+        result.response_bytes = response_pipe.recv_bytes(_MAX_RESPONSE_BYTES)
+    except (BrokenPipeError, EOFError, OSError):
+        result.failed = True
+    finally:
+        _close_connection(response_pipe)
+        pdf_bytes = b""
 
 
 class IsolatedPdfWorker:
@@ -164,38 +225,50 @@ class IsolatedPdfWorker:
             args=(request_receive, response_send, self._limits, timeout_seconds),
             daemon=True,
         )
-        response: tuple[str, str, int] | tuple[str, str] | None = None
+        exchange_result = _IpcExchangeResult()
+        exchange_thread: threading.Thread | None = None
+        response: object = None
+        text: object = None
+        page_count: object = None
         deadline = time.monotonic() + timeout_seconds
 
         try:
             process.start()
             request_receive.close()
             response_send.close()
-            try:
-                request_send.send_bytes(pdf_bytes)
-            except (BrokenPipeError, EOFError, OSError):
+            exchange_thread = threading.Thread(
+                target=_exchange_ipc,
+                args=(
+                    request_send,
+                    response_receive,
+                    pdf_bytes,
+                    exchange_result,
+                ),
+                name="pdf-ipc-exchange",
+            )
+            exchange_thread.start()
+            exchange_thread.join(max(0.0, deadline - time.monotonic()))
+            if exchange_thread.is_alive():
+                _close_connection(request_send)
+                _close_connection(response_receive)
                 self._stop_process(process)
-                raise PublicServiceError(ErrorCode.PDF_INVALID) from None
-            finally:
-                request_send.close()
-
-            remaining = max(0.0, deadline - time.monotonic())
-            if not response_receive.poll(remaining):
-                self._stop_process(process)
+                exchange_thread.join()
                 raise PublicServiceError(ErrorCode.PDF_TIMEOUT)
 
-            try:
-                response = response_receive.recv()
-            except (EOFError, OSError):
+            if exchange_result.failed or exchange_result.response_bytes is None:
                 self._stop_process(process)
-                raise PublicServiceError(ErrorCode.PDF_INVALID) from None
+                raise PublicServiceError(ErrorCode.PDF_INVALID)
 
             process.join(max(0.0, deadline - time.monotonic()))
             if process.is_alive():
                 self._stop_process(process)
                 raise PublicServiceError(ErrorCode.PDF_TIMEOUT)
 
-            if not isinstance(response, tuple) or len(response) < 2:
+            try:
+                response = json.loads(exchange_result.response_bytes.decode("utf-8"))
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                raise PublicServiceError(ErrorCode.PDF_INVALID) from None
+            if not isinstance(response, list) or len(response) < 2:
                 raise PublicServiceError(ErrorCode.PDF_INVALID)
             if response[0] == "error" and len(response) == 2:
                 try:
@@ -207,7 +280,11 @@ class IsolatedPdfWorker:
                 raise PublicServiceError(ErrorCode.PDF_INVALID)
 
             text, page_count = response[1], response[2]
-            if not isinstance(text, str) or not isinstance(page_count, int):
+            if (
+                not isinstance(text, str)
+                or not isinstance(page_count, int)
+                or isinstance(page_count, bool)
+            ):
                 raise PublicServiceError(ErrorCode.PDF_INVALID)
             return ParsedPdf(text=text, page_count=page_count)
         finally:
@@ -219,9 +296,33 @@ class IsolatedPdfWorker:
                 response_receive,
                 response_send,
             ):
-                connection.close()
+                _close_connection(connection)
+            if exchange_thread is not None and exchange_thread.is_alive():
+                exchange_thread.join()
+            process.close()
+            exchange_result.response_bytes = None
             response = None
+            text = None
+            page_count = None
             pdf_bytes = b""
+
+
+def _read_bounded(stream: BinaryIO, max_bytes: int) -> bytes:
+    buffered = bytearray()
+    chunk: bytes | None = None
+    target_bytes = max_bytes + 1
+    try:
+        while len(buffered) < target_bytes:
+            chunk = stream.read(target_bytes - len(buffered))
+            if not isinstance(chunk, bytes):
+                raise PublicServiceError(ErrorCode.PDF_INVALID)
+            if not chunk:
+                break
+            buffered.extend(chunk[: target_bytes - len(buffered)])
+        return bytes(buffered)
+    finally:
+        chunk = None
+        buffered.clear()
 
 
 def extract_pdf_text(
@@ -229,13 +330,15 @@ def extract_pdf_text(
 ) -> ExtractedResume:
     limits = PdfLimits()
     pdf_bytes: bytes | None = None
+    normalized_text: str | None = None
+    parsed: ParsedPdf | None = None
     try:
         if Path(filename).suffix.lower() != ".pdf":
             raise PublicServiceError(ErrorCode.UNSUPPORTED_FILE)
         if declared_size > limits.max_bytes:
             raise PublicServiceError(ErrorCode.FILE_TOO_LARGE)
 
-        pdf_bytes = stream.read(limits.max_bytes + 1)
+        pdf_bytes = _read_bounded(stream, limits.max_bytes)
         if len(pdf_bytes) > limits.max_bytes:
             raise PublicServiceError(ErrorCode.FILE_TOO_LARGE)
         if not pdf_bytes.startswith(b"%PDF-"):
@@ -255,4 +358,6 @@ def extract_pdf_text(
         return ExtractedResume(text=normalized_text, page_count=parsed.page_count)
     finally:
         pdf_bytes = None
+        normalized_text = None
+        parsed = None
         stream.close()
