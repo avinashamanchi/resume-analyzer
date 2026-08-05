@@ -1,6 +1,7 @@
 import validFixture from '../../contracts/fixtures/analysis-valid.json';
 
 import { MAX_JOB_DESCRIPTION_CODE_POINTS, MAX_RESUME_CODE_POINTS } from '../src/domain/limits';
+import { validateApiBaseUrl } from '../src/api/apiBaseUrl';
 import { ResumeApi } from '../src/api/resumeApi';
 import { ResumeApiError } from '../src/domain/errors';
 
@@ -21,6 +22,28 @@ function response(status: number, data: unknown) {
     status,
     json: jest.fn().mockResolvedValue(data),
   } as unknown as Response;
+}
+
+async function settlePromptly<T>(promise: Promise<T>): Promise<
+  | { state: 'fulfilled'; value: T }
+  | { state: 'rejected'; error: unknown }
+  | { state: 'pending' }
+> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const pending = new Promise<{ state: 'pending' }>((resolve) => {
+    timer = setTimeout(() => resolve({ state: 'pending' }), 25);
+  });
+  try {
+    return await Promise.race([
+      promise.then(
+        (value) => ({ state: 'fulfilled' as const, value }),
+        (error: unknown) => ({ state: 'rejected' as const, error }),
+      ),
+      pending,
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
 }
 
 function createApi(overrides: Partial<ConstructorParameters<typeof ResumeApi>[0]> = {}) {
@@ -155,6 +178,35 @@ describe('ResumeApi multipart boundary', () => {
     expect(() => createApi({ apiBaseUrl: 'https://localhost:5000' })).toThrow();
   });
 
+  it.each([
+    'https://localhost.',
+    'https://127.0.0.2',
+    'https://0x7f000001',
+    'https://0177.0.0.1',
+    'https://2130706433',
+    'https://10.1.2.3',
+    'https://172.16.0.1',
+    'https://192.168.0.1',
+    'https://169.254.1.1',
+    'https://0.0.0.0',
+    'https://192.0.0.8',
+    'https://192.0.2.1',
+    'https://198.51.100.1',
+    'https://224.0.0.1',
+    'https://[::]',
+    'https://[::1]',
+    'https://[::ffff:127.0.0.1]',
+    'https://[::ffff:7f00:1]',
+    'https://[fc00::1]',
+    'https://[fe80::1]',
+  ])('rejects non-public API origin %s after URL canonicalization', (origin) => {
+    expect(() => validateApiBaseUrl(origin)).toThrow();
+  });
+
+  it('canonicalizes a public hostname trailing dot without selecting a fallback', () => {
+    expect(validateApiBaseUrl('https://api.example.test.')).toBe('https://api.example.test');
+  });
+
   it('parses JSON once and exposes only validated stable public errors', async () => {
     const payload = {
       schemaVersion: 1,
@@ -201,6 +253,57 @@ describe('ResumeApi multipart boundary', () => {
     ).rejects.toMatchObject({ category: 'service', code: 'invalid_installation' });
     expect(installationTokens.clear).toHaveBeenCalledTimes(1);
     expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns the validated 401 service error promptly when token invalidation hangs', async () => {
+    jest.useFakeTimers();
+    const neverClears = new Promise<void>(() => undefined);
+    const { api, installationTokens } = createApi({
+      fetchImpl: jest.fn().mockResolvedValue(response(401, {
+        schemaVersion: 1,
+        code: 'invalid_installation',
+        message: 'Session expired.',
+        requestId: validFixture.analysisId,
+        retryable: false,
+      })),
+      installationTokens: {
+        getOrIssue: jest.fn().mockResolvedValue('signed-token'),
+        clear: jest.fn(() => neverClears),
+      },
+      timeoutMs: 10,
+    });
+    const controller = new AbortController();
+    const pending = api.analyze(
+      { source: { kind: 'text', text: 'Resume' }, consentVersion: '2026-08-04.v1' },
+      controller.signal,
+    );
+
+    await expect(pending).rejects.toMatchObject({
+      category: 'service',
+      code: 'invalid_installation',
+    });
+    expect(installationTokens.clear).toHaveBeenCalledTimes(1);
+    expect(jest.getTimerCount()).toBe(0);
+    controller.abort();
+  });
+
+  it.each([
+    null,
+    'resume',
+    [],
+    { source: null, consentVersion: '2026-08-04.v1' },
+    { source: [], consentVersion: '2026-08-04.v1' },
+    { source: 3, consentVersion: '2026-08-04.v1' },
+    { source: { kind: 'text' }, consentVersion: '2026-08-04.v1' },
+    { source: { kind: 'text', text: 'resume', unexpected: true }, consentVersion: '2026-08-04.v1' },
+    { source: { kind: 'pdf', uri: null, name: 'resume.pdf', mimeType: 'application/pdf', size: 1 }, consentVersion: '2026-08-04.v1' },
+  ])('converts malformed runtime request input %#p into a stable validation error', async (input) => {
+    const { api, fetchImpl } = createApi();
+
+    await expect(api.analyze(input as never, new AbortController().signal)).rejects.toMatchObject({
+      category: 'validation',
+    });
+    expect(fetchImpl).not.toHaveBeenCalled();
   });
 
   it('fails closed for non-JSON, unknown, or excessive service responses without body leakage', async () => {

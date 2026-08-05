@@ -37,6 +37,7 @@ export type AnalyzeRequest = Readonly<{
 export type InstallationTokenProvider = Readonly<{
   getOrIssue(signal: AbortSignal): Promise<string>;
   clear(): Promise<void>;
+  invalidate?: () => Promise<void>;
 }>;
 
 export type ResumeApiOptions = Readonly<{
@@ -67,13 +68,17 @@ function assertExactKeys(value: unknown, keys: readonly string[]): value is Reco
   return actual.length === expected.length && actual.every((key, index) => key === expected[index]);
 }
 
-function assertCanonicalRequestId(value: string): string {
-  if (!UUID.test(value)) throw new ResumeApiError('validation');
+function assertCanonicalRequestId(value: unknown): string {
+  if (typeof value !== 'string' || !UUID.test(value)) throw new ResumeApiError('validation');
   return value;
 }
 
-function appendTextSource(formData: FormData, source: TextAnalyzeSource): void {
-  if (!assertExactKeys(source, ['kind', 'text']) || typeof source.text !== 'string') {
+function appendTextSource(formData: FormData, source: unknown): void {
+  if (
+    !assertExactKeys(source, ['kind', 'text']) ||
+    (source.kind !== 'text' && source.kind !== 'vision_text') ||
+    typeof source.text !== 'string'
+  ) {
     throw new ResumeApiError('validation');
   }
   if (!isNonBlankPythonText(source.text) || codePointLength(source.text) > MAX_RESUME_CODE_POINTS) {
@@ -83,9 +88,10 @@ function appendTextSource(formData: FormData, source: TextAnalyzeSource): void {
   formData.append('source_type', source.kind);
 }
 
-function appendPdfSource(formData: FormData, source: PdfAnalyzeSource): void {
+function appendPdfSource(formData: FormData, source: unknown): void {
   if (
     !assertExactKeys(source, ['kind', 'uri', 'name', 'mimeType', 'size']) ||
+    source.kind !== 'pdf' ||
     typeof source.uri !== 'string' ||
     !isNonBlankPythonText(source.uri) ||
     typeof source.name !== 'string' ||
@@ -93,6 +99,7 @@ function appendPdfSource(formData: FormData, source: PdfAnalyzeSource): void {
     codePointLength(source.name) > 255 ||
     !source.name.toLowerCase().endsWith('.pdf') ||
     source.mimeType !== 'application/pdf' ||
+    typeof source.size !== 'number' ||
     !Number.isInteger(source.size) ||
     source.size < 0 ||
     source.size > MAX_PDF_BYTES
@@ -105,12 +112,17 @@ function appendPdfSource(formData: FormData, source: PdfAnalyzeSource): void {
   );
 }
 
-function createMultipartPayload(request: AnalyzeRequest, requestId: string): MultipartPayload {
+function createMultipartPayload(request: unknown, requestId: unknown): MultipartPayload {
   if (!assertExactKeys(request, ['source', 'jobDescription', 'consentVersion']) &&
       !assertExactKeys(request, ['source', 'consentVersion'])) {
     throw new ResumeApiError('validation');
   }
-  if (request.consentVersion !== CONSENT_VERSION) throw new ResumeApiError('validation');
+  if (typeof request.consentVersion !== 'string' || request.consentVersion !== CONSENT_VERSION) {
+    throw new ResumeApiError('validation');
+  }
+  if (request.source === null || typeof request.source !== 'object' || Array.isArray(request.source)) {
+    throw new ResumeApiError('validation');
+  }
   const formData = new FormData();
   formData.append('consent_version', CONSENT_VERSION);
   formData.append('request_id', assertCanonicalRequestId(requestId));
@@ -128,9 +140,10 @@ function createMultipartPayload(request: AnalyzeRequest, requestId: string): Mul
     }
   }
 
-  if (request.source.kind === 'pdf') appendPdfSource(formData, request.source);
-  else if (request.source.kind === 'text' || request.source.kind === 'vision_text') {
-    appendTextSource(formData, request.source);
+  const source = request.source as Record<string, unknown>;
+  if (source.kind === 'pdf') appendPdfSource(formData, source);
+  else if (source.kind === 'text' || source.kind === 'vision_text') {
+    appendTextSource(formData, source);
   } else {
     throw new ResumeApiError('validation');
   }
@@ -189,7 +202,13 @@ export class ResumeApi {
 
   async analyze(input: AnalyzeRequest, signal: AbortSignal): Promise<AnalysisResponse> {
     if (signal.aborted) throw new ResumeApiError('cancelled');
-    const payload = createMultipartPayload(input, this.requestId());
+    let payload: MultipartPayload;
+    try {
+      payload = createMultipartPayload(input, this.requestId());
+    } catch (error) {
+      if (error instanceof ResumeApiError) throw error;
+      throw new ResumeApiError('validation');
+    }
     const controller = new AbortController();
     let timedOut = false;
     const abortFromCaller = () => controller.abort();
@@ -224,11 +243,7 @@ export class ResumeApi {
       const publicError = PublicErrorSchema.safeParse(data);
       if (!publicError.success) throw new ResumeApiError('invalid_response');
       if (response.status === 401 && publicError.data.code === 'invalid_installation') {
-        try {
-          await this.installationTokens.clear();
-        } catch {
-          // The next submit can still issue a new token; do not replay this request.
-        }
+        this.scheduleTokenInvalidation();
       }
       throw new ResumeApiError('service', publicError.data);
     } catch (error) {
@@ -240,6 +255,17 @@ export class ResumeApi {
     } finally {
       clearTimeout(timeout);
       signal.removeEventListener('abort', abortFromCaller);
+    }
+  }
+
+  private scheduleTokenInvalidation(): void {
+    try {
+      const operation = this.installationTokens.invalidate === undefined
+        ? this.installationTokens.clear()
+        : this.installationTokens.invalidate();
+      void Promise.resolve(operation).catch(() => undefined);
+    } catch {
+      // A future explicit submit can issue a new anonymous token; never replay this request.
     }
   }
 }
