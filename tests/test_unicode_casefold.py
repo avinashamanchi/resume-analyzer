@@ -10,6 +10,7 @@ GENERATOR_PATH = ROOT / "scripts" / "generate_unicode_casefold.py"
 MODULE_PATH = ROOT / "static" / "unicode_casefold.js"
 NORMALIZATION_MODULE_PATH = ROOT / "static" / "unicode_normalization.js"
 NORMALIZATION_CORPUS_PATH = ROOT / "tests" / "fixtures" / "unicode" / "nfkc-python-15.json"
+MOBILE_MODULE_PATH = ROOT / "mobile" / "src" / "domain" / "generated" / "unicode15.ts"
 
 
 def load_generator():
@@ -48,3 +49,9 @@ def test_committed_nfkc_module_and_multi_scalar_corpus_match_python_runtime():
     assert generator.nfkc_mapping() == expected
     assert NORMALIZATION_MODULE_PATH.read_text(encoding="utf-8") == generator.render_normalization_module()
     assert NORMALIZATION_CORPUS_PATH.read_text(encoding="utf-8") == generator.render_normalization_corpus()
+
+
+def test_committed_mobile_unicode_module_is_the_same_deterministic_python_artifact():
+    generator = load_generator()
+
+    assert MOBILE_MODULE_PATH.read_text(encoding="utf-8") == generator.render_mobile_module()
