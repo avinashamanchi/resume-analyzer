@@ -219,10 +219,11 @@ export class ResumeApi {
     }, this.timeoutMs);
 
     try {
-      const token = await awaitAbortable(
-        this.installationTokens.getOrIssue(controller.signal),
-        controller.signal,
-      );
+      // The token store owns its explicit commit phase: wrapping it in a
+      // second abort race could report cancellation while its authority
+      // finalize later commits. It still receives the controller signal for
+      // pre-commit cancellation and timeout handling.
+      const token = await this.installationTokens.getOrIssue(controller.signal);
       const response = await awaitAbortable(
         this.fetchImpl(`${this.apiBaseUrl}/v1/analyses`, {
           method: 'POST',

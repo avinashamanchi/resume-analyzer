@@ -16,12 +16,14 @@ jest.mock('expo-sqlite', () => ({
 }));
 
 import * as SecureStore from 'expo-secure-store';
+import { openDatabaseAsync } from 'expo-sqlite';
 
 import { CONSENT_VERSION, ConsentStore } from '../src/security/consentStore';
 import {
   INSTALLATION_TOKEN_KEY,
   InstallationTokenStore,
 } from '../src/security/installationToken';
+import { SQLiteTokenAuthorityStore } from '../src/security/tokenAuthority';
 
 const fetchMock = jest.fn();
 
@@ -460,6 +462,148 @@ describe('installation token boundary', () => {
     expect(fetchMock).not.toHaveBeenCalled();
     expect(SecureStore.getItemAsync).toHaveBeenCalledWith(tokenSlot(2));
     expect(SecureStore.getItemAsync).not.toHaveBeenCalledWith(tokenSlot(1));
+  });
+
+  it('lets a committed finalize win when the caller aborts after the commit point', async () => {
+    const authority = authorityStore();
+    const originalFinalize = authority.finalize.bind(authority);
+    const finalizeStarted = deferred<void>();
+    const finishFinalize = deferred<void>();
+    authority.finalize = async (generation) => {
+      finalizeStarted.resolve();
+      await finishFinalize.promise;
+      return originalFinalize(generation);
+    };
+    secureTokenSlots();
+    fetchMock.mockResolvedValueOnce(response(201, { schemaVersion: 1, installationToken: 'committed-token' }));
+    const { store } = createTokenStore(authority);
+    const controller = new AbortController();
+
+    const issue = store.getOrIssue(controller.signal);
+    await finalizeStarted.promise;
+    controller.abort();
+
+    await expect(settlePromptly(issue)).resolves.toEqual({ state: 'pending' });
+    finishFinalize.resolve();
+    await expect(issue).resolves.toBe('committed-token');
+
+    const { store: restartedStore } = createTokenStore(authority);
+    await expect(restartedStore.getOrIssue(new AbortController().signal)).resolves.toBe('committed-token');
+  });
+
+  it('waits to reject a pre-commit cancellation until its generation is durably retired', async () => {
+    const authority = authorityStore();
+    const originalRetire = authority.retire.bind(authority);
+    const retireStarted = deferred<void>();
+    const finishRetire = deferred<void>();
+    authority.retire = async (generation) => {
+      retireStarted.resolve();
+      await finishRetire.promise;
+      return originalRetire(generation);
+    };
+    const blockedSave = deferred<void>();
+    secureTokenSlots();
+    jest.mocked(SecureStore.setItemAsync).mockImplementationOnce(() => blockedSave.promise);
+    fetchMock.mockResolvedValueOnce(response(201, { schemaVersion: 1, installationToken: 'cancelled-token' }));
+    const { store } = createTokenStore(authority);
+    const controller = new AbortController();
+
+    const issue = store.getOrIssue(controller.signal);
+    await waitForMockCalls(jest.mocked(SecureStore.setItemAsync));
+    controller.abort();
+
+    await expect(settlePromptly(issue)).resolves.toEqual({ state: 'pending' });
+    await retireStarted.promise;
+    finishRetire.resolve();
+    await expect(issue).rejects.toMatchObject({ category: 'cancelled' });
+    expect(authority.snapshot().activeGeneration).toBeNull();
+
+    blockedSave.resolve();
+    await flushAsync();
+    const { store: restartedStore } = createTokenStore(authority);
+    fetchMock.mockResolvedValueOnce(response(201, { schemaVersion: 1, installationToken: 'fresh-token' }));
+    await expect(restartedStore.getOrIssue(new AbortController().signal)).resolves.toBe('fresh-token');
+  });
+
+  it('rechecks authority after reading a slot and never returns stale A after B replaces it', async () => {
+    const authority = authorityStore({ nextGeneration: 2, activeGeneration: 1 });
+    const delayedA = deferred<string | null>();
+    jest.mocked(SecureStore.getItemAsync)
+      .mockImplementationOnce(() => delayedA.promise)
+      .mockResolvedValueOnce('token-B');
+    const { store } = createTokenStore(authority);
+
+    const read = store.getOrIssue(new AbortController().signal);
+    await waitForMockCalls(jest.mocked(SecureStore.getItemAsync));
+    const generationB = await authority.reserve();
+    await authority.finalize(generationB);
+    delayedA.resolve('token-A');
+
+    await expect(read).resolves.toBe('token-B');
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('retries a missing active slot when retirement reports a newer authority', async () => {
+    const authority = authorityStore({ nextGeneration: 2, activeGeneration: 1 });
+    const originalRetire = authority.retire.bind(authority);
+    const originalFinalize = authority.finalize.bind(authority);
+    authority.retire = async (generation) => {
+      if (generation !== 1) return originalRetire(generation);
+      const generationB = await authority.reserve();
+      await originalFinalize(generationB);
+      return false;
+    };
+    secureTokenSlots({ [tokenSlot(2)]: 'token-B' });
+    const { store } = createTokenStore(authority);
+
+    await expect(store.getOrIssue(new AbortController().signal)).resolves.toBe('token-B');
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('confirms authority after finalize and returns a newer committed generation instead of stale A', async () => {
+    const authority = authorityStore();
+    const originalFinalize = authority.finalize.bind(authority);
+    authority.finalize = async (generation) => {
+      const result = await originalFinalize(generation);
+      if (generation === 1) {
+        const generationB = await authority.reserve();
+        await originalFinalize(generationB);
+      }
+      return result;
+    };
+    secureTokenSlots({ [tokenSlot(2)]: 'token-B' });
+    fetchMock.mockResolvedValueOnce(response(201, { schemaVersion: 1, installationToken: 'token-A' }));
+    const { store } = createTokenStore(authority);
+
+    await expect(store.getOrIssue(new AbortController().signal)).resolves.toBe('token-B');
+    const { store: restartedStore } = createTokenStore(authority);
+    await expect(restartedStore.getOrIssue(new AbortController().signal)).resolves.toBe('token-B');
+  });
+
+  it('fails closed before storage or network access for corrupt authority metadata', async () => {
+    const authority = authorityStore({ nextGeneration: 2, activeGeneration: 0 });
+    const { store } = createTokenStore(authority);
+
+    await expect(store.getOrIssue(new AbortController().signal)).rejects.toMatchObject({ category: 'network' });
+    expect(SecureStore.getItemAsync).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['zero active generation', { next_generation: 2, active_generation: 0, pending_generation: null }],
+    ['active generation not behind next', { next_generation: 2, active_generation: 2, pending_generation: null }],
+    ['equal active and pending generations', { next_generation: 3, active_generation: 2, pending_generation: 2 }],
+  ])('fails closed for persisted SQLite authority with %s', async (_caseName, row) => {
+    const database = {
+      execAsync: jest.fn().mockResolvedValue(undefined),
+      getFirstAsync: jest.fn().mockResolvedValue(row),
+      runAsync: jest.fn(),
+      withExclusiveTransactionAsync: jest.fn(),
+    };
+    jest.mocked(openDatabaseAsync).mockResolvedValue(database as never);
+    const authority = new SQLiteTokenAuthorityStore();
+
+    await expect(authority.read()).rejects.toThrow('Token authority');
   });
 
   it('does not let a delayed invalidation for A abort or retire the newer B issuance', async () => {

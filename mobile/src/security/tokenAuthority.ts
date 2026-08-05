@@ -32,12 +32,44 @@ type AuthorityDatabase = Pick<SQLiteDatabase, 'getFirstAsync' | 'runAsync'>;
 const AUTHORITY_DATABASE = 'resume-ai-token-authority.db';
 const AUTHORITY_TABLE = 'installation_token_authority';
 
+function assertGeneration(value: unknown): number {
+  if (!Number.isSafeInteger(value) || (value as number) < 1) {
+    throw new Error('Token authority contains an invalid generation.');
+  }
+  return value as number;
+}
+
+function assertOptionalGeneration(value: unknown): number | null {
+  return value === null ? null : assertGeneration(value);
+}
+
+// Treat authority metadata as untrusted persistent input. In particular, a
+// generation must always be positive and nextGeneration must remain ahead of
+// every generation that can still name a SecureStore slot.
+export function assertTokenAuthorityState(value: unknown): TokenAuthorityState {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error('Token authority state is malformed.');
+  }
+  const state = value as Record<string, unknown>;
+  const nextGeneration = assertGeneration(state.nextGeneration);
+  const activeGeneration = assertOptionalGeneration(state.activeGeneration);
+  const pendingGeneration = assertOptionalGeneration(state.pendingGeneration);
+  if (
+    (activeGeneration === pendingGeneration && activeGeneration !== null) ||
+    (activeGeneration !== null && nextGeneration <= activeGeneration) ||
+    (pendingGeneration !== null && nextGeneration <= pendingGeneration)
+  ) {
+    throw new Error('Token authority generations violate ordering invariants.');
+  }
+  return { nextGeneration, activeGeneration, pendingGeneration };
+}
+
 function stateFromRow(row: AuthorityRow): TokenAuthorityState {
-  return {
+  return assertTokenAuthorityState({
     nextGeneration: row.next_generation,
     activeGeneration: row.active_generation,
     pendingGeneration: row.pending_generation,
-  };
+  });
 }
 
 export class SQLiteTokenAuthorityStore implements TokenAuthorityStore {
@@ -48,13 +80,16 @@ export class SQLiteTokenAuthorityStore implements TokenAuthorityStore {
     const row = await database.getFirstAsync<AuthorityRow>(
       `SELECT next_generation, active_generation, pending_generation FROM ${AUTHORITY_TABLE} WHERE id = 1`,
     );
-    if (row === null) return { nextGeneration: 1, activeGeneration: null, pendingGeneration: null };
+    if (row === null) throw new Error('Token authority row is missing.');
     return stateFromRow(row);
   }
 
   async reserve(): Promise<number> {
     return this.exclusive(async (database, state) => {
       const generation = state.nextGeneration;
+      if (generation === Number.MAX_SAFE_INTEGER) {
+        throw new Error('Token authority generation space is exhausted.');
+      }
       await database.runAsync(
         `UPDATE ${AUTHORITY_TABLE} SET next_generation = ?, pending_generation = ? WHERE id = 1`,
         generation + 1,
@@ -65,6 +100,7 @@ export class SQLiteTokenAuthorityStore implements TokenAuthorityStore {
   }
 
   async finalize(generation: number): Promise<TokenAuthorityFinalizeResult> {
+    assertGeneration(generation);
     return this.exclusive(async (database, state) => {
       if (state.pendingGeneration !== generation) {
         return { activated: false, replacedGeneration: state.activeGeneration };
@@ -78,6 +114,7 @@ export class SQLiteTokenAuthorityStore implements TokenAuthorityStore {
   }
 
   async retire(generation: number): Promise<boolean> {
+    assertGeneration(generation);
     return this.exclusive(async (database, state) => {
       const matches = state.activeGeneration === generation || state.pendingGeneration === generation;
       if (!matches) return false;

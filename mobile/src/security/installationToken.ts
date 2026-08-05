@@ -5,6 +5,8 @@ import { InstallationResponseSchema, PublicErrorSchema } from '../domain/contrac
 import { ResumeApiError } from '../domain/errors';
 import {
   SQLiteTokenAuthorityStore,
+  assertTokenAuthorityState,
+  type TokenAuthorityState,
   type TokenAuthorityStore,
 } from './tokenAuthority';
 
@@ -21,12 +23,18 @@ export type InstallationTokenStoreOptions = Readonly<{
   authorityStore?: TokenAuthorityStore;
 }>;
 
+type IssuePhase = 'issuing' | 'committing' | 'cancelling';
+
 type InFlightIssue = {
   readonly controller: AbortController;
   readonly callers: Set<symbol>;
   generation: number | null;
+  phase: IssuePhase;
+  retirement: Promise<void> | null;
   promise: Promise<string>;
 };
+
+const MAX_ACTIVE_READ_ATTEMPTS = 3;
 
 type ActiveToken = Readonly<{ generation: number; token: string }>;
 
@@ -124,12 +132,24 @@ export class InstallationTokenStore {
     try {
       generation = await this.awaitAuthority(() => this.authorityStore.reserve(), signal);
       await this.writeToken(generation, parsed.data.installationToken, signal);
-      const result = await this.awaitAuthority(() => this.authorityStore.finalize(generation!), signal);
+      if (signal?.aborted) throw new AbortSignalFailure();
+      // Finalize is the durable commit point. It must run to a known outcome;
+      // aborting only the await would let SQLite activate a token after a caller
+      // was told that it had been cancelled.
+      const result = await this.awaitAuthority(() => this.authorityStore.finalize(generation!));
       if (!result.activated) throw new ResumeApiError('cancelled');
       finalized = true;
+      const confirmed = await this.readAuthority();
+      if (confirmed.activeGeneration !== generation) throw new ResumeApiError('network');
       this.currentToken = { generation, token: parsed.data.installationToken };
     } catch (error) {
-      if (generation !== null && !finalized) this.retireInBackground(generation);
+      if (generation !== null && !finalized) {
+        try {
+          await this.retireGeneration(generation);
+        } catch (retireError) {
+          throw this.storageError(retireError);
+        }
+      }
       throw this.storageError(error);
     }
   }
@@ -147,9 +167,9 @@ export class InstallationTokenStore {
 
   async invalidate(expectedToken: string): Promise<void> {
     if (typeof expectedToken !== 'string' || expectedToken.length === 0) return;
-    let state;
+    let state: TokenAuthorityState;
     try {
-      state = await asPromise(() => this.authorityStore.read());
+      state = await this.readAuthority();
     } catch {
       return;
     }
@@ -182,41 +202,60 @@ export class InstallationTokenStore {
     return this.joinIssue(inFlight, signal);
   }
 
-  private async readActive(signal: AbortSignal): Promise<string | null> {
-    let state;
-    try {
-      state = await this.awaitAuthority(() => this.authorityStore.read(), signal);
-    } catch (error) {
-      throw this.storageError(error);
-    }
-    const generation = state.activeGeneration;
-    if (generation === null) return null;
-
-    let token: string | null;
-    if (this.currentToken?.generation === generation) {
-      token = this.currentToken.token;
-    } else {
+  private async readActive(signal?: AbortSignal): Promise<string | null> {
+    for (let attempt = 0; attempt < MAX_ACTIVE_READ_ATTEMPTS; attempt += 1) {
+      let state: TokenAuthorityState;
       try {
-        token = await awaitAbortable(
-          asPromise(() => SecureStore.getItemAsync(installationTokenSlot(generation))),
-          signal,
-        );
+        state = await this.readAuthority(signal);
       } catch (error) {
         throw this.storageError(error);
       }
+      const generation = state.activeGeneration;
+      if (generation === null) return null;
+
+      let token: string | null;
+      if (this.currentToken?.generation === generation) {
+        token = this.currentToken.token;
+      } else {
+        try {
+          token = await awaitAbortable(
+            asPromise(() => SecureStore.getItemAsync(installationTokenSlot(generation))),
+            signal,
+          );
+        } catch (error) {
+          throw this.storageError(error);
+        }
+      }
+
+      let confirmed: TokenAuthorityState;
+      try {
+        confirmed = await this.readAuthority(signal);
+      } catch (error) {
+        throw this.storageError(error);
+      }
+      if (confirmed.activeGeneration !== generation) {
+        if (this.currentToken?.generation === generation) this.currentToken = null;
+        continue;
+      }
+
+      const parsed = InstallationResponseSchema.safeParse({ schemaVersion: 1, installationToken: token });
+      if (parsed.success && !isExpiredToken(parsed.data.installationToken, this.now())) {
+        this.currentToken = { generation, token: parsed.data.installationToken };
+        return parsed.data.installationToken;
+      }
+      try {
+        const retired = await this.awaitAuthority(() => this.authorityStore.retire(generation), signal);
+        if (!retired) {
+          if (this.currentToken?.generation === generation) this.currentToken = null;
+          continue;
+        }
+      } catch (error) {
+        throw this.storageError(error);
+      }
+      if (this.currentToken?.generation === generation) this.currentToken = null;
+      return null;
     }
-    const parsed = InstallationResponseSchema.safeParse({ schemaVersion: 1, installationToken: token });
-    if (parsed.success && !isExpiredToken(parsed.data.installationToken, this.now())) {
-      this.currentToken = { generation, token: parsed.data.installationToken };
-      return parsed.data.installationToken;
-    }
-    try {
-      await this.awaitAuthority(() => this.authorityStore.retire(generation), signal);
-    } catch (error) {
-      throw this.storageError(error);
-    }
-    if (this.currentToken?.generation === generation) this.currentToken = null;
-    return null;
+    throw new ResumeApiError('network');
   }
 
   private startIssue(): InFlightIssue {
@@ -224,6 +263,8 @@ export class InstallationTokenStore {
       controller: new AbortController(),
       callers: new Set(),
       generation: null,
+      phase: 'issuing',
+      retirement: null,
       promise: Promise.resolve(''),
     };
     inFlight.promise = this.issue(inFlight).finally(() => {
@@ -242,16 +283,36 @@ export class InstallationTokenStore {
     inFlight.callers.add(caller);
     return new Promise<string>((resolve, reject) => {
       let settled = false;
+      let cancelling = false;
       const removeCaller = () => {
         signal.removeEventListener('abort', cancel);
         inFlight.callers.delete(caller);
       };
       const cancel = () => {
-        if (settled) return;
-        settled = true;
+        if (settled || cancelling) return;
+        // After this synchronous transition, finalize is deliberately
+        // non-abortable. Keeping the caller attached means the same issuance
+        // cannot report cancellation and later become durable.
+        if (inFlight.phase === 'committing') return;
+        cancelling = true;
         removeCaller();
-        if (inFlight.callers.size === 0) this.abandon(inFlight);
-        reject(new ResumeApiError('cancelled'));
+        if (inFlight.callers.size > 0) {
+          settled = true;
+          reject(new ResumeApiError('cancelled'));
+          return;
+        }
+        void this.cancelBeforeCommit(inFlight).then(
+          () => {
+            if (settled) return;
+            settled = true;
+            reject(new ResumeApiError('cancelled'));
+          },
+          (error: unknown) => {
+            if (settled) return;
+            settled = true;
+            reject(this.storageError(error));
+          },
+        );
       };
       if (signal.aborted) {
         cancel();
@@ -260,8 +321,8 @@ export class InstallationTokenStore {
       signal.addEventListener('abort', cancel, { once: true });
       inFlight.promise.then(
         (token) => {
-          if (settled) return;
-          if (signal.aborted) {
+          if (settled || cancelling) return;
+          if (signal.aborted && inFlight.phase !== 'committing') {
             cancel();
             return;
           }
@@ -270,7 +331,7 @@ export class InstallationTokenStore {
           resolve(token);
         },
         (error: unknown) => {
-          if (settled) return;
+          if (settled || cancelling) return;
           settled = true;
           removeCaller();
           reject(error);
@@ -280,17 +341,32 @@ export class InstallationTokenStore {
   }
 
   private isCurrent(inFlight: InFlightIssue): boolean {
-    return this.inFlight === inFlight && inFlight.callers.size > 0 && !inFlight.controller.signal.aborted;
+    return (
+      this.inFlight === inFlight &&
+      inFlight.phase === 'issuing' &&
+      inFlight.callers.size > 0 &&
+      !inFlight.controller.signal.aborted
+    );
   }
 
-  private abandon(inFlight: InFlightIssue): void {
+  private async cancelBeforeCommit(inFlight: InFlightIssue): Promise<void> {
+    if (inFlight.phase === 'committing') return;
+    inFlight.phase = 'cancelling';
     if (this.inFlight === inFlight) this.inFlight = null;
-    if (inFlight.generation !== null) this.retireInBackground(inFlight.generation);
     inFlight.controller.abort();
+    if (inFlight.generation !== null) await this.retireInFlightGeneration(inFlight);
   }
 
-  private retireInBackground(generation: number): void {
-    void asPromise(() => this.authorityStore.retire(generation)).catch(() => undefined);
+  private async retireGeneration(generation: number): Promise<void> {
+    await asPromise(() => this.authorityStore.retire(generation));
+  }
+
+  private retireInFlightGeneration(inFlight: InFlightIssue): Promise<void> {
+    if (inFlight.generation === null) return Promise.resolve();
+    if (inFlight.retirement === null) {
+      inFlight.retirement = this.retireGeneration(inFlight.generation);
+    }
+    return inFlight.retirement;
   }
 
   private async issue(inFlight: InFlightIssue): Promise<string> {
@@ -339,16 +415,29 @@ export class InstallationTokenStore {
 
       await this.writeToken(inFlight.generation, installation.data.installationToken, inFlight.controller.signal);
       if (!this.isCurrent(inFlight)) throw new ResumeApiError('cancelled');
-      const result = await this.awaitAuthority(
-        () => this.authorityStore.finalize(inFlight.generation!),
-        inFlight.controller.signal,
-      );
-      if (!result.activated || !this.isCurrent(inFlight)) throw new ResumeApiError('cancelled');
+      // This assignment and the following finalize call are the explicit commit
+      // phase. From here, cancellation waits for a known durable outcome and a
+      // successful finalize wins over the caller's late abort.
+      inFlight.phase = 'committing';
+      const result = await this.awaitAuthority(() => this.authorityStore.finalize(inFlight.generation!));
+      if (!result.activated) throw new ResumeApiError('cancelled');
       finalized = true;
+      const confirmed = await this.readAuthority();
+      if (confirmed.activeGeneration !== inFlight.generation) {
+        const replacement = await this.readActive();
+        if (replacement !== null) return replacement;
+        throw new ResumeApiError('network');
+      }
       this.currentToken = { generation: inFlight.generation, token: installation.data.installationToken };
       return installation.data.installationToken;
     } catch (error) {
-      if (inFlight.generation !== null && !finalized) this.retireInBackground(inFlight.generation);
+      if (inFlight.generation !== null && !finalized) {
+        try {
+          await this.retireInFlightGeneration(inFlight);
+        } catch (retireError) {
+          throw this.storageError(retireError);
+        }
+      }
       throw this.storageError(error);
     }
   }
@@ -379,6 +468,10 @@ export class InstallationTokenStore {
 
   private async awaitAuthority<T>(operation: () => Promise<T>, signal?: AbortSignal): Promise<T> {
     return awaitAbortable(asPromise(operation), signal);
+  }
+
+  private async readAuthority(signal?: AbortSignal): Promise<TokenAuthorityState> {
+    return assertTokenAuthorityState(await this.awaitAuthority(() => this.authorityStore.read(), signal));
   }
 
   private storageError(error: unknown): ResumeApiError {
