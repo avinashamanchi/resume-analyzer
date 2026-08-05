@@ -119,6 +119,24 @@ function sourceHarness(result: PickerResult = successResult()) {
 }
 
 describe('DocumentSourceService', () => {
+  it('returns a bounded filename only through the current-screen display wrapper', async () => {
+    const { service } = sourceHarness(successResult({ name: 'Private Resume 2026.pdf' }));
+
+    const picked = await service.pickPdfForDisplay();
+
+    expect(picked?.displayName).toBe('Private Resume 2026.pdf');
+    expect(picked?.source).not.toHaveProperty('name');
+    expect(JSON.stringify(picked?.source)).not.toContain('Private Resume');
+  });
+
+  it('uses a generic bounded display label for an overlong picker filename', async () => {
+    const { service } = sourceHarness(successResult({ name: `${'a'.repeat(81)}.pdf` }));
+
+    await expect(service.pickPdfForDisplay()).resolves.toMatchObject({
+      displayName: 'Selected resume.pdf',
+    });
+  });
+
   it('copies one valid PDF into a generated app-owned location without retaining its filename', async () => {
     const { fileSystem, picker, service } = sourceHarness();
 

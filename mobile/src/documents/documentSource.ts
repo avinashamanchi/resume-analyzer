@@ -39,6 +39,11 @@ export type VisionTextSource = Readonly<{
 
 export type ResumeSource = PdfSource | TextSource | VisionTextSource;
 
+export type PickedPdfForDisplay = Readonly<{
+  source: PdfSource;
+  displayName: string;
+}>;
+
 type DocumentSourceErrorCategory = 'validation' | 'privacy';
 
 const DOCUMENT_ERROR_MESSAGES: Readonly<Record<DocumentSourceErrorCategory, string>> = {
@@ -187,6 +192,12 @@ function isPdfHeader(header: Uint8Array): boolean {
   return PDF_HEADER.every((byte, index) => header[index] === byte);
 }
 
+function boundedDisplayName(value: string): string {
+  const cleaned = value.replace(/[\u0000-\u001f\u007f]/gu, '').trim();
+  if (cleaned.length === 0 || codePointLength(cleaned) > 80) return 'Selected resume.pdf';
+  return cleaned;
+}
+
 export class DocumentSourceService {
   private readonly picker: PickerPort;
   private readonly registry: TempFileRegistry;
@@ -201,6 +212,11 @@ export class DocumentSourceService {
   }
 
   async pickPdf(): Promise<PdfSource | null> {
+    const picked = await this.pickPdfForDisplay();
+    return picked?.source ?? null;
+  }
+
+  async pickPdfForDisplay(): Promise<PickedPdfForDisplay | null> {
     let result: PickerResult;
     try {
       result = await this.picker.pick({
@@ -249,11 +265,14 @@ export class DocumentSourceService {
           throw asValidationError('invalid_copied_pdf');
         }
         return {
-          kind: 'pdf',
-          requestId,
-          uri: staged.uri,
-          size: inspection.size,
-          lease: staged.lease,
+          source: {
+            kind: 'pdf',
+            requestId,
+            uri: staged.uri,
+            size: inspection.size,
+            lease: staged.lease,
+          },
+          displayName: boundedDisplayName(result.assets[0].name as string),
         };
       } catch (error) {
         if (requestLease !== null) {
