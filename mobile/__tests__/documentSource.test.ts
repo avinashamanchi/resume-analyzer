@@ -124,12 +124,13 @@ describe('DocumentSourceService', () => {
 
     const source = await service.pickPdf();
 
-    expect(source).toEqual({
+    expect(source).toMatchObject({
       kind: 'pdf',
       requestId: REQUEST_ID,
       uri: `file:///app/cache/resume-ai-v1/${REQUEST_ID}/${FILE_ID}.pdf`,
       size: 128,
     });
+    expect(typeof source?.lease).toBe('symbol');
     expect(source).not.toHaveProperty('name');
     expect(picker.pick).toHaveBeenCalledWith({
       type: 'application/pdf',
@@ -289,6 +290,8 @@ describe('DocumentSourceService', () => {
       live: 1,
     });
     expect(source).toMatchObject({ kind: 'pdf', requestId: REQUEST_ID });
+    expect(typeof source?.lease).toBe('symbol');
+    expect(JSON.stringify(source)).not.toContain('lease');
     expect(fileSystem.deleted).toEqual([]);
   });
 
@@ -319,6 +322,7 @@ describe('DocumentSourceService', () => {
       fileId: () => SECOND_FILE_ID,
     });
     const original = await firstService.pickPdf();
+    if (original === null) throw new Error('expected a staged PDF');
     fileSystem.copyFailure = copyFailure;
 
     await expect(secondService.pickPdf()).rejects.toMatchObject({
@@ -345,7 +349,7 @@ describe('DocumentSourceService', () => {
       deleted: 0,
       live: 1,
     });
-    await expect(registry.cleanupRequest(REQUEST_ID)).resolves.toEqual({
+    await expect(registry.cleanupRequest(REQUEST_ID, original.lease)).resolves.toEqual({
       attempted: 1,
       deleted: 1,
       failed: 0,
@@ -380,6 +384,7 @@ describe('DocumentSourceService', () => {
       fileId: () => SECOND_FILE_ID,
     });
     const original = await firstService.pickPdf();
+    if (original === null) throw new Error('expected a staged PDF');
 
     await expect(collidingService.pickPdf()).rejects.toMatchObject({
       category: 'privacy',
@@ -395,7 +400,7 @@ describe('DocumentSourceService', () => {
       deleted: 0,
       live: 1,
     });
-    await expect(registry.cleanupRequest(REQUEST_ID)).resolves.toMatchObject({ deleted: 1 });
+    await expect(registry.cleanupRequest(REQUEST_ID, original.lease)).resolves.toMatchObject({ deleted: 1 });
   });
 
   it('fails closed and removes the owned copy when the picker cache copy cannot be released', async () => {
@@ -409,6 +414,57 @@ describe('DocumentSourceService', () => {
     expect(fileSystem.deleted).toEqual([
       `file:///app/cache/resume-ai-v1/${REQUEST_ID}`,
     ]);
+  });
+
+  it('uses the acquired lease for invalid-copy cleanup', async () => {
+    const { fileSystem, registry, service } = sourceHarness();
+    const cleanup = jest.spyOn(registry, 'cleanupRequest');
+    fileSystem.actualSize = 127;
+
+    await expect(service.pickPdf()).rejects.toMatchObject({ category: 'validation' });
+
+    expect(cleanup).toHaveBeenCalledTimes(1);
+    expect(cleanup.mock.calls[0]?.[0]).toBe(REQUEST_ID);
+    expect(typeof cleanup.mock.calls[0]?.[1]).toBe('symbol');
+  });
+
+  it('a delayed provider-failure cleanup cannot delete a later same-request owner', async () => {
+    const fileSystem = new SourceFileSystem();
+    const registry = new TempFileRegistry({ fileSystem });
+    const cleanup = jest.spyOn(registry, 'cleanupRequest');
+    const service = new DocumentSourceService({
+      picker: {
+        pick: jest.fn(async () => successResult()),
+        release: jest.fn(async () => {
+          throw new Error('private provider cleanup detail');
+        }),
+      },
+      registry,
+      requestId: () => REQUEST_ID,
+      fileId: () => FILE_ID,
+    });
+    await expect(service.pickPdf()).rejects.toMatchObject({
+      category: 'privacy',
+      code: 'provider_cleanup_failed',
+    });
+    const staleLease = cleanup.mock.calls[0]?.[1] as symbol;
+    expect(typeof staleLease).toBe('symbol');
+    const stagedB = await registry.stagePdf(
+      REQUEST_ID,
+      SECOND_FILE_ID,
+      PROVIDER_URI,
+    ) as Awaited<ReturnType<TempFileRegistry['stagePdf']>> & { readonly lease: symbol };
+
+    await expect(registry.cleanupRequest(REQUEST_ID, staleLease)).resolves.toEqual({
+      attempted: 0,
+      deleted: 0,
+      failed: 0,
+      refused: 1,
+    });
+    await expect(registry.cleanupAbandonedDetailed()).resolves.toMatchObject({ live: 1 });
+    await expect(registry.cleanupRequest(REQUEST_ID, stagedB.lease)).resolves.toMatchObject({
+      deleted: 1,
+    });
   });
 });
 

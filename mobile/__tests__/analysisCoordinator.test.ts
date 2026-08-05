@@ -18,6 +18,12 @@ const REQUEST_A = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const REQUEST_B = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
 const RESULT_A = '11111111-1111-4111-8111-111111111111';
 const RESULT_B = '22222222-2222-4222-8222-222222222222';
+const LEASE_A = Symbol();
+const LEASE_B = Symbol();
+const PDF_LEASES = new Map<string, symbol>([
+  [REQUEST_A, LEASE_A],
+  [REQUEST_B, LEASE_B],
+]);
 const CLEAN: CleanupReceipt = { attempted: 0, deleted: 0, failed: 0, refused: 0 };
 const OWNED_PDF_PATTERN = /^file:\/\/\/app\/cache\/resume-ai-v1\/([0-9a-f-]+)\/([0-9a-f-]+\.pdf)$/;
 
@@ -47,12 +53,54 @@ function textSource(text = 'private resume draft'): Extract<ResumeSource, { kind
   return { kind: 'text', text };
 }
 
-function pdfSource(requestId = REQUEST_A): Extract<ResumeSource, { kind: 'pdf' }> {
+function leaseFor(requestId: string): symbol {
+  let lease = PDF_LEASES.get(requestId);
+  if (lease === undefined) {
+    lease = Symbol();
+    PDF_LEASES.set(requestId, lease);
+  }
+  return lease;
+}
+
+function pdfSource(
+  requestId = REQUEST_A,
+  lease = leaseFor(requestId),
+): Extract<ResumeSource, { kind: 'pdf' }> {
   return {
     kind: 'pdf',
     requestId,
     uri: `file:///app/cache/resume-ai-v1/${requestId}/11111111-1111-4111-8111-111111111111.pdf`,
     size: 1_024,
+    lease,
+  };
+}
+
+function leasedPdfSource(
+  requestId = REQUEST_A,
+  lease = requestId === REQUEST_A ? LEASE_A : LEASE_B,
+): Extract<ResumeSource, { kind: 'pdf' }> {
+  return pdfSource(requestId, lease);
+}
+
+function leasedPdfOwnership(expectedLease = LEASE_A) {
+  const assertOwnedFileUri = jest.fn((uri: unknown) => {
+    if (typeof uri !== 'string') throw new Error('not owned');
+    const match = OWNED_PDF_PATTERN.exec(uri);
+    if (match === null) throw new Error('not owned');
+    return { requestId: match[1], uri };
+  });
+  return {
+    assertOwnedFileUri,
+    inspectOwnedFileUri: jest.fn(async (
+      uri: unknown,
+      _requestId?: string,
+      _lease?: symbol,
+    ) => ({
+      ...assertOwnedFileUri(uri),
+      lease: expectedLease,
+      exists: true,
+      size: 1_024,
+    })),
   };
 }
 
@@ -70,10 +118,15 @@ function pdfOwnership() {
   });
   return {
     assertOwnedFileUri,
-    inspectOwnedFileUri: jest.fn(async (uri: unknown) => {
+    inspectOwnedFileUri: jest.fn(async (
+      uri: unknown,
+      _requestId: string,
+      lease: symbol,
+    ) => {
       const owned = assertOwnedFileUri(uri);
       return {
         ...owned,
+        lease,
         exists: !missing.has(owned.requestId),
         size: 1_024,
       };
@@ -94,7 +147,7 @@ function harness(overrides: Partial<AnalysisCoordinatorOptions> = {}) {
   };
   const tempFiles = {
     cleanupAbandoned: jest.fn(async () => CLEAN),
-    cleanupRequest: jest.fn(async () => CLEAN),
+    cleanupRequest: jest.fn(async (_requestId: string, _lease: symbol) => CLEAN),
   };
   const ownership = pdfOwnership();
   const coordinator = new AnalysisCoordinator({
@@ -168,7 +221,7 @@ describe('review fixes: Task 10 ownership authority', () => {
 
     expect(ownership.assertOwnedFileUri).toHaveBeenCalledWith(external.uri);
     expect(api.analyze).not.toHaveBeenCalled();
-    expect(tempFiles.cleanupRequest).not.toHaveBeenCalledWith(REQUEST_A);
+    expect(tempFiles.cleanupRequest).not.toHaveBeenCalled();
     expect(coordinator.getState()).toMatchObject({
       status: 'failed',
       source: null,
@@ -179,9 +232,10 @@ describe('review fixes: Task 10 ownership authority', () => {
   it('requires ownership authority to return the exact declared request ID', async () => {
     const ownership = {
       assertOwnedFileUri: jest.fn((uri: unknown) => ({ requestId: REQUEST_B, uri: String(uri) })),
-      inspectOwnedFileUri: jest.fn(async (uri: unknown) => ({
+      inspectOwnedFileUri: jest.fn(async (uri: unknown, _requestId: string, lease: symbol) => ({
         requestId: REQUEST_B,
         uri: String(uri),
+        lease,
         exists: true,
         size: 1_024,
       })),
@@ -193,7 +247,7 @@ describe('review fixes: Task 10 ownership authority', () => {
     await coordinator.commands.analyze();
 
     expect(api.analyze).not.toHaveBeenCalled();
-    expect(tempFiles.cleanupRequest).toHaveBeenCalledWith(REQUEST_B);
+    expect(tempFiles.cleanupRequest).toHaveBeenCalledWith(REQUEST_B, LEASE_A);
     expect(coordinator.getState()).toMatchObject({ status: 'failed', source: null });
   });
 });
@@ -336,7 +390,7 @@ describe('review fixes: PDF consent exits', () => {
     await coordinator.commands.grantConsent();
 
     expect(api.analyze).not.toHaveBeenCalled();
-    expect(tempFiles.cleanupRequest).toHaveBeenCalledWith(REQUEST_A);
+    expect(tempFiles.cleanupRequest).toHaveBeenCalledWith(REQUEST_A, LEASE_A);
     expect(coordinator.getState()).toMatchObject({
       status: 'failed',
       source: null,
@@ -357,7 +411,7 @@ describe('review fixes: PDF consent exits', () => {
     await analysis;
 
     expect(api.analyze).not.toHaveBeenCalled();
-    expect(tempFiles.cleanupRequest).toHaveBeenCalledWith(REQUEST_A);
+    expect(tempFiles.cleanupRequest).toHaveBeenCalledWith(REQUEST_A, LEASE_A);
     expect(coordinator.getState()).toMatchObject({ status: 'cancelled', source: null });
   });
 
@@ -375,7 +429,7 @@ describe('review fixes: PDF consent exits', () => {
       else await coordinator.handleAppState('background');
 
       expect(api.analyze).not.toHaveBeenCalled();
-      expect(tempFiles.cleanupRequest).toHaveBeenCalledWith(REQUEST_A);
+      expect(tempFiles.cleanupRequest).toHaveBeenCalledWith(REQUEST_A, LEASE_A);
       expect(coordinator.getState()).toMatchObject({
         status: exit === 'decline' ? 'idle' : 'cancelled',
         source: null,
@@ -430,7 +484,7 @@ describe('review fixes: concurrent staged PDF ownership', () => {
     await Promise.all([first, second]);
     await coordinator.commands.analyze();
 
-    expect(cleanupRequest).toHaveBeenCalledWith(REQUEST_B);
+    expect(cleanupRequest).toHaveBeenCalledWith(REQUEST_B, LEASE_B);
     expect(api.analyze).not.toHaveBeenCalled();
     expect(coordinator.getState().source).toBeNull();
   });
@@ -690,7 +744,7 @@ describe('analysis startup and consent barriers', () => {
     await Promise.all([initialization, selection]);
     await coordinator.commands.analyze();
 
-    expect(cleanupRequest).toHaveBeenCalledWith(REQUEST_A);
+    expect(cleanupRequest).toHaveBeenCalledWith(REQUEST_A, LEASE_A);
     expect(coordinator.getState().source).toBeNull();
     expect(api.analyze).not.toHaveBeenCalled();
   });
@@ -1035,17 +1089,177 @@ describe('analysis generations and cancellation', () => {
   });
 });
 
+describe('review fixes: registry lease epochs', () => {
+  it('snapshots the opaque PDF lease and uses it for terminal cleanup', async () => {
+    const cleanupRequest = jest.fn(async (_requestId: string, lease?: symbol) =>
+      lease === LEASE_A
+        ? { attempted: 1, deleted: 1, failed: 0, refused: 0 }
+        : { attempted: 0, deleted: 0, failed: 0, refused: 1 },
+    );
+    const ownership = leasedPdfOwnership();
+    const { coordinator } = harness({
+      pdfOwnership: ownership,
+      tempFiles: { cleanupAbandoned: jest.fn(async () => CLEAN), cleanupRequest },
+    });
+    await coordinator.initialize();
+    const callerSource = leasedPdfSource() as unknown as { lease: symbol } & ResumeSource;
+    await coordinator.commands.selectSource(callerSource);
+    const storedSource = coordinator.getState().source;
+    expect(storedSource).toMatchObject({ kind: 'pdf', lease: LEASE_A });
+    expect(JSON.stringify(storedSource)).not.toContain('lease');
+    expect(String(storedSource?.kind === 'pdf' ? storedSource.lease : null)).toBe('Symbol()');
+    callerSource.lease = LEASE_B;
+
+    await coordinator.commands.reset();
+
+    expect(cleanupRequest).toHaveBeenCalledWith(REQUEST_A, LEASE_A);
+    expect(coordinator.getState()).toMatchObject({ status: 'idle', source: null });
+  });
+
+  it('keeps timeout, reset, and dispose cleanup bound to stale A after B becomes current', async () => {
+    jest.useFakeTimers();
+    try {
+      const lateCleanup = deferred<CleanupReceipt>();
+      let currentLease: symbol | null = LEASE_A;
+      const deletedLeases: symbol[] = [];
+      const cleanupRequest = jest.fn((
+        _requestId: string,
+        lease?: symbol,
+      ): Promise<CleanupReceipt> => {
+        if (cleanupRequest.mock.calls.length === 1) {
+          return lateCleanup.promise.then(receipt => {
+            if (currentLease !== lease) {
+              return { attempted: 0, deleted: 0, failed: 0, refused: 1 };
+            }
+            if (receipt.deleted === 1) {
+              deletedLeases.push(lease);
+              currentLease = null;
+            }
+            return receipt;
+          });
+        }
+        if (currentLease !== lease) {
+          return Promise.resolve({ attempted: 0, deleted: 0, failed: 0, refused: 1 });
+        }
+        deletedLeases.push(lease);
+        currentLease = null;
+        return Promise.resolve({ attempted: 1, deleted: 1, failed: 0, refused: 0 });
+      });
+      const { coordinator } = harness({
+        api: { analyze: jest.fn(async () => result(RESULT_A, 'pdf')) },
+        pdfOwnership: leasedPdfOwnership(),
+        tempFiles: { cleanupAbandoned: jest.fn(async () => CLEAN), cleanupRequest },
+        cleanupTimeoutMs: 25,
+      });
+      await coordinator.initialize();
+      await coordinator.commands.selectSource(leasedPdfSource());
+
+      const analysis = coordinator.commands.analyze();
+      await jest.advanceTimersByTimeAsync(25);
+      await analysis;
+      currentLease = LEASE_B;
+      await coordinator.commands.reset();
+      await coordinator.dispose();
+      lateCleanup.resolve({ attempted: 1, deleted: 1, failed: 0, refused: 0 });
+      await flushPromises();
+
+      expect(cleanupRequest.mock.calls).toEqual([
+        [REQUEST_A, LEASE_A],
+        [REQUEST_A, LEASE_A],
+        [REQUEST_A, LEASE_A],
+      ]);
+      expect(deletedLeases).toEqual([]);
+      expect(currentLease).toBe(LEASE_B);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('strips the in-memory lease from the exact ResumeApi PDF request', async () => {
+    const { api, coordinator } = harness({ pdfOwnership: leasedPdfOwnership() });
+    await coordinator.initialize();
+    await coordinator.commands.selectSource(leasedPdfSource());
+
+    await coordinator.commands.analyze();
+
+    expect(api.analyze.mock.calls[0]?.[0]).toEqual({
+      source: {
+        kind: 'pdf',
+        uri: leasedPdfSource().uri,
+        name: 'resume.pdf',
+        mimeType: 'application/pdf',
+        size: 1_024,
+      },
+      jobDescription: undefined,
+      consentVersion: CONSENT_VERSION,
+    });
+    const sent = api.analyze.mock.calls[0]?.[0] as { source: unknown };
+    expect(Object.prototype.hasOwnProperty.call(
+      sent.source,
+      'lease',
+    )).toBe(false);
+  });
+
+  it.each([
+    ['missing lease', {
+      requestId: REQUEST_A,
+      uri: pdfSource().uri,
+      exists: true,
+      size: 1_024,
+    }],
+    ['wrong lease', {
+      requestId: REQUEST_A,
+      uri: pdfSource().uri,
+      lease: LEASE_B,
+      exists: true,
+      size: 1_024,
+    }],
+    ['extra field', {
+      requestId: REQUEST_A,
+      uri: pdfSource().uri,
+      lease: LEASE_A,
+      exists: true,
+      size: 1_024,
+      unexpected: true,
+    }],
+  ] as const)('rejects a live inspection with %s and cleans only its exact lease', async (_name, inspection) => {
+    const cleanupRequest = jest.fn(async () => ({
+      attempted: 1,
+      deleted: 1,
+      failed: 0,
+      refused: 0,
+    }));
+    const ownership = {
+      assertOwnedFileUri: jest.fn((uri: unknown) => ({ requestId: REQUEST_A, uri: String(uri) })),
+      inspectOwnedFileUri: jest.fn(async () => inspection),
+    };
+    const { api, coordinator } = harness({
+      pdfOwnership: ownership as never,
+      tempFiles: { cleanupAbandoned: jest.fn(async () => CLEAN), cleanupRequest },
+    });
+    await coordinator.initialize();
+
+    await coordinator.commands.selectSource(pdfSource());
+    await coordinator.commands.analyze();
+
+    expect(api.analyze).not.toHaveBeenCalled();
+    expect(cleanupRequest).toHaveBeenCalledWith(REQUEST_A, LEASE_A);
+    expect(coordinator.getState()).toMatchObject({
+      status: 'failed',
+      source: null,
+      error: { category: 'validation' },
+    });
+  });
+});
+
 describe('PDF terminal cleanup', () => {
   it('translates only the generated owned URI, actual size, fixed MIME, and generic filename', async () => {
     const { api, coordinator } = harness();
     await coordinator.initialize();
-    await coordinator.commands.selectSource({
-      ...pdfSource(),
-      providerFilename: 'Private Person - Staff Resume.pdf',
-    } as unknown as ResumeSource);
+    await coordinator.commands.selectSource(pdfSource());
     await coordinator.commands.analyze();
 
-    expect(api.analyze.mock.calls[0][0]).toMatchObject({
+    expect(api.analyze.mock.calls[0][0]).toEqual({
       source: {
         kind: 'pdf',
         uri: pdfSource().uri,
@@ -1053,8 +1267,28 @@ describe('PDF terminal cleanup', () => {
         mimeType: 'application/pdf',
         name: 'resume.pdf',
       },
+      jobDescription: undefined,
+      consentVersion: CONSENT_VERSION,
     });
+  });
+
+  it('strictly rejects and cleans a PDF source carrying provider metadata', async () => {
+    const { api, coordinator, tempFiles } = harness();
+    await coordinator.initialize();
+    await coordinator.commands.selectSource({
+      ...pdfSource(),
+      providerFilename: 'Private Person - Staff Resume.pdf',
+    } as unknown as ResumeSource);
+    await coordinator.commands.analyze();
+
+    expect(api.analyze).not.toHaveBeenCalled();
+    expect(tempFiles.cleanupRequest).toHaveBeenCalledWith(REQUEST_A, LEASE_A);
     expect(JSON.stringify(coordinator.getState())).not.toContain('Private Person');
+    expect(coordinator.getState()).toMatchObject({
+      status: 'failed',
+      source: null,
+      error: { category: 'validation' },
+    });
   });
 
   it.each([
@@ -1082,7 +1316,7 @@ describe('PDF terminal cleanup', () => {
     cleanup.resolve({ attempted: 1, deleted: 1, failed: 0, refused: 0 });
     await analysis;
 
-    expect(tempFiles.cleanupRequest).toHaveBeenCalledWith(REQUEST_A);
+    expect(tempFiles.cleanupRequest).toHaveBeenCalledWith(REQUEST_A, LEASE_A);
     expect(coordinator.getState().status).toBe(failure === null ? 'succeeded' : 'failed');
     expect(coordinator.getState().source).toBeNull();
   });
@@ -1110,7 +1344,7 @@ describe('PDF terminal cleanup', () => {
 
     const cancellation = coordinator.commands.cancel();
     await cleanupStarted.promise;
-    expect(tempFiles.cleanupRequest).toHaveBeenCalledWith(REQUEST_A);
+    expect(tempFiles.cleanupRequest).toHaveBeenCalledWith(REQUEST_A, LEASE_A);
     expect(coordinator.getState().status).toBe('analyzing');
     cleanup.resolve({ attempted: 1, deleted: 1, failed: 0, refused: 0 });
     await Promise.all([analysis, cancellation]);
@@ -1153,7 +1387,7 @@ describe('PDF terminal cleanup', () => {
 
     await coordinator.commands.setJobDescription('updated private job draft');
 
-    expect(tempFiles.cleanupRequest).toHaveBeenCalledWith(REQUEST_A);
+    expect(tempFiles.cleanupRequest).toHaveBeenCalledWith(REQUEST_A, LEASE_A);
     expect(coordinator.getState()).toMatchObject({
       status: 'idle',
       source: null,
@@ -1311,6 +1545,26 @@ describe('PDF terminal cleanup', () => {
 });
 
 describe('disposal and sensitive-data boundary', () => {
+  it('never logs an opaque PDF lease during selection or terminal cleanup', async () => {
+    const errorLog = jest.spyOn(console, 'error').mockImplementation(() => undefined);
+    const warnLog = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const infoLog = jest.spyOn(console, 'info').mockImplementation(() => undefined);
+    try {
+      const { coordinator } = harness({ pdfOwnership: leasedPdfOwnership() });
+      await coordinator.initialize();
+      await coordinator.commands.selectSource(leasedPdfSource());
+      await coordinator.commands.reset();
+
+      expect(errorLog).not.toHaveBeenCalled();
+      expect(warnLog).not.toHaveBeenCalled();
+      expect(infoLog).not.toHaveBeenCalled();
+    } finally {
+      errorLog.mockRestore();
+      warnLog.mockRestore();
+      infoLog.mockRestore();
+    }
+  });
+
   it('marks the coordinator disposed before aborting and awaits PDF cleanup without later commits', async () => {
     const pending = deferred<AnalysisResponse>();
     const cleanup = deferred<CleanupReceipt>();

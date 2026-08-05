@@ -12,6 +12,7 @@ import {
   DocumentPrivacyError,
   PdfStagingError,
   TempFileRegistry,
+  type TempFileLease,
   canonicalizeLocalFileUri,
   isDirectLocalFileChild,
 } from './tempFileRegistry';
@@ -21,6 +22,7 @@ export type PdfSource = Readonly<{
   requestId: string;
   uri: string;
   size: number;
+  lease: TempFileLease;
 }>;
 
 export type TextSource = Readonly<{
@@ -97,6 +99,20 @@ function randomUuid(): string {
 
 function asValidationError(code: string): DocumentSourceError {
   return new DocumentSourceError('validation', code);
+}
+
+function cleanupWasVerified(value: unknown): boolean {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
+  const receipt = value as Record<string, unknown>;
+  if (
+    Object.keys(receipt).length !== 4 ||
+    !['attempted', 'deleted', 'failed', 'refused'].every(key =>
+      Number.isSafeInteger(receipt[key]) && (receipt[key] as number) >= 0,
+    )
+  ) return false;
+  return receipt.failed === 0 &&
+    receipt.refused === 0 &&
+    receipt.attempted === receipt.deleted;
 }
 
 const expoPicker: PickerPort = {
@@ -199,7 +215,7 @@ export class DocumentSourceService {
     if (result?.canceled === true && result.assets === null) return null;
     const providerUris = selectedUris(result);
     let requestId: string | null = null;
-    let requestAcquired = false;
+    let requestLease: TempFileLease | null = null;
     try {
       if (result?.canceled !== false || !Array.isArray(result.assets) || result.assets.length !== 1) {
         throw asValidationError('invalid_picker_result');
@@ -215,20 +231,12 @@ export class DocumentSourceService {
       }
 
       try {
-        let staged;
-        try {
-          staged = await this.registry.stagePdf(
-            requestId,
-            fileId,
-            selected.providerUri,
-          );
-          requestAcquired = true;
-        } catch (error) {
-          if (error instanceof PdfStagingError) {
-            requestAcquired = error.requestAcquired;
-          }
-          throw error;
-        }
+        const staged = await this.registry.stagePdf(
+          requestId,
+          fileId,
+          selected.providerUri,
+        );
+        requestLease = staged.lease;
         const { inspection } = staged;
         if (
           !inspection.exists ||
@@ -245,20 +253,19 @@ export class DocumentSourceService {
           requestId,
           uri: staged.uri,
           size: inspection.size,
+          lease: staged.lease,
         };
       } catch (error) {
-        if (requestAcquired) {
-          const receipt = await this.registry.cleanupRequest(requestId);
-          requestAcquired = false;
-          if (receipt.failed > 0 || receipt.deleted !== receipt.attempted) {
+        if (requestLease !== null) {
+          const receipt = await this.registry.cleanupRequest(requestId, requestLease);
+          requestLease = null;
+          if (!cleanupWasVerified(receipt)) {
             throw new DocumentSourceError('privacy', 'cache_cleanup_failed');
           }
         }
         if (error instanceof PdfStagingError) {
-          if (!error.requestAcquired) {
-            throw new DocumentSourceError('privacy', error.code);
-          }
-          throw asValidationError('pdf_staging_failed');
+          if (error.code === 'pdf_staging_failed') throw asValidationError(error.code);
+          throw new DocumentSourceError('privacy', error.code);
         }
         if (error instanceof DocumentPrivacyError) {
           throw new DocumentSourceError('privacy', error.code);
@@ -275,10 +282,10 @@ export class DocumentSourceService {
         }
       }
       if (releaseFailed) {
-        if (requestId !== null && requestAcquired) {
-          const receipt = await this.registry.cleanupRequest(requestId);
-          requestAcquired = false;
-          if (receipt.failed > 0 || receipt.deleted !== receipt.attempted) {
+        if (requestId !== null && requestLease !== null) {
+          const receipt = await this.registry.cleanupRequest(requestId, requestLease);
+          requestLease = null;
+          if (!cleanupWasVerified(receipt)) {
             throw new DocumentSourceError('privacy', 'cache_cleanup_failed');
           }
         }

@@ -11,7 +11,7 @@ import {
   trimPythonWhitespace,
 } from '../domain/limits';
 import type { ResumeSource } from '../documents/documentSource';
-import type { CleanupReceipt } from '../documents/tempFileRegistry';
+import type { CleanupReceipt, TempFileLease } from '../documents/tempFileRegistry';
 import {
   analysisReducer,
   createInitialAnalysisState,
@@ -32,14 +32,19 @@ export type AnalysisConsentStorePort = Readonly<{
 
 export type AnalysisTempFilesPort = Readonly<{
   cleanupAbandoned(): Promise<CleanupReceipt>;
-  cleanupRequest(requestId: string): Promise<CleanupReceipt>;
+  cleanupRequest(requestId: string, lease: TempFileLease): Promise<CleanupReceipt>;
 }>;
 
 export type PdfOwnershipPort = Readonly<{
   assertOwnedFileUri(uri: unknown): { requestId: string; uri: string };
-  inspectOwnedFileUri(uri: unknown): Promise<{
+  inspectOwnedFileUri(
+    uri: unknown,
+    requestId: string,
+    lease: TempFileLease,
+  ): Promise<{
     requestId: string;
     uri: string;
+    lease: TempFileLease;
     exists: boolean;
     size: number;
   }>;
@@ -70,6 +75,7 @@ type Activation = {
   readonly generation: number;
   readonly sourceRevision: number;
   readonly source: ResumeSource;
+  readonly claim: PdfClaim | null;
   readonly controller: AbortController;
   phase: ActivationPhase;
   sourceConsumed: boolean;
@@ -84,6 +90,7 @@ type ConsentContinuation = Readonly<{
 type PdfClaim = Readonly<{
   requestId: string;
   uri: string;
+  lease: TempFileLease;
   epoch: number;
 }>;
 
@@ -150,6 +157,23 @@ function isVerifiedCleanupReceipt(value: unknown): value is CleanupReceipt {
     )
   ) return false;
   return receipt.failed === 0 && receipt.refused === 0 && receipt.attempted === receipt.deleted;
+}
+
+function isStaleLeaseReceipt(value: unknown): value is CleanupReceipt {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
+  const receipt = value as Record<string, unknown>;
+  return Object.keys(receipt).length === 4 &&
+    receipt.attempted === 0 &&
+    receipt.deleted === 0 &&
+    receipt.failed === 0 &&
+    receipt.refused === 1;
+}
+
+function hasExactKeys(value: object, keys: readonly string[]): boolean {
+  const actual = Object.keys(value).sort();
+  const expected = [...keys].sort();
+  return actual.length === expected.length &&
+    actual.every((key, index) => key === expected[index]);
 }
 
 function validText(value: unknown): value is string {
@@ -221,8 +245,8 @@ export class AnalysisCoordinator {
   private committedPdfClaim: PdfClaim | null = null;
   private readonly pdfClaims = new Map<string, PdfClaim>();
   private readonly ownedPdfRequestIds = new Set<string>();
-  private readonly cleanupFailures = new Set<string>();
-  private readonly cleanupOperations = new Map<string, Promise<boolean>>();
+  private readonly cleanupFailures = new Set<TempFileLease>();
+  private readonly cleanupOperations = new Map<TempFileLease, Promise<boolean>>();
   private readonly preReadyPdfCleanupOperations = new Set<Promise<boolean>>();
 
   readonly commands: AnalysisCommands = Object.freeze({
@@ -359,6 +383,7 @@ export class AnalysisCoordinator {
     return current !== undefined &&
       current.epoch === claim.epoch &&
       current.uri === claim.uri &&
+      current.lease === claim.lease &&
       this.ownedPdfRequestIds.has(claim.requestId);
   }
 
@@ -366,6 +391,9 @@ export class AnalysisCoordinator {
     if (source !== null && typeof source === 'object' && !Array.isArray(source)) {
       const candidate = source as Record<string, unknown>;
       if (candidate.kind === 'pdf') {
+        if (typeof candidate.lease !== 'symbol') {
+          return { source: null, claimedRequestId: null, newlyClaimed: false, claim: null };
+        }
         let asserted: { requestId: string; uri: string };
         try {
           asserted = this.pdfOwnership.assertOwnedFileUri(candidate.uri);
@@ -375,20 +403,19 @@ export class AnalysisCoordinator {
         if (
           asserted === null ||
           typeof asserted !== 'object' ||
+          !hasExactKeys(asserted, ['requestId', 'uri']) ||
           typeof asserted.requestId !== 'string' ||
           !REQUEST_ID_PATTERN.test(asserted.requestId) ||
           typeof asserted.uri !== 'string'
         ) return { source: null, claimedRequestId: null, newlyClaimed: false, claim: null };
 
-        if (
-          this.ownedPdfRequestIds.has(asserted.requestId) ||
-          this.cleanupOperations.has(asserted.requestId)
-        ) {
+        if (this.ownedPdfRequestIds.has(asserted.requestId)) {
           return { source: null, claimedRequestId: null, newlyClaimed: false, claim: null };
         }
         const claim = Object.freeze({
           requestId: asserted.requestId,
           uri: asserted.uri,
+          lease: candidate.lease,
           epoch: ++this.nextPdfClaimEpoch,
         });
         this.ownedPdfRequestIds.add(asserted.requestId);
@@ -398,6 +425,7 @@ export class AnalysisCoordinator {
           candidate.size > 0 &&
           candidate.size <= MAX_PDF_BYTES;
         if (
+          !hasExactKeys(candidate, ['kind', 'requestId', 'uri', 'size', 'lease']) ||
           candidate.requestId !== asserted.requestId ||
           !sizeIsValid
         ) {
@@ -414,6 +442,7 @@ export class AnalysisCoordinator {
             requestId: asserted.requestId,
             uri: asserted.uri,
             size: candidate.size as number,
+            lease: candidate.lease,
           }),
           claimedRequestId: asserted.requestId,
           newlyClaimed: true,
@@ -433,22 +462,28 @@ export class AnalysisCoordinator {
     if (source.kind !== 'pdf' || claim === null || !this.isPdfClaimCurrent(claim)) return false;
     let inspected: Awaited<ReturnType<PdfOwnershipPort['inspectOwnedFileUri']>>;
     try {
-      inspected = await this.pdfOwnership.inspectOwnedFileUri(claim.uri);
+      inspected = await this.pdfOwnership.inspectOwnedFileUri(
+        claim.uri,
+        claim.requestId,
+        claim.lease,
+      );
     } catch {
       return false;
     }
     return this.isPdfClaimCurrent(claim) &&
       inspected !== null &&
       typeof inspected === 'object' &&
+      hasExactKeys(inspected, ['requestId', 'uri', 'lease', 'exists', 'size']) &&
       inspected.requestId === claim.requestId &&
       inspected.uri === claim.uri &&
+      inspected.lease === claim.lease &&
       inspected.exists === true &&
       inspected.size === source.size;
   }
 
   private rejectPdfBeforePrivacyReady(prepared: PreparedSource): Promise<void> {
-    if (prepared.claimedRequestId === null || !prepared.newlyClaimed) return Promise.resolve();
-    const cleanup = this.cleanupRequest(prepared.claimedRequestId);
+    if (prepared.claim === null || !prepared.newlyClaimed) return Promise.resolve();
+    const cleanup = this.cleanupClaim(prepared.claim);
     this.preReadyPdfCleanupOperations.add(cleanup);
     void cleanup.finally(() => {
       this.preReadyPdfCleanupOperations.delete(cleanup);
@@ -468,11 +503,12 @@ export class AnalysisCoordinator {
     }
     if (this.state.privacyReadiness === 'blocked') return Promise.resolve();
     if (!this.mounted) {
-      return prepared.claimedRequestId !== null && prepared.newlyClaimed
-        ? this.cleanupRequest(prepared.claimedRequestId).then(() => undefined)
+      return prepared.claim !== null && prepared.newlyClaimed
+        ? this.cleanupClaim(prepared.claim).then(() => undefined)
         : Promise.resolve();
     }
     const previousSource = this.state.source;
+    const previousClaim = this.committedPdfClaim;
     let committed = false;
     let incomingReleased = false;
     const initialization = this.initialize();
@@ -481,11 +517,11 @@ export class AnalysisCoordinator {
       const releaseIncoming = async (): Promise<boolean> => {
         if (
           incomingReleased ||
-          prepared.claimedRequestId === null ||
+          prepared.claim === null ||
           !prepared.newlyClaimed
         ) return true;
         incomingReleased = true;
-        return this.cleanupRequest(prepared.claimedRequestId);
+        return this.cleanupClaim(prepared.claim);
       };
 
       try {
@@ -510,7 +546,7 @@ export class AnalysisCoordinator {
 
         let previousConsumed = false;
         if (previousSource?.kind === 'pdf') {
-          previousConsumed = await this.cleanupRequest(previousSource.requestId);
+          previousConsumed = previousClaim !== null && await this.cleanupClaim(previousClaim);
           if (!this.isCurrentMutation(generation)) return;
           if (!previousConsumed) {
             const incomingClean = await releaseIncoming();
@@ -588,6 +624,7 @@ export class AnalysisCoordinator {
   private setJobDescription(value: string): Promise<void> {
     if (!this.mounted) return Promise.resolve();
     const source = this.state.source;
+    const sourceClaim = this.committedPdfClaim;
     const wasConsentRequired = this.state.status === 'consentRequired';
     const initialization = this.initialize();
     return this.enqueueMutation('editing', async ({ generation, previousActivation }) => {
@@ -608,11 +645,13 @@ export class AnalysisCoordinator {
         const leftPreNetwork = previousActivation?.phase === 'consentRead' ||
           previousActivation?.phase === 'consentWrite' ||
           wasConsentRequired;
-        const deletionAlreadyProved = !this.ownedPdfRequestIds.has(source.requestId);
+        const deletionAlreadyProved = sourceClaim === null || !this.isPdfClaimCurrent(sourceClaim);
         const mustConsume = activationConsumed || leftPreNetwork || deletionAlreadyProved ||
-          this.cleanupFailures.has(source.requestId) || this.state.cleanupPending;
+          (sourceClaim !== null && this.cleanupFailures.has(sourceClaim.lease)) ||
+          this.state.cleanupPending;
         if (mustConsume) {
-          consumeSource = deletionAlreadyProved || await this.cleanupRequest(source.requestId);
+          consumeSource = deletionAlreadyProved ||
+            (sourceClaim !== null && await this.cleanupClaim(sourceClaim));
           if (!this.isCurrentMutation(generation)) return;
           if (!consumeSource) {
             this.dispatchPrivacyFailure(generation, false);
@@ -640,11 +679,19 @@ export class AnalysisCoordinator {
   }
 
   private newActivation(source: ResumeSource, phase: ActivationPhase): Activation {
+    const claim = source.kind === 'pdf' &&
+      this.committedPdfClaim !== null &&
+      this.committedPdfClaim.requestId === source.requestId &&
+      this.committedPdfClaim.uri === source.uri &&
+      this.committedPdfClaim.lease === source.lease
+      ? this.committedPdfClaim
+      : null;
     const activation: Activation = {
       id: ++this.nextActivation,
       generation: this.generation,
       sourceRevision: this.sourceRevision,
       source,
+      claim,
       controller: new AbortController(),
       phase,
       sourceConsumed: false,
@@ -755,7 +802,7 @@ export class AnalysisCoordinator {
   ): Promise<void> {
     let consumed = false;
     if (activation.source.kind === 'pdf') {
-      consumed = await this.cleanupRequest(activation.source.requestId);
+      consumed = activation.claim !== null && await this.cleanupClaim(activation.claim);
       activation.sourceConsumed = consumed;
     }
     if (!this.activationIsCurrent(activation)) return;
@@ -835,7 +882,7 @@ export class AnalysisCoordinator {
 
     let consumed = false;
     if (activation.source.kind === 'pdf') {
-      consumed = await this.cleanupRequest(activation.source.requestId);
+      consumed = activation.claim !== null && await this.cleanupClaim(activation.claim);
       activation.sourceConsumed = consumed;
       if (!consumed) {
         if (this.activationIsCurrent(activation)) {
@@ -890,6 +937,7 @@ export class AnalysisCoordinator {
       this.active?.phase !== 'consentWrite'
     ) return Promise.resolve();
     const source = this.state.source;
+    const sourceClaim = this.committedPdfClaim;
     return this.enqueueMutation('consent', async ({ generation }) => {
       if (!(await this.cleanupUncommitted())) {
         if (this.isCurrentMutation(generation)) this.dispatchPrivacyFailure(generation, false);
@@ -897,8 +945,8 @@ export class AnalysisCoordinator {
       }
       let consumed = false;
       if (source?.kind === 'pdf') {
-        consumed = !this.ownedPdfRequestIds.has(source.requestId) ||
-          await this.cleanupRequest(source.requestId);
+        consumed = sourceClaim === null || !this.isPdfClaimCurrent(sourceClaim) ||
+          await this.cleanupClaim(sourceClaim);
         if (!this.isCurrentMutation(generation)) return;
         if (!consumed) {
           this.dispatchPrivacyFailure(generation, false);
@@ -925,6 +973,7 @@ export class AnalysisCoordinator {
 
   private cancelConsentRequired(): Promise<void> {
     const source = this.state.source;
+    const sourceClaim = this.committedPdfClaim;
     return this.enqueueMutation('consent', async ({ generation }) => {
       if (!(await this.cleanupUncommitted())) {
         if (this.isCurrentMutation(generation)) this.dispatchPrivacyFailure(generation, false);
@@ -932,8 +981,8 @@ export class AnalysisCoordinator {
       }
       let consumed = false;
       if (source?.kind === 'pdf') {
-        consumed = !this.ownedPdfRequestIds.has(source.requestId) ||
-          await this.cleanupRequest(source.requestId);
+        consumed = sourceClaim === null || !this.isPdfClaimCurrent(sourceClaim) ||
+          await this.cleanupClaim(sourceClaim);
         if (!this.isCurrentMutation(generation)) return;
         if (!consumed) {
           this.dispatchPrivacyFailure(generation, false);
@@ -1009,57 +1058,64 @@ export class AnalysisCoordinator {
 
   private async cleanupUncommitted(exceptClaim: PdfClaim | null = null): Promise<boolean> {
     let clean = true;
-    for (const requestId of [...this.ownedPdfRequestIds]) {
+    for (const claim of [...this.pdfClaims.values()]) {
       const isCommitted = this.committedPdfClaim !== null &&
-        this.committedPdfClaim.requestId === requestId &&
+        this.committedPdfClaim.requestId === claim.requestId &&
+        this.committedPdfClaim.lease === claim.lease &&
         this.isPdfClaimCurrent(this.committedPdfClaim);
       const isExcepted = exceptClaim !== null &&
-        exceptClaim.requestId === requestId &&
+        exceptClaim.requestId === claim.requestId &&
+        exceptClaim.lease === claim.lease &&
         this.isPdfClaimCurrent(exceptClaim);
       if (isCommitted || isExcepted) continue;
-      if (!(await this.cleanupRequest(requestId))) clean = false;
+      if (!(await this.cleanupClaim(claim))) clean = false;
     }
     return clean;
   }
 
   private async cleanupAllOwned(): Promise<boolean> {
     let clean = true;
-    for (const requestId of [...this.ownedPdfRequestIds]) {
-      if (!(await this.cleanupRequest(requestId))) clean = false;
+    for (const claim of [...this.pdfClaims.values()]) {
+      if (!(await this.cleanupClaim(claim))) clean = false;
     }
     return clean;
   }
 
-  private cleanupRequest(requestId: string): Promise<boolean> {
-    const claim = this.pdfClaims.get(requestId);
-    if (claim !== undefined) {
-      this.pdfClaims.delete(requestId);
-      if (this.committedPdfClaim === claim) this.committedPdfClaim = null;
-    }
-    const current = this.cleanupOperations.get(requestId);
+  private cleanupClaim(claim: PdfClaim): Promise<boolean> {
+    const current = this.cleanupOperations.get(claim.lease);
     if (current !== undefined) return current;
-    const operation = this.performCleanupRequest(requestId);
-    this.cleanupOperations.set(requestId, operation);
+    const operation = this.performCleanupClaim(claim);
+    this.cleanupOperations.set(claim.lease, operation);
     void operation.finally(() => {
-      if (this.cleanupOperations.get(requestId) === operation) {
-        this.cleanupOperations.delete(requestId);
+      if (this.cleanupOperations.get(claim.lease) === operation) {
+        this.cleanupOperations.delete(claim.lease);
       }
     }).catch(() => undefined);
     return operation;
   }
 
-  private async performCleanupRequest(requestId: string): Promise<boolean> {
+  private async performCleanupClaim(claim: PdfClaim): Promise<boolean> {
     try {
-      const receipt = await this.boundedCleanup(() => this.tempFiles.cleanupRequest(requestId));
+      const receipt = await this.boundedCleanup(() =>
+        this.tempFiles.cleanupRequest(claim.requestId, claim.lease));
+      if (isStaleLeaseReceipt(receipt) && !this.isPdfClaimCurrent(claim)) {
+        this.cleanupFailures.delete(claim.lease);
+        return true;
+      }
       if (!isVerifiedCleanupReceipt(receipt)) {
-        this.cleanupFailures.add(requestId);
+        this.cleanupFailures.add(claim.lease);
         return false;
       }
-      this.cleanupFailures.delete(requestId);
-      this.ownedPdfRequestIds.delete(requestId);
+      this.cleanupFailures.delete(claim.lease);
+      const current = this.pdfClaims.get(claim.requestId);
+      if (current?.lease === claim.lease && current.epoch === claim.epoch) {
+        this.pdfClaims.delete(claim.requestId);
+        this.ownedPdfRequestIds.delete(claim.requestId);
+        if (this.committedPdfClaim === current) this.committedPdfClaim = null;
+      }
       return true;
     } catch {
-      this.cleanupFailures.add(requestId);
+      this.cleanupFailures.add(claim.lease);
       return false;
     }
   }

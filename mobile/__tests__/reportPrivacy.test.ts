@@ -76,6 +76,7 @@ describe('local history privacy', () => {
   });
 
   it('persists only the allowlisted report projection', async () => {
+    const privateLease = Symbol();
     const database = new FakeReportDatabase();
     const repository = new ReportRepository({
       openDatabase: async () => database,
@@ -92,6 +93,7 @@ describe('local history privacy', () => {
       jobDescription: 'private job marker',
       installationToken: 'private token marker',
       requestId: 'private request marker',
+      lease: privateLease,
       rawResponse: 'private response marker',
     });
 
@@ -118,6 +120,9 @@ describe('local history privacy', () => {
       'source_type',
       'title',
     ]);
+    expect(database.calls.some(call =>
+      call.params.some(value => typeof value === 'symbol' || value === privateLease),
+    )).toBe(false);
   });
 
   it('never places native causes or report content in errors or console output', async () => {

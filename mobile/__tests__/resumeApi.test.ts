@@ -386,6 +386,14 @@ describe('ResumeApi multipart boundary', () => {
     { source: { kind: 'text' }, consentVersion: '2026-08-04.v1' },
     { source: { kind: 'text', text: 'resume', unexpected: true }, consentVersion: '2026-08-04.v1' },
     { source: { kind: 'pdf', uri: null, name: 'resume.pdf', mimeType: 'application/pdf', size: 1 }, consentVersion: '2026-08-04.v1' },
+    { source: {
+      kind: 'pdf',
+      uri: 'file:///private/resume.pdf',
+      name: 'resume.pdf',
+      mimeType: 'application/pdf',
+      size: 1,
+      lease: Symbol(),
+    }, consentVersion: '2026-08-04.v1' },
   ])('converts malformed runtime request input %#p into a stable validation error', async (input) => {
     const { api, fetchImpl } = createApi();
 

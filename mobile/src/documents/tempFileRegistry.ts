@@ -27,8 +27,22 @@ export type FileInspection = Readonly<{
 export type OwnedFileInspection = Readonly<{
   requestId: string;
   uri: string;
+  lease: TempFileLease;
   exists: boolean;
   size: number;
+}>;
+
+export type TempFileLease = symbol;
+
+export type StagedPdf = Readonly<{
+  uri: string;
+  inspection: FileInspection;
+  lease: TempFileLease;
+}>;
+
+export type CreatedRequest = Readonly<{
+  uri: string;
+  lease: TempFileLease;
 }>;
 
 export type DirectoryEntry = Readonly<{
@@ -72,12 +86,11 @@ export class DocumentPrivacyError extends Error {
 }
 
 export class PdfStagingError extends DocumentPrivacyError {
-  readonly requestAcquired: boolean;
+  readonly requestAcquired = false;
 
-  constructor(code: string, requestAcquired: boolean) {
+  constructor(code: string) {
     super(code);
     this.name = 'PdfStagingError';
-    this.requestAcquired = requestAcquired;
   }
 }
 
@@ -275,41 +288,55 @@ export class TempFileRegistry {
     return { requestId, uri: location.uri };
   }
 
-  async inspectOwnedFileUri(uri: unknown): Promise<OwnedFileInspection> {
+  async inspectOwnedFileUri(
+    uri: unknown,
+    requestId: string,
+    lease: TempFileLease,
+  ): Promise<OwnedFileInspection> {
     const owned = this.assertOwnedFileUri(uri);
-    let inspection: FileInspection;
-    try {
-      inspection = await this.fileSystem.inspectFile(owned.uri);
-    } catch {
-      throw privacyError('cache_file_inspection_failed');
-    }
-    if (
-      inspection === null ||
-      typeof inspection !== 'object' ||
-      typeof inspection.exists !== 'boolean' ||
-      !Number.isSafeInteger(inspection.size) ||
-      inspection.size < 0
-    ) {
-      throw privacyError('cache_file_inspection_failed');
-    }
-    return {
-      requestId: owned.requestId,
-      uri: owned.uri,
-      exists: inspection.exists,
-      size: inspection.size,
-    };
+    const claimedRequestId = this.validateRequestId(requestId);
+    return this.enqueueCacheMutation(async () => {
+      if (
+        owned.requestId !== claimedRequestId ||
+        this.coordination.liveRequests.get(claimedRequestId) !== lease
+      ) {
+        throw privacyError('cache_request_lease_mismatch');
+      }
+      let inspection: FileInspection;
+      try {
+        inspection = await this.fileSystem.inspectFile(owned.uri);
+      } catch {
+        throw privacyError('cache_file_inspection_failed');
+      }
+      if (
+        inspection === null ||
+        typeof inspection !== 'object' ||
+        typeof inspection.exists !== 'boolean' ||
+        !Number.isSafeInteger(inspection.size) ||
+        inspection.size < 0
+      ) {
+        throw privacyError('cache_file_inspection_failed');
+      }
+      return {
+        requestId: owned.requestId,
+        uri: owned.uri,
+        lease,
+        exists: inspection.exists,
+        size: inspection.size,
+      };
+    });
   }
 
-  async createRequest(requestId: string): Promise<string> {
+  async createRequest(requestId: string): Promise<CreatedRequest> {
     const request = this.requestLocation(requestId);
     return this.enqueueCacheMutation(async () => {
       const owner = await this.acquireRequest(requestId, request);
       try {
         await this.createRequestLocation(request);
-        return request.uri;
-      } catch (error) {
-        this.releaseRequest(requestId, owner);
-        throw error;
+        return { uri: request.uri, lease: owner };
+      } catch {
+        await this.cleanupFailedAcquisition(requestId, owner, request);
+        throw privacyError('cache_request_creation_failed');
       }
     });
   }
@@ -318,7 +345,7 @@ export class TempFileRegistry {
     requestId: string,
     fileId: string,
     providerUri: string,
-  ): Promise<{ uri: string; inspection: FileInspection }> {
+  ): Promise<StagedPdf> {
     const source = this.validateProviderFileUri(providerUri);
     const destination = this.fileLocation(requestId, fileId);
     return this.enqueueCacheMutation(async () => {
@@ -328,23 +355,29 @@ export class TempFileRegistry {
         await this.createRequestLocation(request);
         await this.fileSystem.copyFile(source, destination.uri);
         const inspection = await this.fileSystem.inspectFile(destination.uri);
-        return { uri: destination.uri, inspection };
+        return { uri: destination.uri, inspection, lease: owner };
       } catch {
-        this.releaseRequest(requestId, owner);
-        throw new PdfStagingError('pdf_staging_failed', true);
+        await this.cleanupFailedAcquisition(requestId, owner, request);
+        throw new PdfStagingError('pdf_staging_failed');
       }
     });
   }
 
-  async cleanupRequest(requestId: string): Promise<CleanupReceipt> {
+  async cleanupRequest(
+    requestId: string,
+    lease: TempFileLease,
+  ): Promise<CleanupReceipt> {
     const request = this.requestLocation(requestId);
     return this.enqueueCacheMutation(async () => {
+      if (this.coordination.liveRequests.get(requestId) !== lease) {
+        return { attempted: 0, deleted: 0, failed: 0, refused: 1 };
+      }
       try {
         return await this.cleanupRequestLocation(request);
       } finally {
         // cleanupRequest is a terminal ownership handoff. A failed delete must
         // remain discoverable by later abandoned cleanup, not permanently live.
-        this.coordination.liveRequests.delete(requestId);
+        this.releaseRequest(requestId, lease);
       }
     });
   }
@@ -479,12 +512,20 @@ export class TempFileRegistry {
     return { attempted, deleted, failed, refused, deletedFiles, live };
   }
 
-  async withRequestCleanup<T>(requestId: string, operation: () => Promise<T>): Promise<T> {
+  async withRequestCleanup<T>(
+    requestId: string,
+    lease: TempFileLease,
+    operation: () => Promise<T>,
+  ): Promise<T> {
     try {
       return await operation();
     } finally {
-      const receipt = await this.cleanupRequest(requestId);
-      if (receipt.failed > 0 || receipt.deleted !== receipt.attempted) {
+      const receipt = await this.cleanupRequest(requestId, lease);
+      if (
+        receipt.failed > 0 ||
+        receipt.refused > 0 ||
+        receipt.deleted !== receipt.attempted
+      ) {
         throw privacyError('cache_cleanup_failed');
       }
     }
@@ -495,6 +536,24 @@ export class TempFileRegistry {
     await this.fileSystem.createDirectory(request.uri);
   }
 
+  private async cleanupFailedAcquisition(
+    requestId: string,
+    owner: TempFileLease,
+    request: LocalFileLocation,
+  ): Promise<void> {
+    // No source was returned, so this transition and best-effort deletion stay
+    // inside the same namespace fence and cannot target a later owner.
+    this.releaseRequest(requestId, owner);
+    const receipt = await this.cleanupRequestLocation(request);
+    if (
+      receipt.failed !== 0 ||
+      receipt.refused !== 0 ||
+      receipt.attempted !== receipt.deleted
+    ) {
+      throw new PdfStagingError('cache_cleanup_failed');
+    }
+  }
+
   private async acquireRequest(
     requestId: string,
     request: LocalFileLocation,
@@ -502,22 +561,22 @@ export class TempFileRegistry {
     // This check must remain the first operation inside the shared mutation
     // fence so a colliding caller cannot touch files owned by the live caller.
     if (this.coordination.liveRequests.has(requestId)) {
-      throw new PdfStagingError('cache_request_in_use', false);
+      throw new PdfStagingError('cache_request_in_use');
     }
 
     let exists: boolean;
     try {
       exists = await this.fileSystem.directoryExists(request.uri);
     } catch {
-      throw new PdfStagingError('cache_request_state_unavailable', false);
+      throw new PdfStagingError('cache_request_state_unavailable');
     }
     if (exists) {
       // A directory without a live owner is quarantined for abandoned cleanup.
       // Reusing it could combine a new source with bytes from a failed stage.
-      throw new PdfStagingError('cache_request_recovery_required', false);
+      throw new PdfStagingError('cache_request_recovery_required');
     }
 
-    const owner = Symbol(requestId);
+    const owner = Symbol();
     this.coordination.liveRequests.set(requestId, owner);
     return owner;
   }

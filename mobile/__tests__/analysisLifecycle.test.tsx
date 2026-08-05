@@ -14,6 +14,7 @@ import type { AnalysisResponse } from '../src/domain/contracts';
 import type { CleanupReceipt } from '../src/documents/tempFileRegistry';
 
 const CLEAN: CleanupReceipt = { attempted: 0, deleted: 0, failed: 0, refused: 0 };
+const PDF_LEASE = Symbol();
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -31,7 +32,7 @@ function providerHarness() {
   };
   const tempFiles = {
     cleanupAbandoned: jest.fn(async () => CLEAN),
-    cleanupRequest: jest.fn(async () => CLEAN),
+    cleanupRequest: jest.fn(async (_requestId: string, _lease: symbol) => CLEAN),
   };
   const pdfOwnership = {
     assertOwnedFileUri(uri: unknown) {
@@ -40,9 +41,9 @@ function providerHarness() {
       if (match === null) throw new Error('not owned');
       return { requestId: match[1], uri };
     },
-    async inspectOwnedFileUri(uri: unknown) {
+    async inspectOwnedFileUri(uri: unknown, _requestId: string, lease: symbol) {
       const owned = this.assertOwnedFileUri(uri);
-      return { ...owned, exists: true, size: 1_024 };
+      return { ...owned, lease, exists: true, size: 1_024 };
     },
   };
   const coordinator = new AnalysisCoordinator({ api, consentStore, tempFiles, pdfOwnership });
@@ -145,6 +146,7 @@ describe('AnalysisProvider in-memory lifecycle', () => {
       requestId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
       uri: 'file:///app/cache/resume-ai-v1/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/11111111-1111-4111-8111-111111111111.pdf',
       size: 1_024,
+      lease: PDF_LEASE,
     });
     const view = await render(
       <AnalysisProvider coordinator={coordinator}>

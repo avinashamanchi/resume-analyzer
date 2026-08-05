@@ -30,6 +30,7 @@ class RegistryFileSystem implements TempFileSystem {
   entries: Array<{ uri: string; kind: 'file' | 'directory' }> = [];
   entriesByDirectory = new Map<string, Array<{ uri: string; kind: 'file' | 'directory' }>>();
   deleteFailures = new Set<string>();
+  deleteAttempts: string[] = [];
   deleted: string[] = [];
   inspected: string[] = [];
   inspection: FileInspection = {
@@ -86,6 +87,7 @@ class RegistryFileSystem implements TempFileSystem {
   }
 
   async deleteDirectory(uri: string): Promise<void> {
+    this.deleteAttempts.push(uri);
     if (this.deleteFailures.has(uri)) throw new Error('private delete details');
     this.deleted.push(uri);
     if (!this.deleteNoop) {
@@ -116,7 +118,9 @@ describe('TempFileRegistry request isolation', () => {
   it('creates only an exact UUID request descendant of the dedicated namespace', async () => {
     const { fileSystem, registry } = harness();
 
-    await expect(registry.createRequest(REQUEST_A)).resolves.toBe(requestUri(REQUEST_A));
+    const created = await registry.createRequest(REQUEST_A);
+    expect(created.uri).toBe(requestUri(REQUEST_A));
+    expect(typeof created.lease).toBe('symbol');
     expect([...fileSystem.directories]).toEqual([
       'file:///app/cache/resume-ai-v1',
       requestUri(REQUEST_A),
@@ -168,59 +172,67 @@ describe('TempFileRegistry request isolation', () => {
       size: 4_096,
       header: new Uint8Array([0x25, 0x50, 0x44, 0x46, 0x2d]),
     };
+    const staged = await registry.stagePdf(
+      REQUEST_A,
+      FILE_A,
+      'file:///provider/resume.pdf',
+    );
+    fileSystem.inspected.length = 0;
 
-    await expect(registry.inspectOwnedFileUri(uri)).resolves.toEqual({
+    await expect(registry.inspectOwnedFileUri(uri, REQUEST_A, staged.lease)).resolves.toEqual({
       requestId: REQUEST_A,
       uri,
+      lease: staged.lease,
       exists: true,
       size: 4_096,
     });
     expect(fileSystem.inspected).toEqual([uri]);
+    await registry.cleanupRequest(REQUEST_A, staged.lease);
   });
 });
 
 describe('TempFileRegistry cleanup', () => {
   it('returns a truthful successful receipt and is idempotent', async () => {
     const { fileSystem, registry } = harness();
-    fileSystem.directories.add(requestUri(REQUEST_A));
+    const created = await registry.createRequest(REQUEST_A);
 
-    await expect(registry.cleanupRequest(REQUEST_A)).resolves.toEqual<CleanupReceipt>({
+    await expect(registry.cleanupRequest(REQUEST_A, created.lease)).resolves.toEqual<CleanupReceipt>({
       attempted: 1,
       deleted: 1,
       failed: 0,
       refused: 0,
     });
-    await expect(registry.cleanupRequest(REQUEST_A)).resolves.toEqual<CleanupReceipt>({
+    await expect(registry.cleanupRequest(REQUEST_A, created.lease)).resolves.toEqual<CleanupReceipt>({
       attempted: 0,
       deleted: 0,
       failed: 0,
-      refused: 0,
+      refused: 1,
     });
     expect(fileSystem.deleted).toEqual([requestUri(REQUEST_A)]);
   });
 
   it('linearizes concurrent cleanup so one directory is never counted as two deletions', async () => {
     const { fileSystem, registry } = harness();
-    fileSystem.directories.add(requestUri(REQUEST_A));
+    const created = await registry.createRequest(REQUEST_A);
 
     const receipts = await Promise.all([
-      registry.cleanupRequest(REQUEST_A),
-      registry.cleanupRequest(REQUEST_A),
+      registry.cleanupRequest(REQUEST_A, created.lease),
+      registry.cleanupRequest(REQUEST_A, created.lease),
     ]);
 
     expect(receipts).toEqual([
       { attempted: 1, deleted: 1, failed: 0, refused: 0 },
-      { attempted: 0, deleted: 0, failed: 0, refused: 0 },
+      { attempted: 0, deleted: 0, failed: 0, refused: 1 },
     ]);
     expect(fileSystem.deleted).toEqual([requestUri(REQUEST_A)]);
   });
 
   it('counts a rejected deletion as failed and never as deleted', async () => {
     const { fileSystem, registry } = harness();
-    fileSystem.directories.add(requestUri(REQUEST_A));
+    const created = await registry.createRequest(REQUEST_A);
     fileSystem.deleteFailures.add(requestUri(REQUEST_A));
 
-    await expect(registry.cleanupRequest(REQUEST_A)).resolves.toEqual<CleanupReceipt>({
+    await expect(registry.cleanupRequest(REQUEST_A, created.lease)).resolves.toEqual<CleanupReceipt>({
       attempted: 1,
       deleted: 0,
       failed: 1,
@@ -230,10 +242,10 @@ describe('TempFileRegistry cleanup', () => {
 
   it('does not claim deletion when the filesystem resolves but the directory remains', async () => {
     const { fileSystem, registry } = harness();
-    fileSystem.directories.add(requestUri(REQUEST_A));
+    const created = await registry.createRequest(REQUEST_A);
     fileSystem.deleteNoop = true;
 
-    await expect(registry.cleanupRequest(REQUEST_A)).resolves.toEqual<CleanupReceipt>({
+    await expect(registry.cleanupRequest(REQUEST_A, created.lease)).resolves.toEqual<CleanupReceipt>({
       attempted: 1,
       deleted: 0,
       failed: 1,
@@ -245,13 +257,13 @@ describe('TempFileRegistry cleanup', () => {
     'awaits cleanup when an operation exits through %s',
     async outcome => {
       const { fileSystem, registry } = harness();
-      fileSystem.directories.add(requestUri(REQUEST_A));
+      const created = await registry.createRequest(REQUEST_A);
       const operation = jest.fn(async () => {
         if (outcome !== 'success') throw Object.assign(new Error('content-free'), { category: outcome });
         return 'done';
       });
 
-      const result = registry.withRequestCleanup(REQUEST_A, operation);
+      const result = registry.withRequestCleanup(REQUEST_A, created.lease, operation);
       if (outcome === 'success') await expect(result).resolves.toBe('done');
       else await expect(result).rejects.toMatchObject({ category: outcome });
       expect(fileSystem.deleted).toEqual([requestUri(REQUEST_A)]);
@@ -260,10 +272,14 @@ describe('TempFileRegistry cleanup', () => {
 
   it('fails closed when mandatory finally cleanup rejects', async () => {
     const { fileSystem, registry } = harness();
-    fileSystem.directories.add(requestUri(REQUEST_A));
+    const created = await registry.createRequest(REQUEST_A);
     fileSystem.deleteFailures.add(requestUri(REQUEST_A));
 
-    await expect(registry.withRequestCleanup(REQUEST_A, async () => 'done')).rejects.toMatchObject({
+    await expect(registry.withRequestCleanup(
+      REQUEST_A,
+      created.lease,
+      async () => 'done',
+    )).rejects.toMatchObject({
       category: 'privacy',
       code: 'cache_cleanup_failed',
     });
@@ -423,7 +439,7 @@ describe('TempFileRegistry cleanup', () => {
       deletedFiles: 0,
       live: 1,
     });
-    await expect(owner.cleanupRequest(REQUEST_A)).resolves.toEqual({
+    await expect(owner.cleanupRequest(REQUEST_A, original.lease)).resolves.toEqual({
       attempted: 1,
       deleted: 1,
       failed: 0,
@@ -436,12 +452,14 @@ describe('TempFileRegistry cleanup', () => {
     const owner = new TempFileRegistry({ fileSystem });
     const collider = new TempFileRegistry({ fileSystem });
     fileSystem.inspectFailure = true;
+    fileSystem.deleteFailures.add(requestUri(REQUEST_A));
     await expect(owner.stagePdf(
       REQUEST_A,
       FILE_A,
       'file:///provider/failed.pdf',
     )).rejects.toBeInstanceOf(Error);
     fileSystem.inspectFailure = false;
+    fileSystem.deleteFailures.delete(requestUri(REQUEST_A));
     const copiedBeforeCollision = [...fileSystem.copied];
 
     await expect(collider.stagePdf(
@@ -461,12 +479,13 @@ describe('TempFileRegistry cleanup', () => {
       deletedFiles: 1,
       live: 0,
     });
-    await expect(collider.stagePdf(
+    const retried = await collider.stagePdf(
       REQUEST_A,
       FILE_B,
       'file:///provider/retry.pdf',
-    )).resolves.toMatchObject({ uri: `${requestUri(REQUEST_A)}/${FILE_B}.pdf` });
-    await expect(owner.cleanupRequest(REQUEST_A)).resolves.toMatchObject({ deleted: 1 });
+    );
+    expect(retried).toMatchObject({ uri: `${requestUri(REQUEST_A)}/${FILE_B}.pdf` });
+    await expect(owner.cleanupRequest(REQUEST_A, retried.lease)).resolves.toMatchObject({ deleted: 1 });
   });
 
   it('waits for same-request terminal cleanup before safely reacquiring ownership', async () => {
@@ -482,20 +501,21 @@ describe('TempFileRegistry cleanup', () => {
     const fileSystem = new DeferredDeleteFileSystem();
     const owner = new TempFileRegistry({ fileSystem });
     const nextOwner = new TempFileRegistry({ fileSystem });
-    await owner.stagePdf(REQUEST_A, FILE_A, 'file:///provider/original.pdf');
+    const original = await owner.stagePdf(REQUEST_A, FILE_A, 'file:///provider/original.pdf');
 
-    const cleanup = owner.cleanupRequest(REQUEST_A);
+    const cleanup = owner.cleanupRequest(REQUEST_A, original.lease);
     await deletionStarted.promise;
-    let restaged = false;
+    let stageSettled = false;
     const staging = nextOwner.stagePdf(REQUEST_A, FILE_B, 'file:///provider/next.pdf')
-      .then(value => { restaged = true; return value; });
+      .then(value => { stageSettled = true; return value; });
     await Promise.resolve();
-    expect(restaged).toBe(false);
+    expect(stageSettled).toBe(false);
     releaseDeletion.resolve();
 
     await expect(cleanup).resolves.toMatchObject({ deleted: 1 });
-    await expect(staging).resolves.toMatchObject({ uri: `${requestUri(REQUEST_A)}/${FILE_B}.pdf` });
-    await expect(nextOwner.cleanupRequest(REQUEST_A)).resolves.toMatchObject({ deleted: 1 });
+    const restaged = await staging;
+    expect(restaged).toMatchObject({ uri: `${requestUri(REQUEST_A)}/${FILE_B}.pdf` });
+    await expect(nextOwner.cleanupRequest(REQUEST_A, restaged.lease)).resolves.toMatchObject({ deleted: 1 });
   });
 
   it('quarantines a same-request restage queued behind failed terminal cleanup', async () => {
@@ -503,10 +523,10 @@ describe('TempFileRegistry cleanup', () => {
     const owner = new TempFileRegistry({ fileSystem });
     const nextOwner = new TempFileRegistry({ fileSystem });
     const cleaner = new TempFileRegistry({ fileSystem });
-    await owner.stagePdf(REQUEST_A, FILE_A, 'file:///provider/original.pdf');
+    const original = await owner.stagePdf(REQUEST_A, FILE_A, 'file:///provider/original.pdf');
     fileSystem.deleteFailures.add(requestUri(REQUEST_A));
 
-    const cleanup = owner.cleanupRequest(REQUEST_A);
+    const cleanup = owner.cleanupRequest(REQUEST_A, original.lease);
     const staging = nextOwner.stagePdf(REQUEST_A, FILE_B, 'file:///provider/next.pdf');
 
     await expect(cleanup).resolves.toMatchObject({ deleted: 0, failed: 1 });
@@ -524,6 +544,181 @@ describe('TempFileRegistry cleanup', () => {
     });
   });
 
+  it('refuses a duplicate A cleanup after B reacquires the same request ID', async () => {
+    const fileSystem = new RegistryFileSystem();
+    const registry = new TempFileRegistry({ fileSystem });
+    const stagedA = await registry.stagePdf(
+      REQUEST_A,
+      FILE_A,
+      'file:///provider/a.pdf',
+    ) as Awaited<ReturnType<TempFileRegistry['stagePdf']>> & { readonly lease: symbol };
+    await expect(registry.cleanupRequest(REQUEST_A, stagedA.lease)).resolves.toEqual({
+      attempted: 1,
+      deleted: 1,
+      failed: 0,
+      refused: 0,
+    });
+    const stagedB = await registry.stagePdf(
+      REQUEST_A,
+      FILE_B,
+      'file:///provider/b.pdf',
+    ) as Awaited<ReturnType<TempFileRegistry['stagePdf']>> & { readonly lease: symbol };
+    const deleteAttemptsBeforeStaleCleanup = [...fileSystem.deleteAttempts];
+
+    await expect(Promise.all(Array.from(
+      { length: 32 },
+      () => registry.cleanupRequest(REQUEST_A, stagedA.lease),
+    ))).resolves.toEqual(Array.from({ length: 32 }, () => ({
+      attempted: 0,
+      deleted: 0,
+      failed: 0,
+      refused: 1,
+    })));
+    expect(fileSystem.deleteAttempts).toEqual(deleteAttemptsBeforeStaleCleanup);
+    await expect(registry.cleanupAbandonedDetailed()).resolves.toMatchObject({
+      attempted: 0,
+      deleted: 0,
+      live: 1,
+    });
+    await expect(registry.cleanupRequest(REQUEST_A, stagedB.lease)).resolves.toMatchObject({
+      deleted: 1,
+      refused: 0,
+    });
+  });
+
+  it('requires the exact request ID and lease pair before cleanup or inspection', async () => {
+    const fileSystem = new RegistryFileSystem();
+    const registry = new TempFileRegistry({ fileSystem });
+    const staged = await registry.stagePdf(
+      REQUEST_A,
+      FILE_A,
+      'file:///provider/a.pdf',
+    );
+    const touchesBeforeMismatch = {
+      deleteAttempts: [...fileSystem.deleteAttempts],
+      inspected: [...fileSystem.inspected],
+    };
+
+    await expect(registry.cleanupRequest(REQUEST_B, staged.lease)).resolves.toEqual({
+      attempted: 0,
+      deleted: 0,
+      failed: 0,
+      refused: 1,
+    });
+    await expect(registry.inspectOwnedFileUri(
+      staged.uri,
+      REQUEST_B,
+      staged.lease,
+    )).rejects.toMatchObject({
+      category: 'privacy',
+      code: 'cache_request_lease_mismatch',
+    });
+    expect({
+      deleteAttempts: fileSystem.deleteAttempts,
+      inspected: fileSystem.inspected,
+    }).toEqual(touchesBeforeMismatch);
+    await expect(registry.cleanupAbandonedDetailed()).resolves.toMatchObject({ live: 1 });
+    await expect(registry.cleanupRequest(REQUEST_A, staged.lease)).resolves.toMatchObject({
+      deleted: 1,
+    });
+  });
+
+  it('refuses stale A live inspection before filesystem access after B restages', async () => {
+    const fileSystem = new RegistryFileSystem();
+    const registry = new TempFileRegistry({ fileSystem });
+    const stagedA = await registry.stagePdf(
+      REQUEST_A,
+      FILE_A,
+      'file:///provider/a.pdf',
+    ) as Awaited<ReturnType<TempFileRegistry['stagePdf']>> & { readonly lease: symbol };
+    await registry.cleanupRequest(REQUEST_A, stagedA.lease);
+    const stagedB = await registry.stagePdf(
+      REQUEST_A,
+      FILE_B,
+      'file:///provider/b.pdf',
+    ) as Awaited<ReturnType<TempFileRegistry['stagePdf']>> & { readonly lease: symbol };
+    const inspectionsBeforeStaleClaim = [...fileSystem.inspected];
+
+    await expect(registry.inspectOwnedFileUri(
+      stagedB.uri,
+      REQUEST_A,
+      stagedA.lease,
+    )).rejects.toMatchObject({
+      category: 'privacy',
+      code: 'cache_request_lease_mismatch',
+    });
+    expect(fileSystem.inspected).toEqual(inspectionsBeforeStaleClaim);
+    await expect(registry.inspectOwnedFileUri(
+      stagedB.uri,
+      REQUEST_A,
+      stagedB.lease,
+    )).resolves.toMatchObject({
+      requestId: REQUEST_A,
+      uri: stagedB.uri,
+      lease: stagedB.lease,
+      exists: true,
+    });
+    await registry.cleanupRequest(REQUEST_A, stagedB.lease);
+  });
+
+  it('atomically quarantines a failed non-returned stage and reports unverified deletion', async () => {
+    const fileSystem = new RegistryFileSystem();
+    const registry = new TempFileRegistry({ fileSystem });
+    fileSystem.inspectFailure = true;
+    fileSystem.deleteFailures.add(requestUri(REQUEST_A));
+
+    await expect(registry.stagePdf(
+      REQUEST_A,
+      FILE_A,
+      'file:///provider/a.pdf',
+    )).rejects.toMatchObject({
+      category: 'privacy',
+      code: 'cache_cleanup_failed',
+    });
+    expect(fileSystem.deleteAttempts).toEqual([requestUri(REQUEST_A)]);
+    await expect(registry.cleanupAbandonedDetailed()).resolves.toMatchObject({
+      attempted: 1,
+      deleted: 0,
+      failed: 1,
+      live: 0,
+    });
+  });
+
+  it('refuses a lease-less delayed A cleanup after failed-stage recovery and B restage', async () => {
+    const fileSystem = new RegistryFileSystem();
+    const registry = new TempFileRegistry({ fileSystem });
+    const staleA = Symbol();
+    fileSystem.inspectFailure = true;
+    fileSystem.deleteFailures.add(requestUri(REQUEST_A));
+    const failedStage = await registry.stagePdf(
+      REQUEST_A,
+      FILE_A,
+      'file:///provider/a.pdf',
+    ).catch(error => error as unknown);
+    expect(failedStage).toBeInstanceOf(Error);
+    expect(failedStage).not.toHaveProperty('lease');
+    expect(JSON.stringify(failedStage)).not.toContain('lease');
+    fileSystem.inspectFailure = false;
+    fileSystem.deleteFailures.delete(requestUri(REQUEST_A));
+    await expect(registry.cleanupAbandonedDetailed()).resolves.toMatchObject({ deleted: 1 });
+    const stagedB = await registry.stagePdf(
+      REQUEST_A,
+      FILE_B,
+      'file:///provider/b.pdf',
+    ) as Awaited<ReturnType<TempFileRegistry['stagePdf']>> & { readonly lease: symbol };
+
+    await expect(registry.cleanupRequest(REQUEST_A, staleA)).resolves.toEqual({
+      attempted: 0,
+      deleted: 0,
+      failed: 0,
+      refused: 1,
+    });
+    await expect(registry.cleanupAbandonedDetailed()).resolves.toMatchObject({ live: 1 });
+    await expect(registry.cleanupRequest(REQUEST_A, stagedB.lease)).resolves.toMatchObject({
+      deleted: 1,
+    });
+  });
+
   it('recovers an inspection-failed stage after its immediate cleanup transiently fails', async () => {
     const fileSystem = new RegistryFileSystem();
     const owner = new TempFileRegistry({ fileSystem });
@@ -536,12 +731,6 @@ describe('TempFileRegistry cleanup', () => {
       FILE_A,
       'file:///provider/resume.pdf',
     )).rejects.toBeInstanceOf(Error);
-    await expect(owner.cleanupRequest(REQUEST_A)).resolves.toEqual({
-      attempted: 1,
-      deleted: 0,
-      failed: 1,
-      refused: 0,
-    });
     fileSystem.deleteFailures.delete(requestUri(REQUEST_A));
 
     await expect(cleaner.cleanupAbandonedDetailed()).resolves.toEqual({
@@ -572,7 +761,6 @@ describe('TempFileRegistry cleanup', () => {
         fileId,
         'file:///provider/resume.pdf',
       )).rejects.toBeInstanceOf(Error);
-      await expect(owner.cleanupRequest(requestId)).resolves.toMatchObject({ failed: 1 });
       fileSystem.deleteFailures.delete(requestUri(requestId));
     }
 
@@ -606,12 +794,14 @@ describe('TempFileRegistry cleanup', () => {
     const cleaner = new TempFileRegistry({ fileSystem });
     const stager = new TempFileRegistry({ fileSystem });
     fileSystem.inspectFailure = true;
+    fileSystem.deleteFailures.add(requestUri(REQUEST_A));
     await expect(owner.stagePdf(
       REQUEST_A,
       FILE_A,
       'file:///provider/resume.pdf',
     )).rejects.toBeInstanceOf(Error);
     fileSystem.inspectFailure = false;
+    fileSystem.deleteFailures.delete(requestUri(REQUEST_A));
 
     const recovery = cleaner.cleanupAbandonedDetailed();
     await listed.promise;
