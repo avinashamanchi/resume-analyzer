@@ -4,8 +4,17 @@ import { Text } from 'react-native';
 
 import validFixture from '../../contracts/fixtures/analysis-valid.json';
 
-import { DataProvider, useReportData } from '../src/storage/DataProvider';
-import { ReportRepository, type ReportRepositoryPort } from '../src/storage/reportRepository';
+import {
+  DataProvider,
+  createReportLifecycleCoordinator,
+  type ReportLifecycleCoordinator,
+  useReportData,
+} from '../src/storage/DataProvider';
+import {
+  REPORT_DATABASE_IDENTITY,
+  ReportRepository,
+  type ReportRepositoryPort,
+} from '../src/storage/reportRepository';
 
 import { FakeReportDatabase } from '../test-utils/fakeReportDatabase';
 
@@ -31,8 +40,10 @@ function deferred<T>() {
 function lifecycleRepository(
   initialize: () => Promise<void>,
   close: () => Promise<void>,
+  databaseIdentity = REPORT_DATABASE_IDENTITY,
 ): ReportRepositoryPort {
   return {
+    databaseIdentity,
     initialize,
     save: async () => { throw new Error('not used'); },
     list: async () => [],
@@ -58,6 +69,12 @@ function Probe() {
 }
 
 describe('local history privacy', () => {
+  let lifecycleCoordinator: ReportLifecycleCoordinator;
+
+  beforeEach(() => {
+    lifecycleCoordinator = createReportLifecycleCoordinator();
+  });
+
   it('persists only the allowlisted report projection', async () => {
     const database = new FakeReportDatabase();
     const repository = new ReportRepository({
@@ -138,7 +155,7 @@ describe('local history privacy', () => {
     });
     const view = await render(React.createElement(
       DataProvider,
-      { createRepository: () => repository },
+      { createRepository: () => repository, lifecycleCoordinator },
       React.createElement(Probe),
     ));
 
@@ -160,7 +177,7 @@ describe('local history privacy', () => {
       null,
       React.createElement(
         DataProvider,
-        { createRepository: () => {
+        { lifecycleCoordinator, createRepository: () => {
           const database = new FakeReportDatabase();
           const repository = new ReportRepository({
             openDatabase: async () => database,
@@ -197,7 +214,7 @@ describe('local history privacy', () => {
       null,
       React.createElement(
         DataProvider,
-        { createRepository: () => repositories[created++] },
+        { createRepository: () => repositories[created++], lifecycleCoordinator },
         React.createElement(Probe),
       ),
     ));
@@ -227,7 +244,7 @@ describe('local history privacy', () => {
       null,
       React.createElement(
         DataProvider,
-        { createRepository: () => repositories[created++] },
+        { createRepository: () => repositories[created++], lifecycleCoordinator },
         React.createElement(Probe),
       ),
     ));
@@ -237,6 +254,143 @@ describe('local history privacy', () => {
     expect(created).toBe(1);
     expect(initializeCalls[1]).toBe(0);
     await view.unmount();
+  });
+
+  it('holds a separately mounted provider until the prior mount closes the same database', async () => {
+    const closingStarted = deferred<void>();
+    const closing = deferred<void>();
+    const repositories = [
+      lifecycleRepository(
+        async () => undefined,
+        () => {
+          closingStarted.resolve();
+          return closing.promise;
+        },
+      ),
+      lifecycleRepository(async () => undefined, async () => undefined),
+      lifecycleRepository(async () => undefined, async () => undefined),
+    ];
+    let created = 0;
+    const firstView = await render(React.createElement(
+      DataProvider,
+      { createRepository: () => repositories[created++], lifecycleCoordinator },
+      React.createElement(Probe),
+    ));
+    await waitFor(() => expect(firstView.getByTestId('status').props.children).toBe('ready'));
+    await firstView.unmount();
+    await closingStarted.promise;
+
+    const secondView = await render(React.createElement(
+      DataProvider,
+      { createRepository: () => repositories[created++], lifecycleCoordinator },
+      React.createElement(Probe),
+    ));
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    const createdBeforeClose = created;
+    const statusBeforeClose = secondView.getByTestId('status').props.children;
+    closing.resolve();
+    await waitFor(() => expect(secondView.getByTestId('status').props.children).toBe('ready'));
+
+    expect(createdBeforeClose).toBe(1);
+    expect(statusBeforeClose).toBe('loading');
+    expect(created).toBe(2);
+    await secondView.unmount();
+
+    const thirdView = await render(React.createElement(
+      DataProvider,
+      { createRepository: () => repositories[created++], lifecycleCoordinator },
+      React.createElement(Probe),
+    ));
+    await waitFor(() => expect(thirdView.getByTestId('status').props.children).toBe('ready'));
+    expect(created).toBe(3);
+    await thirdView.unmount();
+  });
+
+  it('blocks a separately mounted provider when the prior database close rejects', async () => {
+    const closeAttempted = deferred<void>();
+    const repositories = [
+      lifecycleRepository(
+        async () => undefined,
+        async () => {
+          closeAttempted.resolve();
+          throw new Error('private cross-mount close cause');
+        },
+      ),
+      lifecycleRepository(async () => undefined, async () => undefined),
+    ];
+    let created = 0;
+    const firstView = await render(React.createElement(
+      DataProvider,
+      { createRepository: () => repositories[created++], lifecycleCoordinator },
+      React.createElement(Probe),
+    ));
+    await waitFor(() => expect(firstView.getByTestId('status').props.children).toBe('ready'));
+    await firstView.unmount();
+    await closeAttempted.promise;
+
+    const secondView = await render(React.createElement(
+      DataProvider,
+      { createRepository: () => repositories[created++], lifecycleCoordinator },
+      React.createElement(Probe),
+    ));
+    await waitFor(() => {
+      expect(secondView.getByTestId('status').props.children).not.toBe('loading');
+    });
+
+    expect(secondView.getByTestId('status').props.children).toBe('blocked');
+    expect(secondView.getByTestId('repository').props.children).toBe('hidden');
+    expect(created).toBe(1);
+    await secondView.unmount();
+  });
+
+  it('does not block a provider that owns a different physical database identity', async () => {
+    const closingStarted = deferred<void>();
+    const closing = deferred<void>();
+    const firstIdentity = 'file:///app/sqlite/first-provider.db';
+    const secondIdentity = 'file:///app/sqlite/second-provider.db';
+    const firstRepository = lifecycleRepository(
+      async () => undefined,
+      () => {
+        closingStarted.resolve();
+        return closing.promise;
+      },
+      firstIdentity,
+    );
+    const secondRepository = lifecycleRepository(
+      async () => undefined,
+      async () => undefined,
+      secondIdentity,
+    );
+    const firstView = await render(React.createElement(
+      DataProvider,
+      {
+        createRepository: () => firstRepository,
+        databaseIdentity: firstIdentity,
+        lifecycleCoordinator,
+      },
+      React.createElement(Probe),
+    ));
+    await waitFor(() => expect(firstView.getByTestId('status').props.children).toBe('ready'));
+    await firstView.unmount();
+    await closingStarted.promise;
+
+    const secondView = await render(React.createElement(
+      DataProvider,
+      {
+        createRepository: () => secondRepository,
+        databaseIdentity: secondIdentity,
+        lifecycleCoordinator,
+      },
+      React.createElement(Probe),
+    ));
+    await waitFor(() => expect(secondView.getByTestId('status').props.children).toBe('ready'));
+    expect(secondView.getByTestId('repository').props.children).toBe('ready');
+
+    closing.resolve();
+    await secondView.unmount();
   });
 
   it('blocks on initialization failure without surfacing raw errors', async () => {
@@ -250,6 +404,7 @@ describe('local history privacy', () => {
           openDatabase: async () => database,
           tempFiles: { cleanupAbandonedDetailed: async () => DETAILED_CLEAN },
         }),
+        lifecycleCoordinator,
       },
       React.createElement(Probe),
     ));

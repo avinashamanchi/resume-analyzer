@@ -1,3 +1,5 @@
+import { REPORT_DATABASE_IDENTITY } from '../src/storage/reportRepository';
+
 // Narrow SQLite boundary fake shared by the Task 12 storage suites.
 type Row = Record<string, unknown>;
 
@@ -63,6 +65,7 @@ function normalized(sql: string): string {
 }
 
 export class FakeReportDatabase {
+  readonly identity: string;
   userVersion = 0;
   tables: string[] = [];
   columns: Record<string, readonly FakeColumn[]> = {};
@@ -78,8 +81,12 @@ export class FakeReportDatabase {
   beforeInsert: (() => Promise<void>) | null = null;
   beforeList: (() => Promise<void>) | null = null;
 
-  static versionOne(): FakeReportDatabase {
-    const database = new FakeReportDatabase();
+  constructor(identity = REPORT_DATABASE_IDENTITY) {
+    this.identity = identity;
+  }
+
+  static versionOne(identity?: string): FakeReportDatabase {
+    const database = new FakeReportDatabase(identity);
     database.installVersionOne();
     return database;
   }
@@ -319,26 +326,46 @@ function restore(database: FakeReportDatabase, value: SharedSnapshot): void {
   database.rows = value.rows;
 }
 
-export class SharedDeferredReportStore {
-  readonly database = new FakeReportDatabase();
-  readonly connections: SharedDeferredReportConnection[] = [];
+export class ImmediateBusyReportStore {
+  readonly database: FakeReportDatabase;
+  readonly connections: ImmediateBusyReportConnection[] = [];
+  readonly firstWriterStarted: Promise<void>;
+  writerAttempts = 0;
   private locked = false;
-  private readonly waiters: Array<() => void> = [];
+  private readonly holdFirstWriter: boolean;
+  private resolveFirstWriterStarted!: () => void;
+  private releaseHeldWriter!: () => void;
+  private readonly heldWriterReleased: Promise<void>;
 
-  connection(options: { failClose?: boolean; beforeClose?: () => Promise<void> } = {}): SharedDeferredReportConnection {
-    const connection = new SharedDeferredReportConnection(this, options);
+  constructor(
+    readonly identity = REPORT_DATABASE_IDENTITY,
+    options: { holdFirstWriter?: boolean } = {},
+  ) {
+    this.database = new FakeReportDatabase(identity);
+    this.holdFirstWriter = options.holdFirstWriter ?? false;
+    this.firstWriterStarted = new Promise(resolve => { this.resolveFirstWriterStarted = resolve; });
+    this.heldWriterReleased = new Promise(resolve => { this.releaseHeldWriter = resolve; });
+  }
+
+  connection(options: { failClose?: boolean; beforeClose?: () => Promise<void> } = {}): ImmediateBusyReportConnection {
+    const connection = new ImmediateBusyReportConnection(this, options);
     this.connections.push(connection);
     return connection;
   }
 
   async acquire(): Promise<() => void> {
-    if (this.locked) await new Promise<void>(resolve => this.waiters.push(resolve));
+    this.writerAttempts += 1;
+    if (this.locked) throw new Error('database is locked');
     this.locked = true;
-    return () => {
-      const next = this.waiters.shift();
-      if (next === undefined) this.locked = false;
-      else next();
-    };
+    if (this.writerAttempts === 1) {
+      this.resolveFirstWriterStarted();
+      if (this.holdFirstWriter) await this.heldWriterReleased;
+    }
+    return () => { this.locked = false; };
+  }
+
+  releaseFirstWriter(): void {
+    this.releaseHeldWriter();
   }
 }
 
@@ -346,7 +373,7 @@ class DeferredTransaction {
   private release: (() => void) | null = null;
   private beforeWrite: SharedSnapshot | null = null;
 
-  constructor(private readonly store: SharedDeferredReportStore) {}
+  constructor(private readonly store: ImmediateBusyReportStore) {}
 
   private async writeLock(): Promise<void> {
     if (this.release !== null) return;
@@ -379,13 +406,16 @@ class DeferredTransaction {
   }
 }
 
-export class SharedDeferredReportConnection {
+export class ImmediateBusyReportConnection {
   closeCount = 0;
+  readonly identity: string;
 
   constructor(
-    private readonly store: SharedDeferredReportStore,
+    private readonly store: ImmediateBusyReportStore,
     private readonly options: { failClose?: boolean; beforeClose?: () => Promise<void> },
-  ) {}
+  ) {
+    this.identity = store.identity;
+  }
 
   execAsync(sql: string): Promise<void> {
     return this.store.database.execAsync(sql);

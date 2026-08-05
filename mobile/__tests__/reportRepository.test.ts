@@ -17,7 +17,7 @@ import {
 
 import {
   FakeReportDatabase,
-  SharedDeferredReportStore,
+  ImmediateBusyReportStore,
   versionOneReportColumns,
 } from '../test-utils/fakeReportDatabase';
 
@@ -124,23 +124,115 @@ function expectLocalStorageError(error: unknown): void {
 }
 
 describe('report schema migration', () => {
-  it('serializes two fresh migrations after the real deferred transaction begins', async () => {
-    const store = new SharedDeferredReportStore();
+  it('single-flights distinct handles for one physical database before an immediate busy write', async () => {
+    const store = new ImmediateBusyReportStore(
+      'file:///app/sqlite/reports.db',
+      { holdFirstWriter: true },
+    );
     const first = new ReportRepository({
+      databaseIdentity: store.identity,
       openDatabase: async () => store.connection(),
       tempFiles: { cleanupAbandonedDetailed: async () => DETAILED_CLEAN },
     });
     const second = new ReportRepository({
+      databaseIdentity: store.identity,
       openDatabase: async () => store.connection(),
       tempFiles: { cleanupAbandonedDetailed: async () => DETAILED_CLEAN },
     });
 
-    await expect(Promise.all([first.initialize(), second.initialize()])).resolves.toEqual([
+    const firstInitialization = first.initialize();
+    await store.firstWriterStarted;
+    const joined = Promise.all([firstInitialization, second.initialize()]);
+    store.releaseFirstWriter();
+
+    await expect(joined).resolves.toEqual([
       undefined,
       undefined,
     ]);
+    expect(store.writerAttempts).toBe(1);
     expect(store.database.userVersion).toBe(1);
     expect(store.database.tables).toEqual(['metadata', 'reports']);
+
+    const afterSuccess = new ReportRepository({
+      databaseIdentity: store.identity,
+      openDatabase: async () => store.connection(),
+      tempFiles: { cleanupAbandonedDetailed: async () => DETAILED_CLEAN },
+    });
+    await expect(afterSuccess.initialize()).resolves.toBeUndefined();
+    expect(store.writerAttempts).toBe(2);
+  });
+
+  it('clears a failed physical-database single-flight so a later initialization can retry', async () => {
+    const store = new ImmediateBusyReportStore(
+      'file:///app/sqlite/retry.db',
+      { holdFirstWriter: true },
+    );
+    store.database.failNext = /^CREATE TABLE __resume_ai_report_migration_lock/;
+    const first = new ReportRepository({
+      databaseIdentity: store.identity,
+      openDatabase: async () => store.connection(),
+      tempFiles: { cleanupAbandonedDetailed: async () => DETAILED_CLEAN },
+    });
+    const second = new ReportRepository({
+      databaseIdentity: store.identity,
+      openDatabase: async () => store.connection(),
+      tempFiles: { cleanupAbandonedDetailed: async () => DETAILED_CLEAN },
+    });
+
+    const firstInitialization = first.initialize();
+    await store.firstWriterStarted;
+    const joined = Promise.allSettled([firstInitialization, second.initialize()]);
+    store.releaseFirstWriter();
+    await expect(joined).resolves.toEqual([
+      expect.objectContaining({ status: 'rejected' }),
+      expect.objectContaining({ status: 'rejected' }),
+    ]);
+    expect(store.writerAttempts).toBe(1);
+
+    const retry = new ReportRepository({
+      databaseIdentity: store.identity,
+      openDatabase: async () => store.connection(),
+      tempFiles: { cleanupAbandonedDetailed: async () => DETAILED_CLEAN },
+    });
+    await expect(retry.initialize()).resolves.toBeUndefined();
+    expect(store.writerAttempts).toBe(2);
+    expect(store.database.userVersion).toBe(1);
+  });
+
+  it('does not serialize migrations for different physical database identities', async () => {
+    const firstStore = new ImmediateBusyReportStore(
+      'file:///app/sqlite/first.db',
+      { holdFirstWriter: true },
+    );
+    const secondStore = new ImmediateBusyReportStore(
+      'file:///app/sqlite/second.db',
+      { holdFirstWriter: true },
+    );
+    const first = new ReportRepository({
+      databaseIdentity: firstStore.identity,
+      openDatabase: async () => firstStore.connection(),
+      tempFiles: { cleanupAbandonedDetailed: async () => DETAILED_CLEAN },
+    });
+    const second = new ReportRepository({
+      databaseIdentity: secondStore.identity,
+      openDatabase: async () => secondStore.connection(),
+      tempFiles: { cleanupAbandonedDetailed: async () => DETAILED_CLEAN },
+    });
+
+    const firstInitialization = first.initialize();
+    await firstStore.firstWriterStarted;
+    const secondInitialization = second.initialize();
+    await expect(Promise.race([
+      secondStore.firstWriterStarted.then(() => 'started'),
+      new Promise<string>(resolve => setTimeout(() => resolve('blocked'), 25)),
+    ])).resolves.toBe('started');
+    firstStore.releaseFirstWriter();
+    secondStore.releaseFirstWriter();
+
+    await expect(Promise.all([firstInitialization, secondInitialization])).resolves.toEqual([
+      undefined,
+      undefined,
+    ]);
   });
 
   it('creates exact version-one tables inside an exclusive transaction', async () => {

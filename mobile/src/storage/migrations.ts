@@ -17,11 +17,14 @@ export interface ReportSqlExecutor {
 }
 
 export interface ReportDatabase extends ReportSqlExecutor {
+  readonly identity: string;
   withExclusiveTransactionAsync(
     task: (transaction: ReportSqlExecutor) => Promise<void>,
   ): Promise<void>;
   closeAsync(): Promise<void>;
 }
+
+const MIGRATION_FLIGHTS = new Map<string, Promise<void>>();
 
 const REPORTS_DDL = `CREATE TABLE reports (
   id TEXT PRIMARY KEY,
@@ -98,6 +101,18 @@ function migrationFailure(): Error {
   return new Error('The local report database schema is not supported.');
 }
 
+function databaseIdentity(value: unknown): string {
+  const parsed = z.string().min(1).max(4_096).safeParse(value);
+  if (
+    !parsed.success ||
+    parsed.data !== parsed.data.trim() ||
+    /[\u0000-\u001f\u007f]/u.test(parsed.data)
+  ) {
+    throw migrationFailure();
+  }
+  return parsed.data;
+}
+
 async function readUserVersion(database: ReportSqlExecutor): Promise<number> {
   const row = UserVersionRowSchema.safeParse(
     await database.getFirstAsync<unknown>('PRAGMA user_version'),
@@ -165,7 +180,7 @@ async function attestVersionOne(database: ReportSqlExecutor): Promise<void> {
   }
 }
 
-export async function migrateReportDatabase(database: ReportDatabase): Promise<void> {
+async function migratePhysicalReportDatabase(database: ReportDatabase): Promise<void> {
   await database.withExclusiveTransactionAsync(async transaction => {
     // Expo SDK 57 starts this separate connection with deferred BEGIN. This
     // main-schema write is intentionally first so no schema read can race a
@@ -193,4 +208,28 @@ export async function migrateReportDatabase(database: ReportDatabase): Promise<v
     await transaction.execAsync(`DROP TABLE ${MIGRATION_LOCK_TABLE}`);
     await attestVersionOne(transaction);
   });
+}
+
+export function migrateReportDatabase(database: ReportDatabase): Promise<void> {
+  let identity: string;
+  try {
+    identity = databaseIdentity(database.identity);
+  } catch {
+    return Promise.reject(migrationFailure());
+  }
+
+  const inFlight = MIGRATION_FLIGHTS.get(identity);
+  if (inFlight !== undefined) return inFlight;
+
+  const migration = Promise.resolve().then(() => migratePhysicalReportDatabase(database));
+  MIGRATION_FLIGHTS.set(identity, migration);
+  void migration.then(
+    () => {
+      if (MIGRATION_FLIGHTS.get(identity) === migration) MIGRATION_FLIGHTS.delete(identity);
+    },
+    () => {
+      if (MIGRATION_FLIGHTS.get(identity) === migration) MIGRATION_FLIGHTS.delete(identity);
+    },
+  );
+  return migration;
 }

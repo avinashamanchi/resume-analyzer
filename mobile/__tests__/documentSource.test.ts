@@ -14,6 +14,7 @@ import { VisionAdapter } from '../src/documents/visionAdapter';
 const REQUEST_ID = '11111111-1111-4111-8111-111111111111';
 const FILE_ID = '22222222-2222-4222-8222-222222222222';
 const PROVIDER_URI = 'file:///provider/resume.pdf';
+const NAMESPACE_URI = 'file:///app/cache/resume-ai-v1';
 
 type ServiceOptions = NonNullable<ConstructorParameters<typeof DocumentSourceService>[0]>;
 type PickerPort = NonNullable<ServiceOptions['picker']>;
@@ -38,8 +39,15 @@ class SourceFileSystem implements TempFileSystem {
     return this.directories.has(uri);
   }
 
-  async listDirectory(): Promise<readonly never[]> {
-    return [];
+  async listDirectory(uri: string) {
+    if (uri === NAMESPACE_URI) {
+      return [...this.directories]
+        .filter(candidate => candidate.startsWith(`${NAMESPACE_URI}/`))
+        .map(candidate => ({ uri: candidate, kind: 'directory' as const }));
+    }
+    return this.copied
+      .filter(entry => entry.destination.startsWith(`${uri}/`))
+      .map(entry => ({ uri: entry.destination, kind: 'file' as const }));
   }
 
   async copyFile(source: string, destination: string): Promise<void> {
@@ -238,6 +246,49 @@ describe('DocumentSourceService', () => {
     expect(error).toMatchObject({ category: 'privacy', code: 'cache_cleanup_failed' });
     expect(error.message).not.toContain('resume.pdf');
     expect(error.message).not.toContain('/provider');
+  });
+
+  it('allows later abandoned recovery after inspection and immediate cleanup both fail', async () => {
+    const { fileSystem, service } = sourceHarness();
+    const cleaner = new TempFileRegistry({ fileSystem });
+    fileSystem.inspectFailure = true;
+    fileSystem.deleteFailure = true;
+
+    await expect(service.pickPdf()).rejects.toMatchObject({
+      category: 'privacy',
+      code: 'cache_cleanup_failed',
+    });
+    fileSystem.deleteFailure = false;
+
+    await expect(cleaner.cleanupAbandonedDetailed()).resolves.toEqual({
+      attempted: 1,
+      deleted: 1,
+      failed: 0,
+      refused: 0,
+      deletedFiles: 1,
+      live: 0,
+    });
+    expect(fileSystem.deleted).toEqual([
+      `file:///app/cache/resume-ai-v1/${REQUEST_ID}`,
+    ]);
+  });
+
+  it('keeps a successfully returned PdfSource live during abandoned cleanup', async () => {
+    const { fileSystem, service } = sourceHarness();
+    const cleaner = new TempFileRegistry({ fileSystem });
+
+    const source = await service.pickPdf();
+
+    await expect(cleaner.cleanupAbandonedDetailed()).resolves.toEqual({
+      attempted: 0,
+      deleted: 0,
+      failed: 0,
+      refused: 0,
+      deletedFiles: 0,
+      live: 1,
+    });
+    expect(source).toMatchObject({ kind: 'pdf', requestId: REQUEST_ID });
+    expect(fileSystem.deleted).toEqual([]);
   });
 
   it('fails closed and removes the owned copy when the picker cache copy cannot be released', async () => {

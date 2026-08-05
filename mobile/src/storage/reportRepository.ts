@@ -1,4 +1,8 @@
-import { openDatabaseAsync } from 'expo-sqlite';
+import {
+  defaultDatabaseDirectory,
+  openDatabaseAsync,
+  type SQLiteDatabase,
+} from 'expo-sqlite';
 import { z } from 'zod';
 
 import {
@@ -16,12 +20,22 @@ import {
   REPORT_SCHEMA_VERSION,
   migrateReportDatabase,
   type ReportDatabase,
+  type ReportSqlValue,
 } from './migrations';
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const SCORE_JSON_LIMIT = 16_384;
 const FEEDBACK_JSON_LIMIT = 131_072;
 const DEFAULT_CLEANUP_TIMEOUT_MS = 10_000;
+
+function defaultReportDatabaseIdentity(): string {
+  if (typeof defaultDatabaseDirectory !== 'string' || defaultDatabaseDirectory.length === 0) {
+    return `expo-sqlite:default/${REPORT_DATABASE_NAME}`;
+  }
+  return `${defaultDatabaseDirectory.replace(/\/*$/, '')}/${REPORT_DATABASE_NAME.replace(/^\/+/, '')}`;
+}
+
+export const REPORT_DATABASE_IDENTITY = defaultReportDatabaseIdentity();
 
 const IdentifierSchema = z.string().regex(UUID_PATTERN);
 const SourceTypeSchema = z.enum(['pdf', 'text', 'vision_text']);
@@ -237,6 +251,7 @@ function withTimeout<T>(operation: () => Promise<T>, timeoutMs: number): Promise
 }
 
 export type ReportRepositoryOptions = Readonly<{
+  databaseIdentity?: string;
   openDatabase?: () => Promise<ReportDatabase>;
   tempFiles?: AbandonedCacheCleanup;
   now?: () => Date;
@@ -244,6 +259,7 @@ export type ReportRepositoryOptions = Readonly<{
 }>;
 
 export interface ReportRepositoryPort {
+  readonly databaseIdentity: string;
   initialize(): Promise<void>;
   save(input: SaveReportInput): Promise<ReportRecord>;
   list(): Promise<ReportRecord[]>;
@@ -254,6 +270,7 @@ export interface ReportRepositoryPort {
 }
 
 export class ReportRepository implements ReportRepositoryPort {
+  readonly databaseIdentity: string;
   private readonly openDatabase: () => Promise<ReportDatabase>;
   private readonly tempFiles: AbandonedCacheCleanup;
   private readonly now: () => Date;
@@ -265,7 +282,8 @@ export class ReportRepository implements ReportRepositoryPort {
   private closePromise: Promise<void> | null = null;
 
   constructor(options: ReportRepositoryOptions = {}) {
-    this.openDatabase = options.openDatabase ?? (() => openDatabaseAsync(REPORT_DATABASE_NAME));
+    this.databaseIdentity = options.databaseIdentity ?? REPORT_DATABASE_IDENTITY;
+    this.openDatabase = options.openDatabase ?? openDefaultReportDatabase;
     this.tempFiles = options.tempFiles ?? new TempFileRegistry();
     this.now = options.now ?? (() => new Date());
     const timeout = options.cleanupTimeoutMs ?? DEFAULT_CLEANUP_TIMEOUT_MS;
@@ -277,6 +295,7 @@ export class ReportRepository implements ReportRepositoryPort {
     return this.enqueue(async () => {
       if (this.initialized) return;
       if (this.database === null) this.database = await this.openDatabase();
+      if (this.database.identity !== this.databaseIdentity) throw storageError();
       await migrateReportDatabase(this.database);
       this.initialized = true;
     });
@@ -417,4 +436,49 @@ export class ReportRepository implements ReportRepositoryPort {
     );
     return result;
   }
+}
+
+class ExpoReportDatabaseAdapter implements ReportDatabase {
+  readonly identity: string;
+
+  constructor(private readonly database: SQLiteDatabase) {
+    this.identity = database.databasePath;
+  }
+
+  execAsync(source: string): Promise<void> {
+    return this.database.execAsync(source);
+  }
+
+  runAsync(source: string, ...params: ReportSqlValue[]) {
+    return this.database.runAsync(source, ...params);
+  }
+
+  getFirstAsync<T>(source: string, ...params: ReportSqlValue[]): Promise<T | null> {
+    return this.database.getFirstAsync<T>(source, ...params);
+  }
+
+  getAllAsync<T>(source: string, ...params: ReportSqlValue[]): Promise<T[]> {
+    return this.database.getAllAsync<T>(source, ...params);
+  }
+
+  withExclusiveTransactionAsync(
+    task: Parameters<ReportDatabase['withExclusiveTransactionAsync']>[0],
+  ): Promise<void> {
+    return this.database.withExclusiveTransactionAsync(transaction => task(transaction));
+  }
+
+  closeAsync(): Promise<void> {
+    return this.database.closeAsync();
+  }
+}
+
+async function openDefaultReportDatabase(): Promise<ReportDatabase> {
+  const database = new ExpoReportDatabaseAdapter(
+    await openDatabaseAsync(REPORT_DATABASE_NAME),
+  );
+  if (database.identity !== REPORT_DATABASE_IDENTITY) {
+    await database.closeAsync();
+    throw storageError();
+  }
+  return database;
 }

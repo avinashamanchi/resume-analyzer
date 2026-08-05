@@ -294,8 +294,13 @@ export class TempFileRegistry {
     const request = this.requestLocation(requestId);
     return this.enqueueCacheMutation(async () => {
       this.coordination.liveRequests.add(requestId);
-      await this.createRequestLocation(request);
-      return request.uri;
+      try {
+        await this.createRequestLocation(request);
+        return request.uri;
+      } catch (error) {
+        this.coordination.liveRequests.delete(requestId);
+        throw error;
+      }
     });
   }
 
@@ -308,21 +313,28 @@ export class TempFileRegistry {
     const destination = this.fileLocation(requestId, fileId);
     return this.enqueueCacheMutation(async () => {
       this.coordination.liveRequests.add(requestId);
-      await this.createRequestLocation(this.requestLocation(requestId));
-      await this.fileSystem.copyFile(source, destination.uri);
-      const inspection = await this.fileSystem.inspectFile(destination.uri);
-      return { uri: destination.uri, inspection };
+      try {
+        await this.createRequestLocation(this.requestLocation(requestId));
+        await this.fileSystem.copyFile(source, destination.uri);
+        const inspection = await this.fileSystem.inspectFile(destination.uri);
+        return { uri: destination.uri, inspection };
+      } catch (error) {
+        this.coordination.liveRequests.delete(requestId);
+        throw error;
+      }
     });
   }
 
   async cleanupRequest(requestId: string): Promise<CleanupReceipt> {
     const request = this.requestLocation(requestId);
     return this.enqueueCacheMutation(async () => {
-      const receipt = await this.cleanupRequestLocation(request);
-      if (receipt.failed === 0 && receipt.refused === 0) {
+      try {
+        return await this.cleanupRequestLocation(request);
+      } finally {
+        // cleanupRequest is a terminal ownership handoff. A failed delete must
+        // remain discoverable by later abandoned cleanup, not permanently live.
         this.coordination.liveRequests.delete(requestId);
       }
-      return receipt;
     });
   }
 
