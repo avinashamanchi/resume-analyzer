@@ -298,7 +298,7 @@ export class TempFileRegistry {
     return this.enqueueCacheMutation(async () => {
       if (
         owned.requestId !== claimedRequestId ||
-        this.coordination.liveRequests.get(claimedRequestId) !== lease
+        !this.isCurrentRequestLease(claimedRequestId, lease)
       ) {
         throw privacyError('cache_request_lease_mismatch');
       }
@@ -369,7 +369,7 @@ export class TempFileRegistry {
   ): Promise<CleanupReceipt> {
     const request = this.requestLocation(requestId);
     return this.enqueueCacheMutation(async () => {
-      if (this.coordination.liveRequests.get(requestId) !== lease) {
+      if (!this.isCurrentRequestLease(requestId, lease)) {
         return { attempted: 0, deleted: 0, failed: 0, refused: 1 };
       }
       try {
@@ -582,9 +582,15 @@ export class TempFileRegistry {
   }
 
   private releaseRequest(requestId: string, owner: symbol): void {
-    if (this.coordination.liveRequests.get(requestId) === owner) {
+    if (this.isCurrentRequestLease(requestId, owner)) {
       this.coordination.liveRequests.delete(requestId);
     }
+  }
+
+  private isCurrentRequestLease(requestId: string, lease: unknown): lease is TempFileLease {
+    return typeof lease === 'symbol' &&
+      this.coordination.liveRequests.has(requestId) &&
+      this.coordination.liveRequests.get(requestId) === lease;
   }
 
   private enqueueCacheMutation<T>(operation: () => Promise<T>): Promise<T> {

@@ -27,6 +27,8 @@ class RegistryFileSystem implements TempFileSystem {
   readonly directories = new Set<string>();
   readonly created: string[] = [];
   readonly copied: string[] = [];
+  readonly existenceChecks: string[] = [];
+  readonly listed: string[] = [];
   entries: Array<{ uri: string; kind: 'file' | 'directory' }> = [];
   entriesByDirectory = new Map<string, Array<{ uri: string; kind: 'file' | 'directory' }>>();
   deleteFailures = new Set<string>();
@@ -58,10 +60,12 @@ class RegistryFileSystem implements TempFileSystem {
   }
 
   async directoryExists(uri: string): Promise<boolean> {
+    this.existenceChecks.push(uri);
     return this.directories.has(uri);
   }
 
   async listDirectory(uri: string): Promise<readonly { uri: string; kind: 'file' | 'directory' }[]> {
+    this.listed.push(uri);
     if (this.listFailure) throw new Error('private listing details');
     return this.entriesByDirectory.get(uri) ?? this.entries;
   }
@@ -192,6 +196,100 @@ describe('TempFileRegistry request isolation', () => {
 });
 
 describe('TempFileRegistry cleanup', () => {
+  function seedQuarantinedPdf(fileSystem: RegistryFileSystem): string {
+    const uri = `${requestUri(REQUEST_A)}/${FILE_A}.pdf`;
+    fileSystem.directories.add(NAMESPACE_URI);
+    fileSystem.directories.add(requestUri(REQUEST_A));
+    fileSystem.entriesByDirectory.set(NAMESPACE_URI, [
+      { uri: requestUri(REQUEST_A), kind: 'directory' },
+    ]);
+    fileSystem.entriesByDirectory.set(requestUri(REQUEST_A), [
+      { uri, kind: 'file' },
+    ]);
+    return uri;
+  }
+
+  function fileSystemTouches(fileSystem: RegistryFileSystem) {
+    return {
+      created: [...fileSystem.created],
+      copied: [...fileSystem.copied],
+      existenceChecks: [...fileSystem.existenceChecks],
+      listed: [...fileSystem.listed],
+      inspected: [...fileSystem.inspected],
+      deleteAttempts: [...fileSystem.deleteAttempts],
+      deleted: [...fileSystem.deleted],
+    };
+  }
+
+  it('refuses every malformed runtime cleanup lease without touching a quarantined request', async () => {
+    const { fileSystem, registry } = harness();
+    seedQuarantinedPdf(fileSystem);
+    const cleanupAtRuntime = registry.cleanupRequest as unknown as (...args: unknown[]) => Promise<CleanupReceipt>;
+    const malformedCalls: ReadonlyArray<() => Promise<CleanupReceipt>> = [
+      () => cleanupAtRuntime.call(registry, REQUEST_A),
+      () => cleanupAtRuntime.call(registry, REQUEST_A, undefined),
+      () => cleanupAtRuntime.call(registry, REQUEST_A, null),
+      () => cleanupAtRuntime.call(registry, REQUEST_A, Symbol()),
+      () => cleanupAtRuntime.call(registry, REQUEST_A, 'not-a-lease'),
+    ];
+    const touchesBefore = fileSystemTouches(fileSystem);
+
+    for (const cleanup of malformedCalls) {
+      await expect(cleanup()).resolves.toEqual({
+        attempted: 0,
+        deleted: 0,
+        failed: 0,
+        refused: 1,
+      });
+      expect(fileSystemTouches(fileSystem)).toEqual(touchesBefore);
+      expect(fileSystem.directories.has(requestUri(REQUEST_A))).toBe(true);
+      expect(fileSystem.entriesByDirectory.get(requestUri(REQUEST_A))).toHaveLength(1);
+    }
+
+    await expect(registry.cleanupAbandonedDetailed()).resolves.toEqual({
+      attempted: 1,
+      deleted: 1,
+      failed: 0,
+      refused: 0,
+      deletedFiles: 1,
+      live: 0,
+    });
+  });
+
+  it('refuses every malformed runtime inspection lease before any quarantined filesystem access', async () => {
+    const { fileSystem, registry } = harness();
+    const uri = seedQuarantinedPdf(fileSystem);
+    const inspectAtRuntime = registry.inspectOwnedFileUri as unknown as
+      (...args: unknown[]) => ReturnType<TempFileRegistry['inspectOwnedFileUri']>;
+    const malformedCalls: ReadonlyArray<() => ReturnType<TempFileRegistry['inspectOwnedFileUri']>> = [
+      () => inspectAtRuntime.call(registry, uri, REQUEST_A),
+      () => inspectAtRuntime.call(registry, uri, REQUEST_A, undefined),
+      () => inspectAtRuntime.call(registry, uri, REQUEST_A, null),
+      () => inspectAtRuntime.call(registry, uri, REQUEST_A, Symbol()),
+      () => inspectAtRuntime.call(registry, uri, REQUEST_A, 7),
+    ];
+    const touchesBefore = fileSystemTouches(fileSystem);
+
+    for (const inspect of malformedCalls) {
+      await expect(inspect()).rejects.toMatchObject({
+        category: 'privacy',
+        code: 'cache_request_lease_mismatch',
+      });
+      expect(fileSystemTouches(fileSystem)).toEqual(touchesBefore);
+      expect(fileSystem.directories.has(requestUri(REQUEST_A))).toBe(true);
+      expect(fileSystem.entriesByDirectory.get(requestUri(REQUEST_A))).toHaveLength(1);
+    }
+
+    await expect(registry.cleanupAbandonedDetailed()).resolves.toEqual({
+      attempted: 1,
+      deleted: 1,
+      failed: 0,
+      refused: 0,
+      deletedFiles: 1,
+      live: 0,
+    });
+  });
+
   it('returns a truthful successful receipt and is idempotent', async () => {
     const { fileSystem, registry } = harness();
     const created = await registry.createRequest(REQUEST_A);
