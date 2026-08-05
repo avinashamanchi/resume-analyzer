@@ -474,6 +474,46 @@ describe('ResumeApi multipart boundary', () => {
     }
   });
 
+  it('does not construct multipart resume data while token acquisition is still pending', async () => {
+    jest.useFakeTimers();
+    let constructed = 0;
+    class CountingFormData extends TestFormData {
+      constructor() {
+        super();
+        constructed += 1;
+      }
+    }
+    (globalThis as unknown as { FormData: typeof CountingFormData }).FormData = CountingFormData;
+    const neverIssues = new Promise<string>(() => undefined);
+    const { api, fetchImpl } = createApi({
+      installationTokens: {
+        getOrIssue: jest.fn(() => neverIssues),
+        clear: jest.fn().mockResolvedValue(undefined),
+        invalidate: jest.fn().mockResolvedValue(undefined),
+      },
+      timeoutMs: 10,
+    });
+
+    try {
+      const pending = api.analyze(
+        { source: { kind: 'text', text: 'private resume content' }, consentVersion: '2026-08-04.v1' },
+        new AbortController().signal,
+      );
+      expect(constructed).toBe(0);
+      jest.advanceTimersByTime(10);
+
+      await expect(outcomeAfterMicrotasks(pending)).resolves.toMatchObject({
+        state: 'rejected',
+        error: { category: 'timeout' },
+      });
+      expect(constructed).toBe(0);
+      expect(fetchImpl).not.toHaveBeenCalled();
+    } finally {
+      (globalThis as unknown as { FormData: typeof TestFormData }).FormData = TestFormData;
+      jest.useRealTimers();
+    }
+  });
+
   it('returns an indeterminate token outcome and never starts analysis after a late commit', async () => {
     jest.useFakeTimers();
     const lateToken = deferred<string>();

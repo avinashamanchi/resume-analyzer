@@ -122,6 +122,68 @@ function analyzeWithTokenStore(api: ResumeApi): Promise<unknown> {
   );
 }
 
+function issueRetentionCounts(store: InstallationTokenStore):
+  | { callers: number; observers: number; phase: string; controllerAborted: boolean }
+  | null {
+  const inFlight = (store as unknown as {
+    inFlight: {
+      callers: Set<unknown>;
+      observers: Set<unknown>;
+      phase: string;
+      controller: AbortController;
+    } | null;
+  }).inFlight;
+  if (inFlight === null) return null;
+  return {
+    callers: inFlight.callers.size,
+    observers: inFlight.observers.size,
+    phase: inFlight.phase,
+    controllerAborted: inFlight.controller.signal.aborted,
+  };
+}
+
+function abortListenerCallCount(spy: jest.SpyInstance): number {
+  return spy.mock.calls.filter(([type]) => type === 'abort').length;
+}
+
+class TrackingAbortController {
+  private aborted = false;
+  private readonly listeners = new Set<EventListener>();
+  readonly signal: AbortSignal;
+
+  constructor() {
+    const owner = this;
+    this.signal = {
+      get aborted() {
+        return owner.aborted;
+      },
+      addEventListener: (type: string, listener: EventListenerOrEventListenerObject | null) => {
+        if (type === 'abort' && typeof listener === 'function') this.listeners.add(listener);
+      },
+      removeEventListener: (type: string, listener: EventListenerOrEventListenerObject | null) => {
+        if (type === 'abort' && typeof listener === 'function') this.listeners.delete(listener);
+      },
+    } as unknown as AbortSignal;
+  }
+
+  get listenerCount(): number {
+    return this.listeners.size;
+  }
+
+  abort(): void {
+    if (this.aborted) return;
+    this.aborted = true;
+    for (const listener of [...this.listeners]) listener({ type: 'abort' } as Event);
+  }
+}
+
+async function waitForJoinedCaller(store: InstallationTokenStore): Promise<void> {
+  for (let turn = 0; turn < 12; turn += 1) {
+    if (issueRetentionCounts(store)?.callers === 1) return;
+    await Promise.resolve();
+  }
+}
+
 function deferred<T>() {
   let resolve: (value: T) => void = () => undefined;
   let reject: (reason?: unknown) => void = () => undefined;
@@ -501,7 +563,7 @@ describe('installation token boundary', () => {
     expect(SecureStore.getItemAsync).not.toHaveBeenCalledWith(tokenSlot(1));
   });
 
-  it('lets a committed finalize win when the caller aborts after the commit point', async () => {
+  it('detaches a post-commit caller as indeterminate while finalization remains durable', async () => {
     const authority = authorityStore();
     const originalFinalize = authority.finalize.bind(authority);
     const finalizeStarted = deferred<void>();
@@ -514,15 +576,22 @@ describe('installation token boundary', () => {
     secureTokenSlots();
     fetchMock.mockResolvedValueOnce(response(201, { schemaVersion: 1, installationToken: 'committed-token' }));
     const { store } = createTokenStore(authority);
-    const controller = new AbortController();
+    const controller = new TrackingAbortController();
 
     const issue = store.getOrIssue(controller.signal);
     await finalizeStarted.promise;
     controller.abort();
 
-    await expect(settlePromptly(issue)).resolves.toEqual({ state: 'pending' });
+    await expect(issue).rejects.toMatchObject({ category: 'indeterminate', retryable: true });
+    expect(controller.listenerCount).toBe(0);
+    expect(issueRetentionCounts(store)).toEqual({
+      callers: 0,
+      observers: 0,
+      phase: 'committing',
+      controllerAborted: false,
+    });
     finishFinalize.resolve();
-    await expect(issue).resolves.toBe('committed-token');
+    await flushAsync();
 
     const { store: restartedStore } = createTokenStore(authority);
     await expect(restartedStore.getOrIssue(new AbortController().signal)).resolves.toBe('committed-token');
@@ -665,6 +734,86 @@ describe('installation token boundary', () => {
         state: 'rejected',
         error: { category: 'indeterminate', retryable: true },
       });
+      expect(analysisFetch).not.toHaveBeenCalled();
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('does not retain API retry callers, observers, or abort listeners while commit reconciliation never settles', async () => {
+    jest.useFakeTimers();
+    const authority = authorityStore();
+    const finalizeStarted = deferred<void>();
+    let finalizeCalls = 0;
+    authority.finalize = async () => {
+      finalizeCalls += 1;
+      finalizeStarted.resolve();
+      return new Promise(() => undefined);
+    };
+    secureTokenSlots();
+    const issuanceSignals: AbortSignal[] = [];
+    fetchMock.mockImplementationOnce((_url: string, init: RequestInit) => {
+      issuanceSignals.push(init.signal as AbortSignal);
+      return Promise.resolve(response(201, { schemaVersion: 1, installationToken: 'token-A' }));
+    });
+    const { store } = createTokenStore(authority);
+    const listenerSpies: Array<{ add: jest.SpyInstance; remove: jest.SpyInstance }> = [];
+    const installationTokens = {
+      getOrIssue(signal: AbortSignal, observer?: Parameters<InstallationTokenStore['getOrIssue']>[1]) {
+        const add = jest.spyOn(signal, 'addEventListener');
+        const remove = jest.spyOn(signal, 'removeEventListener');
+        listenerSpies.push({ add, remove });
+        return store.getOrIssue(signal, observer);
+      },
+      clear: () => store.clear(),
+      invalidate: (expectedToken: string) => store.invalidate(expectedToken),
+    };
+    const analysisFetch = jest.fn();
+    const api = new ResumeApi({
+      apiBaseUrl: 'https://api.example.test',
+      installationTokens,
+      fetchImpl: analysisFetch,
+      timeoutMs: 10,
+      requestId: () => 'd2719b54-1e17-4c9f-b85f-7e510a0af30b',
+    });
+
+    try {
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        const pending = analyzeWithTokenStore(api);
+        if (attempt === 0) await finalizeStarted.promise;
+        await waitForJoinedCaller(store);
+
+        expect(issueRetentionCounts(store)).toEqual({
+          callers: 1,
+          observers: 0,
+          phase: 'committing',
+          controllerAborted: false,
+        });
+        jest.advanceTimersByTime(10);
+
+        await expect(outcomeAfterMicrotasks(pending)).resolves.toMatchObject({
+          state: 'rejected',
+          error: { category: 'indeterminate', retryable: true },
+        });
+        expect(issueRetentionCounts(store)).toEqual({
+          callers: 0,
+          observers: 0,
+          phase: 'committing',
+          controllerAborted: false,
+        });
+        const listeners = listenerSpies[attempt];
+        // AbortSignal removes a once-listener internally without routing that
+        // removal through the patched method. At most that one automatic
+        // removal may be absent; no retry may leave an additional listener.
+        expect(abortListenerCallCount(listeners.add)).toBeGreaterThan(0);
+        expect(
+          abortListenerCallCount(listeners.add) - abortListenerCallCount(listeners.remove),
+        ).toBeLessThanOrEqual(1);
+      }
+
+      expect(finalizeCalls).toBe(1);
+      expect(issuanceSignals).toHaveLength(1);
+      expect(issuanceSignals[0].aborted).toBe(false);
       expect(analysisFetch).not.toHaveBeenCalled();
     } finally {
       jest.useRealTimers();

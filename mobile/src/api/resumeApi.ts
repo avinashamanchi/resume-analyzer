@@ -57,6 +57,11 @@ type MultipartPayload = Readonly<{
 class AbortSignalFailure extends Error {}
 class TokenAcquisitionIndeterminateFailure extends Error {}
 
+type TokenCommitObservation = Readonly<{
+  observer: InstallationTokenAcquisitionObserver;
+  hasStarted(): boolean;
+}>;
+
 function defaultRequestId(): string {
   const randomUuid = globalThis.crypto?.randomUUID;
   if (typeof randomUuid !== 'function') throw new ResumeApiError('validation');
@@ -75,7 +80,7 @@ function assertCanonicalRequestId(value: unknown): string {
   return value;
 }
 
-function appendTextSource(formData: FormData, source: unknown): void {
+function validateTextSource(source: unknown): void {
   if (
     !assertExactKeys(source, ['kind', 'text']) ||
     (source.kind !== 'text' && source.kind !== 'vision_text') ||
@@ -86,11 +91,16 @@ function appendTextSource(formData: FormData, source: unknown): void {
   if (!isNonBlankPythonText(source.text) || codePointLength(source.text) > MAX_RESUME_CODE_POINTS) {
     throw new ResumeApiError('validation');
   }
-  formData.append('resume_text', source.text);
-  formData.append('source_type', source.kind);
 }
 
-function appendPdfSource(formData: FormData, source: unknown): void {
+function appendTextSource(formData: FormData, source: unknown): void {
+  validateTextSource(source);
+  const textSource = source as TextAnalyzeSource;
+  formData.append('resume_text', textSource.text);
+  formData.append('source_type', textSource.kind);
+}
+
+function validatePdfSource(source: unknown): void {
   if (
     !assertExactKeys(source, ['kind', 'uri', 'name', 'mimeType', 'size']) ||
     source.kind !== 'pdf' ||
@@ -108,13 +118,21 @@ function appendPdfSource(formData: FormData, source: unknown): void {
   ) {
     throw new ResumeApiError('validation');
   }
+}
+
+function appendPdfSource(formData: FormData, source: unknown): void {
+  validatePdfSource(source);
+  const pdfSource = source as PdfAnalyzeSource;
   formData.append(
     'resume_pdf',
-    { uri: source.uri, name: source.name, type: source.mimeType } as unknown as string,
+    { uri: pdfSource.uri, name: pdfSource.name, type: pdfSource.mimeType } as unknown as string,
   );
 }
 
-function createMultipartPayload(request: unknown, requestId: unknown): MultipartPayload {
+// Keep validation separate from FormData allocation. Token acquisition may
+// reconcile durably after its caller has timed out, so no multipart copy of
+// resume content exists until an authorized token is ready.
+function validateAnalyzeRequest(request: unknown, requestId: unknown): void {
   if (!assertExactKeys(request, ['source', 'jobDescription', 'consentVersion']) &&
       !assertExactKeys(request, ['source', 'consentVersion'])) {
     throw new ResumeApiError('validation');
@@ -125,15 +143,29 @@ function createMultipartPayload(request: unknown, requestId: unknown): Multipart
   if (request.source === null || typeof request.source !== 'object' || Array.isArray(request.source)) {
     throw new ResumeApiError('validation');
   }
+  assertCanonicalRequestId(requestId);
+
+  if (request.jobDescription !== undefined && request.jobDescription !== null) {
+    if (typeof request.jobDescription !== 'string' || codePointLength(request.jobDescription) > MAX_JOB_DESCRIPTION_CODE_POINTS) {
+      throw new ResumeApiError('validation');
+    }
+    if (trimPythonWhitespace(request.jobDescription) === null) throw new ResumeApiError('validation');
+  }
+
+  const source = request.source as Record<string, unknown>;
+  if (source.kind === 'pdf') validatePdfSource(source);
+  else if (source.kind === 'text' || source.kind === 'vision_text') validateTextSource(source);
+  else throw new ResumeApiError('validation');
+}
+
+function createMultipartPayload(request: AnalyzeRequest, requestId: unknown): MultipartPayload {
+  validateAnalyzeRequest(request, requestId);
   const formData = new FormData();
   formData.append('consent_version', CONSENT_VERSION);
   formData.append('request_id', assertCanonicalRequestId(requestId));
 
   let hasJobDescription = false;
   if (request.jobDescription !== undefined && request.jobDescription !== null) {
-    if (typeof request.jobDescription !== 'string' || codePointLength(request.jobDescription) > MAX_JOB_DESCRIPTION_CODE_POINTS) {
-      throw new ResumeApiError('validation');
-    }
     const trimmed = trimPythonWhitespace(request.jobDescription);
     if (trimmed === null) throw new ResumeApiError('validation');
     if (trimmed.length > 0) {
@@ -144,11 +176,7 @@ function createMultipartPayload(request: unknown, requestId: unknown): Multipart
 
   const source = request.source as Record<string, unknown>;
   if (source.kind === 'pdf') appendPdfSource(formData, source);
-  else if (source.kind === 'text' || source.kind === 'vision_text') {
-    appendTextSource(formData, source);
-  } else {
-    throw new ResumeApiError('validation');
-  }
+  else appendTextSource(formData, source);
 
   return { body: formData, hasJobDescription };
 }
@@ -203,6 +231,16 @@ function awaitTokenAcquisition<T>(
   });
 }
 
+// This factory owns only the commit bit. Keeping it outside analyze prevents
+// the observer retained by token issuance from closing over resume input.
+function observeTokenCommit(): TokenCommitObservation {
+  let started = false;
+  return {
+    observer: { onCommit: () => { started = true; } },
+    hasStarted: () => started,
+  };
+}
+
 async function parseJsonOnce(response: Response, signal: AbortSignal): Promise<unknown> {
   try {
     return await awaitAbortable(response.json(), signal);
@@ -232,9 +270,10 @@ export class ResumeApi {
 
   async analyze(input: AnalyzeRequest, signal: AbortSignal): Promise<AnalysisResponse> {
     if (signal.aborted) throw new ResumeApiError('cancelled');
-    let payload: MultipartPayload;
+    let requestId: string;
     try {
-      payload = createMultipartPayload(input, this.requestId());
+      requestId = this.requestId();
+      validateAnalyzeRequest(input, requestId);
     } catch (error) {
       if (error instanceof ResumeApiError) throw error;
       throw new ResumeApiError('validation');
@@ -249,18 +288,22 @@ export class ResumeApi {
     }, this.timeoutMs);
 
     try {
-      let tokenCommitStarted = false;
-      const observer: InstallationTokenAcquisitionObserver = {
-        onCommit: () => { tokenCommitStarted = true; },
-      };
+      const tokenCommit = observeTokenCommit();
       const token = await awaitTokenAcquisition(
-        this.installationTokens.getOrIssue(controller.signal, observer),
+        this.installationTokens.getOrIssue(controller.signal, tokenCommit.observer),
         controller.signal,
-        () => tokenCommitStarted,
+        tokenCommit.hasStarted,
       );
       // A provider may settle in the same turn as caller or timeout abort.
       // Never send sensitive analysis input with an already-aborted signal.
       if (controller.signal.aborted) throw new AbortSignalFailure();
+      let payload: MultipartPayload;
+      try {
+        payload = createMultipartPayload(input, requestId);
+      } catch (error) {
+        if (error instanceof ResumeApiError) throw error;
+        throw new ResumeApiError('validation');
+      }
       const response = await awaitAbortable(
         this.fetchImpl(`${this.apiBaseUrl}/v1/analyses`, {
           method: 'POST',

@@ -294,8 +294,10 @@ export class InstallationTokenStore {
     const caller = Symbol('installation-token-caller');
     inFlight.callers.add(caller);
     if (observer !== undefined) {
-      inFlight.observers.add(observer);
+      // A late caller needs the same bounded-wait signal, but a committed
+      // reconciliation must not retain that observer after it has fired.
       if (inFlight.phase === 'committing') this.notifyCommit(observer);
+      else inFlight.observers.add(observer);
     }
     return new Promise<string>((resolve, reject) => {
       let settled = false;
@@ -307,10 +309,17 @@ export class InstallationTokenStore {
       };
       const cancel = () => {
         if (settled || cancelling) return;
-        // After this synchronous transition, finalize is deliberately
-        // non-abortable. Keeping the caller attached means the same issuance
-        // cannot report cancellation and later become durable.
-        if (inFlight.phase === 'committing') return;
+        // Finalize is deliberately non-abortable after this synchronous
+        // transition. Detach this caller immediately instead of retaining its
+        // signal, observer, and join promise until reconciliation settles.
+        // Its own outcome is indeterminate because durable authority may
+        // still activate the anonymous token.
+        if (inFlight.phase === 'committing') {
+          settled = true;
+          removeCaller();
+          reject(new ResumeApiError('indeterminate', { retryable: true }));
+          return;
+        }
         cancelling = true;
         removeCaller();
         if (inFlight.callers.size > 0) {
@@ -376,7 +385,12 @@ export class InstallationTokenStore {
   }
 
   private notifyCommitObservers(inFlight: InFlightIssue): void {
-    for (const observer of inFlight.observers) this.notifyCommit(observer);
+    // Observer callbacks only carry each caller's local wait state. Clear
+    // their references before invoking them so a hung authority operation
+    // retains no caller-owned closure or request payload through this store.
+    const observers = [...inFlight.observers];
+    inFlight.observers.clear();
+    for (const observer of observers) this.notifyCommit(observer);
   }
 
   private async cancelBeforeCommit(inFlight: InFlightIssue): Promise<void> {
