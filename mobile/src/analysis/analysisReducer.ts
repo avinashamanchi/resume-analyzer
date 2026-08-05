@@ -1,0 +1,212 @@
+import type { AnalysisResponse } from '../domain/contracts';
+import type { StableErrorCategory } from '../domain/errors';
+import type { ResumeSource } from '../documents/documentSource';
+
+export type AnalysisStatus =
+  | 'idle'
+  | 'ready'
+  | 'consentRequired'
+  | 'analyzing'
+  | 'succeeded'
+  | 'failed'
+  | 'cancelled';
+
+export type AnalysisErrorCategory =
+  | StableErrorCategory
+  | 'privacy'
+  | 'consent_storage';
+
+export type PublicAnalysisError = Readonly<{
+  category: AnalysisErrorCategory;
+  message: string;
+  retryable: boolean;
+  code?: string;
+  requestId?: string;
+}>;
+
+export type AnalysisState = Readonly<{
+  status: AnalysisStatus;
+  privacyReadiness: 'checking' | 'ready' | 'blocked';
+  source: ResumeSource | null;
+  jobDescription: string;
+  result: AnalysisResponse | null;
+  error: PublicAnalysisError | null;
+  generation: number;
+  activation: number | null;
+  cleanupPending: boolean;
+}>;
+
+export type AnalysisEvent =
+  | Readonly<{ type: 'initializationReady' }>
+  | Readonly<{ type: 'initializationFailed'; error: PublicAnalysisError }>
+  | Readonly<{ type: 'generationAdvanced'; generation: number }>
+  | Readonly<{ type: 'sourceReady'; generation: number; source: ResumeSource }>
+  | Readonly<{
+      type: 'jobUpdated';
+      generation: number;
+      jobDescription: string;
+      consumeSource?: boolean;
+    }>
+  | Readonly<{ type: 'consentRequired'; generation: number }>
+  | Readonly<{ type: 'consentDeclined'; generation: number }>
+  | Readonly<{ type: 'analysisStarted'; generation: number; activation: number }>
+  | Readonly<{
+      type: 'analysisSucceeded';
+      generation: number;
+      activation: number;
+      result: AnalysisResponse;
+      consumeSource: boolean;
+    }>
+  | Readonly<{
+      type: 'analysisFailed';
+      generation: number;
+      activation?: number;
+      error: PublicAnalysisError;
+      consumeSource: boolean;
+      cleanupPending?: boolean;
+    }>
+  | Readonly<{
+      type: 'analysisCancelled';
+      generation: number;
+      activation?: number;
+      consumeSource: boolean;
+    }>
+  | Readonly<{ type: 'reset'; generation: number }>;
+
+export function createInitialAnalysisState(): AnalysisState {
+  return {
+    status: 'idle',
+    privacyReadiness: 'checking',
+    source: null,
+    jobDescription: '',
+    result: null,
+    error: null,
+    generation: 0,
+    activation: null,
+    cleanupPending: false,
+  };
+}
+
+function terminalMatches(
+  state: AnalysisState,
+  event: { generation: number; activation?: number },
+): boolean {
+  if (event.generation !== state.generation) return false;
+  if (event.activation === undefined) return state.status !== 'analyzing';
+  return state.status === 'analyzing' && state.activation === event.activation;
+}
+
+export function analysisReducer(state: AnalysisState, event: AnalysisEvent): AnalysisState {
+  switch (event.type) {
+    case 'initializationReady':
+      if (state.privacyReadiness !== 'checking') return state;
+      return { ...state, privacyReadiness: 'ready' };
+    case 'initializationFailed':
+      if (state.privacyReadiness !== 'checking') return state;
+      return {
+        ...state,
+        status: 'failed',
+        privacyReadiness: 'blocked',
+        error: event.error,
+        cleanupPending: true,
+      };
+    case 'generationAdvanced':
+      if (event.generation <= state.generation) return state;
+      return {
+        ...state,
+        status: state.source === null ? 'idle' : 'ready',
+        result: null,
+        error: null,
+        generation: event.generation,
+        activation: null,
+      };
+    case 'sourceReady':
+      if (state.privacyReadiness !== 'ready' || event.generation !== state.generation) return state;
+      return {
+        ...state,
+        status: 'ready',
+        source: event.source,
+        result: null,
+        error: null,
+        activation: null,
+        cleanupPending: false,
+      };
+    case 'jobUpdated':
+      if (state.privacyReadiness !== 'ready' || event.generation !== state.generation) return state;
+      return {
+        ...state,
+        status: state.source === null || event.consumeSource === true ? 'idle' : 'ready',
+        source: event.consumeSource === true ? null : state.source,
+        jobDescription: event.jobDescription,
+        result: null,
+        error: null,
+        activation: null,
+        cleanupPending: event.consumeSource === true ? false : state.cleanupPending,
+      };
+    case 'consentRequired':
+      if (
+        state.privacyReadiness !== 'ready' ||
+        state.source === null ||
+        event.generation !== state.generation ||
+        state.status === 'analyzing'
+      ) return state;
+      return { ...state, status: 'consentRequired', result: null, error: null };
+    case 'consentDeclined':
+      if (state.status !== 'consentRequired' || event.generation !== state.generation) return state;
+      return { ...state, status: 'ready', error: null };
+    case 'analysisStarted':
+      if (
+        state.privacyReadiness !== 'ready' ||
+        state.source === null ||
+        event.generation !== state.generation ||
+        state.status === 'analyzing'
+      ) return state;
+      return {
+        ...state,
+        status: 'analyzing',
+        result: null,
+        error: null,
+        activation: event.activation,
+      };
+    case 'analysisSucceeded':
+      if (!terminalMatches(state, event)) return state;
+      return {
+        ...state,
+        status: 'succeeded',
+        source: event.consumeSource ? null : state.source,
+        result: event.result,
+        error: null,
+        activation: null,
+        cleanupPending: false,
+      };
+    case 'analysisFailed':
+      if (!terminalMatches(state, event)) return state;
+      return {
+        ...state,
+        status: 'failed',
+        source: event.consumeSource ? null : state.source,
+        result: null,
+        error: event.error,
+        activation: null,
+        cleanupPending: event.cleanupPending === true,
+      };
+    case 'analysisCancelled':
+      if (!terminalMatches(state, event)) return state;
+      return {
+        ...state,
+        status: 'cancelled',
+        source: event.consumeSource ? null : state.source,
+        result: null,
+        error: null,
+        activation: null,
+        cleanupPending: false,
+      };
+    case 'reset':
+      if (event.generation !== state.generation) return state;
+      return {
+        ...createInitialAnalysisState(),
+        privacyReadiness: state.privacyReadiness,
+        generation: event.generation,
+      };
+  }
+}
