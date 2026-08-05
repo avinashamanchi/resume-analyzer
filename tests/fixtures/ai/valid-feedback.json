@@ -1,0 +1,9 @@
+{
+  "matchedKeywords": ["Python", "Flask"],
+  "missingKeywords": ["Kubernetes"],
+  "strengths": ["The experience section presents a clear technical progression."],
+  "improvements": ["Add measurable outcomes to the most recent project bullets."],
+  "powerBullets": ["Built a Flask service that reduced response time by 20%."],
+  "summary": "A focused resume with relevant backend evidence and room for stronger outcome metrics.",
+  "simulatedRecruiterComment": "Simulated recruiter commentary: the backend experience is easy to identify, while more quantified outcomes would improve differentiation."
+}

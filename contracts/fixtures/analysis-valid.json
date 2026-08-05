@@ -26,6 +26,6 @@
     "improvements": ["Quantify the impact of recent projects."],
     "powerBullets": ["Built a Flask service that reduced response time by 20%."],
     "summary": "A focused resume with strong technical evidence and a few opportunities to add measurable outcomes.",
-    "verdict": "Simulated AI feedback: a recruiter would quickly see relevant backend experience, but stronger outcome metrics would improve differentiation."
+    "simulatedRecruiterComment": "Simulated recruiter commentary: a recruiter would quickly see relevant backend experience, but stronger outcome metrics would improve differentiation."
   }
 }

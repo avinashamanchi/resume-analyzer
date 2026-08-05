@@ -16,11 +16,25 @@ def fixture(name: str) -> dict[str, object]:
 
 def test_analysis_fixture_is_strict():
     valid = fixture("analysis-valid.json")
-    assert AnalysisResponseV1.model_validate(valid).schemaVersion == 1
+    analysis = AnalysisResponseV1.model_validate(valid)
+    assert analysis.schemaVersion == 1
+    assert analysis.feedback.simulatedRecruiterComment.startswith(
+        "Simulated recruiter commentary:"
+    )
 
     invalid = fixture("analysis-invalid-extra-key.json")
     with pytest.raises(ValidationError):
         AnalysisResponseV1.model_validate(invalid)
+
+
+def test_feedback_contract_rejects_legacy_verdict_field():
+    payload = fixture("analysis-valid.json")
+    feedback = payload["feedback"]
+    assert isinstance(feedback, dict)
+    feedback["verdict"] = feedback.pop("simulatedRecruiterComment")
+
+    with pytest.raises(ValidationError):
+        AnalysisResponseV1.model_validate(payload)
 
 
 def test_analysis_contract_rejects_noncanonical_score_label():

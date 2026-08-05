@@ -65,7 +65,9 @@ class FeedbackV1(StrictContract):
     improvements: list[FeedbackText] = Field(min_length=1, max_length=12)
     powerBullets: list[FeedbackText] = Field(max_length=10)
     summary: Annotated[str, StringConstraints(min_length=1, max_length=500)]
-    verdict: Annotated[str, StringConstraints(min_length=1, max_length=800)]
+    simulatedRecruiterComment: Annotated[
+        str, StringConstraints(min_length=1, max_length=800)
+    ]
 
 
 class AnalysisResponseV1(StrictContract):

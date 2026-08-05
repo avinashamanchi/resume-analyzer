@@ -29,6 +29,7 @@ class ErrorCode(StrEnum):
 class PublicServiceError(Exception):
     """Content-free service failure safe to translate at the API boundary."""
 
-    def __init__(self, code: ErrorCode | str) -> None:
+    def __init__(self, code: ErrorCode | str, *, retryable: bool = False) -> None:
         self.code = ErrorCode(code)
+        self.retryable = retryable
         super().__init__(self.code.value)

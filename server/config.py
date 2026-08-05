@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass
 from typing import Mapping
 from urllib.parse import urlsplit
@@ -8,6 +9,10 @@ from urllib.parse import urlsplit
 
 class ConfigurationError(ValueError):
     """Raised when environment settings violate the deployment safety policy."""
+
+
+_GROQ_MODEL_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/-]{0,119}")
+_DEFAULT_GROQ_MODEL = "llama-3.3-70b-versatile"
 
 
 def _parse_boolean(value: str, *, name: str) -> bool:
@@ -49,6 +54,13 @@ def _parse_origins(raw_value: str) -> tuple[str, ...]:
     return origins
 
 
+def _parse_groq_model(raw_value: str) -> str:
+    model = raw_value.strip()
+    if not _GROQ_MODEL_PATTERN.fullmatch(model):
+        raise ConfigurationError("GROQ_MODEL must be a valid provider model identifier")
+    return model
+
+
 def _is_placeholder(secret: str) -> bool:
     normalized = secret.strip().casefold()
     return not normalized or any(
@@ -62,6 +74,7 @@ class Settings:
     app_env: str
     debug: bool
     groq_api_key: str
+    groq_model: str
     installation_signing_key: str
     redis_url: str
     allowed_web_origins: tuple[str, ...]
@@ -90,6 +103,9 @@ class Settings:
             app_env=app_env,
             debug=debug,
             groq_api_key=environ.get("GROQ_API_KEY", "").strip(),
+            groq_model=_parse_groq_model(
+                environ.get("GROQ_MODEL", _DEFAULT_GROQ_MODEL)
+            ),
             installation_signing_key=environ.get("INSTALLATION_SIGNING_KEY", "").strip(),
             redis_url=environ.get("REDIS_URL", "").strip(),
             allowed_web_origins=_parse_origins(

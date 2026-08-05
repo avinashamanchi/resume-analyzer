@@ -9,6 +9,7 @@ def production_environ(**overrides: str) -> dict[str, str]:
     environ = {
         "APP_ENV": "production",
         "GROQ_API_KEY": "gsk_live_k3n4m5p6q7r8s9t0",
+        "GROQ_MODEL": "llama-3.3-70b-versatile",
         "INSTALLATION_SIGNING_KEY": "a" * 32,
         "REDIS_URL": "rediss://cache.example.com:6380/0",
         "ALLOWED_WEB_ORIGINS": "https://resume.example.com",
@@ -34,6 +35,8 @@ def test_production_rejects_hostless_redis_url():
     [
         ({"DEBUG": "true"}, "debug"),
         ({"GROQ_API_KEY": "YOUR_API_KEY_HERE"}, "placeholder"),
+        ({"GROQ_MODEL": ""}, "GROQ_MODEL"),
+        ({"GROQ_MODEL": "https://models.example.com/unsafe"}, "GROQ_MODEL"),
         ({"INSTALLATION_SIGNING_KEY": "change-me"}, "placeholder"),
         ({"REDIS_URL": ""}, "REDIS_URL"),
         ({"ALLOWED_WEB_ORIGINS": "*"}, "wildcard"),
@@ -50,6 +53,7 @@ def test_development_settings_parse_origins_and_deadlines():
     settings = Settings.from_environ(
         {
             "APP_ENV": "development",
+            "GROQ_MODEL": "llama-3.3-70b-versatile",
             "ALLOWED_WEB_ORIGINS": "http://localhost:8081, https://preview.example.com",
             "PROVIDER_DEADLINE_SECONDS": "4.5",
             "REQUEST_DEADLINE_SECONDS": "7",
@@ -57,6 +61,7 @@ def test_development_settings_parse_origins_and_deadlines():
     )
 
     assert settings.app_env == "development"
+    assert settings.groq_model == "llama-3.3-70b-versatile"
     assert settings.allowed_web_origins == (
         "http://localhost:8081",
         "https://preview.example.com",

@@ -44,7 +44,7 @@
     "feedback": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["matchedKeywords", "missingKeywords", "strengths", "improvements", "powerBullets", "summary", "verdict"],
+      "required": ["matchedKeywords", "missingKeywords", "strengths", "improvements", "powerBullets", "summary", "simulatedRecruiterComment"],
       "properties": {
         "matchedKeywords": {"type": "array", "maxItems": 20, "items": {"$ref": "#/$defs/nonEmptyText"}},
         "missingKeywords": {"type": "array", "maxItems": 20, "items": {"$ref": "#/$defs/nonEmptyText"}},
@@ -52,7 +52,7 @@
         "improvements": {"type": "array", "minItems": 1, "maxItems": 12, "items": {"$ref": "#/$defs/nonEmptyText"}},
         "powerBullets": {"type": "array", "maxItems": 10, "items": {"$ref": "#/$defs/nonEmptyText"}},
         "summary": {"type": "string", "minLength": 1, "maxLength": 500},
-        "verdict": {"type": "string", "minLength": 1, "maxLength": 800}
+        "simulatedRecruiterComment": {"type": "string", "minLength": 1, "maxLength": 800}
       }
     }
   }
