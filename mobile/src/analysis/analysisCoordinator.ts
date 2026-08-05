@@ -1,24 +1,22 @@
+import type { AnalyzeRequest } from '../api/resumeApi';
 import { CONSENT_VERSION } from '../domain/consent';
 import type { AnalysisResponse } from '../domain/contracts';
 import { ResumeApiError } from '../domain/errors';
 import {
   codePointLength,
+  isNonBlankPythonText,
   MAX_JOB_DESCRIPTION_CODE_POINTS,
   MAX_PDF_BYTES,
   MAX_RESUME_CODE_POINTS,
-  isNonBlankPythonText,
   trimPythonWhitespace,
 } from '../domain/limits';
-import type { AnalyzeRequest } from '../api/resumeApi';
 import type { ResumeSource } from '../documents/documentSource';
-import {
-  canonicalizeLocalFileUri,
-  type CleanupReceipt,
-} from '../documents/tempFileRegistry';
+import type { CleanupReceipt } from '../documents/tempFileRegistry';
 import {
   analysisReducer,
   createInitialAnalysisState,
   type AnalysisEvent,
+  type AnalysisMutation,
   type AnalysisState,
   type PublicAnalysisError,
 } from './analysisReducer';
@@ -37,10 +35,15 @@ export type AnalysisTempFilesPort = Readonly<{
   cleanupRequest(requestId: string): Promise<CleanupReceipt>;
 }>;
 
+export type PdfOwnershipPort = Readonly<{
+  assertOwnedFileUri(uri: unknown): { requestId: string; uri: string };
+}>;
+
 export type AnalysisCoordinatorOptions = Readonly<{
   api: AnalysisApiPort;
   consentStore: AnalysisConsentStorePort;
   tempFiles: AnalysisTempFilesPort;
+  pdfOwnership: PdfOwnershipPort;
   cleanupTimeoutMs?: number;
 }>;
 
@@ -54,12 +57,15 @@ export type AnalysisCommands = Readonly<{
   reset(): Promise<void>;
 }>;
 
+type ActivationPhase = 'consentRead' | 'consentWrite' | 'network';
+
 type Activation = {
   readonly id: number;
   readonly generation: number;
   readonly sourceRevision: number;
   readonly source: ResumeSource;
   readonly controller: AbortController;
+  phase: ActivationPhase;
   sourceConsumed: boolean;
   promise: Promise<void>;
 };
@@ -67,6 +73,17 @@ type Activation = {
 type ConsentContinuation = Readonly<{
   generation: number;
   sourceRevision: number;
+}>;
+
+type PreparedSource = Readonly<{
+  source: ResumeSource | null;
+  claimedRequestId: string | null;
+  newlyClaimed: boolean;
+}>;
+
+type MutationContext = Readonly<{
+  generation: number;
+  previousActivation: Activation | null;
 }>;
 
 class CoordinatorAbort extends Error {}
@@ -122,63 +139,36 @@ function isVerifiedCleanupReceipt(value: unknown): value is CleanupReceipt {
   return receipt.failed === 0 && receipt.refused === 0 && receipt.attempted === receipt.deleted;
 }
 
-function validSource(source: unknown): source is ResumeSource {
-  if (source === null || typeof source !== 'object' || Array.isArray(source)) return false;
-  const candidate = source as Record<string, unknown>;
-  if (candidate.kind === 'text') {
-    return typeof candidate.text === 'string' &&
-      !candidate.text.includes('\0') &&
-      isNonBlankPythonText(candidate.text) &&
-      codePointLength(candidate.text) <= MAX_RESUME_CODE_POINTS;
-  }
-  if (candidate.kind === 'vision_text') {
-    return candidate.reviewed === true &&
-      typeof candidate.text === 'string' &&
-      !candidate.text.includes('\0') &&
-      isNonBlankPythonText(candidate.text) &&
-      codePointLength(candidate.text) <= MAX_RESUME_CODE_POINTS;
-  }
-  if (
-    candidate.kind !== 'pdf' ||
-    typeof candidate.requestId !== 'string' ||
-    !REQUEST_ID_PATTERN.test(candidate.requestId) ||
-    typeof candidate.uri !== 'string' ||
-    typeof candidate.size !== 'number' ||
-    !Number.isSafeInteger(candidate.size) ||
-    candidate.size <= 0 ||
-    candidate.size > MAX_PDF_BYTES
-  ) return false;
-  try {
-    const location = canonicalizeLocalFileUri(candidate.uri);
-    const finalSegments = location.segments.slice(-3);
-    const filename = finalSegments[2] ?? '';
-    return finalSegments[0] === 'resume-ai-v1' &&
-      finalSegments[1] === candidate.requestId &&
-      REQUEST_ID_PATTERN.test(filename.slice(0, -4)) &&
-      filename.endsWith('.pdf');
-  } catch {
-    return false;
-  }
+function validText(value: unknown): value is string {
+  return typeof value === 'string' &&
+    !value.includes('\0') &&
+    isNonBlankPythonText(value) &&
+    codePointLength(value) <= MAX_RESUME_CODE_POINTS;
 }
 
-function snapshotSource(source: ResumeSource): ResumeSource {
-  if (source.kind === 'pdf') {
-    return Object.freeze({
-      kind: 'pdf',
-      requestId: source.requestId,
-      uri: source.uri,
-      size: source.size,
-    });
+function snapshotNonPdfSource(source: unknown): ResumeSource | null {
+  if (source === null || typeof source !== 'object' || Array.isArray(source)) return null;
+  const candidate = source as Record<string, unknown>;
+  if (candidate.kind === 'text' && validText(candidate.text)) {
+    return Object.freeze({ kind: 'text', text: candidate.text });
   }
-  if (source.kind === 'vision_text') {
+  if (
+    candidate.kind === 'vision_text' &&
+    candidate.reviewed === true &&
+    validText(candidate.text) &&
+    (candidate.pageCount === undefined ||
+      (Number.isSafeInteger(candidate.pageCount) &&
+        (candidate.pageCount as number) > 0 &&
+        (candidate.pageCount as number) <= 10))
+  ) {
     return Object.freeze({
       kind: 'vision_text',
-      text: source.text,
+      text: candidate.text,
       reviewed: true,
-      ...(source.pageCount === undefined ? {} : { pageCount: source.pageCount }),
+      ...(candidate.pageCount === undefined ? {} : { pageCount: candidate.pageCount as number }),
     });
   }
-  return Object.freeze({ kind: 'text', text: source.text });
+  return null;
 }
 
 function raceWithAbort<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
@@ -203,6 +193,7 @@ export class AnalysisCoordinator {
   private readonly api: AnalysisApiPort;
   private readonly consentStore: AnalysisConsentStorePort;
   private readonly tempFiles: AnalysisTempFilesPort;
+  private readonly pdfOwnership: PdfOwnershipPort;
   private readonly cleanupTimeoutMs: number;
   private generation = 0;
   private sourceRevision = 0;
@@ -211,8 +202,12 @@ export class AnalysisCoordinator {
   private consentContinuation: ConsentContinuation | null = null;
   private initialization: Promise<void> | null = null;
   private disposal: Promise<void> | null = null;
+  private mutationTail: Promise<void> = Promise.resolve();
   private mounted = true;
-  private pendingCleanupRequestId: string | null = null;
+  private committedPdfRequestId: string | null = null;
+  private readonly ownedPdfRequestIds = new Set<string>();
+  private readonly cleanupFailures = new Set<string>();
+  private readonly cleanupOperations = new Map<string, Promise<boolean>>();
 
   readonly commands: AnalysisCommands = Object.freeze({
     selectSource: (source: ResumeSource) => this.selectSource(source),
@@ -228,6 +223,7 @@ export class AnalysisCoordinator {
     this.api = options.api;
     this.consentStore = options.consentStore;
     this.tempFiles = options.tempFiles;
+    this.pdfOwnership = options.pdfOwnership;
     this.cleanupTimeoutMs = options.cleanupTimeoutMs ?? 2_000;
     if (
       !Number.isSafeInteger(this.cleanupTimeoutMs) ||
@@ -263,123 +259,303 @@ export class AnalysisCoordinator {
       : { type: 'initializationFailed', error: privacyError() });
   }
 
-  private dispatch(event: AnalysisEvent): void {
-    if (!this.mounted) return;
+  private apply(event: AnalysisEvent): boolean {
+    if (!this.mounted) return false;
     const next = analysisReducer(this.state, event);
-    if (next === this.state) return;
+    if (next === this.state) return false;
     this.state = next;
-    for (const listener of this.listeners) listener();
+    return true;
   }
 
-  private advanceGeneration(): { generation: number; previous: Activation | null } {
-    const previous = this.active;
-    this.generation += 1;
+  private notifyListeners(): void {
+    for (const listener of [...this.listeners]) {
+      try {
+        listener();
+      } catch {
+        // Subscriber failures are isolated and never receive private causes.
+      }
+    }
+  }
+
+  private dispatch(event: AnalysisEvent): void {
+    if (this.apply(event)) this.notifyListeners();
+  }
+
+  private enqueueMutation(
+    mutation: Exclude<AnalysisMutation, 'none'>,
+    work: (context: MutationContext) => Promise<void>,
+  ): Promise<void> {
+    if (!this.mounted) return Promise.resolve();
+    const priorMutation = this.mutationTail;
+    const previousActivation = this.active;
+    const generation = ++this.generation;
     this.sourceRevision += 1;
     this.consentContinuation = null;
-    previous?.controller.abort();
-    this.dispatch({ type: 'generationAdvanced', generation: this.generation });
-    return { generation: this.generation, previous };
+    previousActivation?.controller.abort();
+
+    const changed = this.apply({ type: 'mutationStarted', generation, mutation });
+    const operation = (async () => {
+      await priorMutation;
+      if (previousActivation !== null) await previousActivation.promise;
+      try {
+        await work({ generation, previousActivation });
+      } catch {
+        if (this.isCurrentMutation(generation)) {
+          this.dispatch({
+            type: 'analysisFailed',
+            generation,
+            error: validationError(),
+            consumeSource: false,
+            cleanupPending: this.cleanupFailures.size > 0,
+          });
+        }
+      }
+    })();
+    const safeOperation = operation.catch(() => undefined);
+    this.mutationTail = safeOperation;
+    if (changed) this.notifyListeners();
+    return safeOperation;
   }
 
-  private stillCurrent(generation: number): boolean {
+  private isCurrent(generation: number): boolean {
     return this.mounted && generation === this.generation;
+  }
+
+  private isCurrentMutation(generation: number): boolean {
+    return this.isCurrent(generation) && this.state.mutation !== 'none';
   }
 
   private activationIsCurrent(activation: Activation): boolean {
     return this.mounted &&
       this.active === activation &&
       activation.generation === this.generation &&
-      activation.sourceRevision === this.sourceRevision;
+      activation.sourceRevision === this.sourceRevision &&
+      this.state.mutation === 'none';
   }
 
-  private async selectSource(source: ResumeSource): Promise<void> {
-    await this.initialize();
-    if (!this.mounted || this.state.privacyReadiness !== 'ready') return;
+  private prepareIncomingSource(source: unknown): PreparedSource {
+    if (source !== null && typeof source === 'object' && !Array.isArray(source)) {
+      const candidate = source as Record<string, unknown>;
+      if (candidate.kind === 'pdf') {
+        let asserted: { requestId: string; uri: string };
+        try {
+          asserted = this.pdfOwnership.assertOwnedFileUri(candidate.uri);
+        } catch {
+          return { source: null, claimedRequestId: null, newlyClaimed: false };
+        }
+        if (
+          asserted === null ||
+          typeof asserted !== 'object' ||
+          typeof asserted.requestId !== 'string' ||
+          !REQUEST_ID_PATTERN.test(asserted.requestId) ||
+          typeof asserted.uri !== 'string'
+        ) return { source: null, claimedRequestId: null, newlyClaimed: false };
+
+        const alreadyOwned = this.ownedPdfRequestIds.has(asserted.requestId);
+        if (alreadyOwned && asserted.requestId !== this.committedPdfRequestId) {
+          return { source: null, claimedRequestId: null, newlyClaimed: false };
+        }
+        const newlyClaimed = !alreadyOwned;
+        this.ownedPdfRequestIds.add(asserted.requestId);
+        const sizeIsValid = typeof candidate.size === 'number' &&
+          Number.isSafeInteger(candidate.size) &&
+          candidate.size > 0 &&
+          candidate.size <= MAX_PDF_BYTES;
+        if (
+          candidate.requestId !== asserted.requestId ||
+          !sizeIsValid
+        ) {
+          return { source: null, claimedRequestId: asserted.requestId, newlyClaimed };
+        }
+        return {
+          source: Object.freeze({
+            kind: 'pdf',
+            requestId: asserted.requestId,
+            uri: asserted.uri,
+            size: candidate.size as number,
+          }),
+          claimedRequestId: asserted.requestId,
+          newlyClaimed,
+        };
+      }
+    }
+    return {
+      source: snapshotNonPdfSource(source),
+      claimedRequestId: null,
+      newlyClaimed: false,
+    };
+  }
+
+  private selectSource(input: ResumeSource): Promise<void> {
+    const prepared = this.prepareIncomingSource(input);
+    if (this.state.privacyReadiness === 'blocked') {
+      return prepared.claimedRequestId !== null && prepared.newlyClaimed
+        ? this.cleanupRequest(prepared.claimedRequestId).then(() => undefined)
+        : Promise.resolve();
+    }
+    if (!this.mounted) {
+      return prepared.claimedRequestId !== null && prepared.newlyClaimed
+        ? this.cleanupRequest(prepared.claimedRequestId).then(() => undefined)
+        : Promise.resolve();
+    }
     const previousSource = this.state.source;
-    const { generation, previous } = this.advanceGeneration();
-    if (previous !== null) await previous.promise;
+    let committed = false;
+    let incomingReleased = false;
+    const initialization = this.initialize();
 
-    if (previousSource?.kind === 'pdf') {
-      const cleaned = await this.cleanupRequest(previousSource.requestId);
-      if (!this.stillCurrent(generation)) return;
-      if (!cleaned) {
-        this.dispatch({
-          type: 'analysisFailed',
-          generation,
-          error: privacyError(),
-          consumeSource: false,
-          cleanupPending: true,
-        });
-        return;
-      }
-    }
-    if (!this.stillCurrent(generation)) return;
-    if (!validSource(source)) {
-      this.dispatch({
-        type: 'analysisFailed',
-        generation,
-        error: validationError(),
-        consumeSource: true,
-      });
-      return;
-    }
-    this.dispatch({ type: 'sourceReady', generation, source: snapshotSource(source) });
-  }
+    return this.enqueueMutation('selecting', async ({ generation }) => {
+      const releaseIncoming = async (): Promise<boolean> => {
+        if (
+          incomingReleased ||
+          prepared.claimedRequestId === null ||
+          !prepared.newlyClaimed
+        ) return true;
+        incomingReleased = true;
+        return this.cleanupRequest(prepared.claimedRequestId);
+      };
 
-  private async setJobDescription(value: string): Promise<void> {
-    await this.initialize();
-    if (!this.mounted || this.state.privacyReadiness !== 'ready') return;
-    const source = this.state.source;
-    const { generation, previous } = this.advanceGeneration();
-    if (previous !== null) await previous.promise;
-    if (!this.stillCurrent(generation)) return;
-    if (
-      typeof value !== 'string' ||
-      value.includes('\0') ||
-      codePointLength(value) > MAX_JOB_DESCRIPTION_CODE_POINTS
-    ) {
-      this.dispatch({
-        type: 'analysisFailed',
-        generation,
-        error: validationError(),
-        consumeSource: false,
-      });
-      return;
-    }
-    let consumeSource = previous?.sourceConsumed === true;
-    if (
-      source?.kind === 'pdf' &&
-      !consumeSource &&
-      this.pendingCleanupRequestId === source.requestId
-    ) {
-      consumeSource = await this.cleanupRequest(source.requestId);
-      if (!this.stillCurrent(generation)) return;
-      if (!consumeSource) {
-        this.dispatch({
-          type: 'analysisFailed',
-          generation,
-          error: privacyError(),
-          consumeSource: false,
-          cleanupPending: true,
-        });
-        return;
+      try {
+        await initialization;
+        if (!this.isCurrentMutation(generation) || this.state.privacyReadiness !== 'ready') return;
+
+        const unrelatedClean = await this.cleanupUncommitted(prepared.claimedRequestId);
+        if (!this.isCurrentMutation(generation)) return;
+        if (!unrelatedClean) {
+          const incomingClean = await releaseIncoming();
+          if (this.isCurrentMutation(generation)) {
+            this.dispatch({
+              type: 'analysisFailed',
+              generation,
+              error: privacyError(),
+              consumeSource: false,
+              cleanupPending: !incomingClean || this.cleanupFailures.size > 0,
+            });
+          }
+          return;
+        }
+
+        let previousConsumed = false;
+        const reselectsSamePdf = prepared.source?.kind === 'pdf' &&
+          previousSource?.kind === 'pdf' &&
+          prepared.source.requestId === previousSource.requestId;
+        if (previousSource?.kind === 'pdf' && !reselectsSamePdf) {
+          previousConsumed = await this.cleanupRequest(previousSource.requestId);
+          if (!this.isCurrentMutation(generation)) return;
+          if (!previousConsumed) {
+            const incomingClean = await releaseIncoming();
+            if (this.isCurrentMutation(generation)) {
+              this.dispatch({
+                type: 'analysisFailed',
+                generation,
+                error: privacyError(),
+                consumeSource: false,
+                cleanupPending: !incomingClean || this.cleanupFailures.size > 0,
+              });
+            }
+            return;
+          }
+        }
+
+        if (prepared.source === null) {
+          const incomingClean = await releaseIncoming();
+          if (!this.isCurrentMutation(generation)) return;
+          this.dispatch({
+            type: 'analysisFailed',
+            generation,
+            error: incomingClean ? validationError() : privacyError(),
+            consumeSource: previousSource?.kind !== 'pdf' || previousConsumed,
+            cleanupPending: !incomingClean || this.cleanupFailures.size > 0,
+          });
+          return;
+        }
+
+        if (!this.isCurrentMutation(generation)) return;
+        committed = true;
+        if (prepared.source.kind === 'pdf') {
+          this.committedPdfRequestId = prepared.source.requestId;
+        } else {
+          this.committedPdfRequestId = null;
+        }
+        this.dispatch({ type: 'sourceReady', generation, source: prepared.source });
+      } finally {
+        if (!committed && !incomingReleased) {
+          const cleaned = await releaseIncoming();
+          if (!cleaned && this.isCurrentMutation(generation)) {
+            this.dispatch({
+              type: 'analysisFailed',
+              generation,
+              error: privacyError(),
+              consumeSource: false,
+              cleanupPending: true,
+            });
+          }
+        }
       }
-    }
-    this.dispatch({
-      type: 'jobUpdated',
-      generation,
-      jobDescription: value,
-      consumeSource,
     });
   }
 
-  private newActivation(source: ResumeSource): Activation {
+  private setJobDescription(value: string): Promise<void> {
+    if (!this.mounted) return Promise.resolve();
+    const source = this.state.source;
+    const wasConsentRequired = this.state.status === 'consentRequired';
+    const initialization = this.initialize();
+    return this.enqueueMutation('editing', async ({ generation, previousActivation }) => {
+      await initialization;
+      if (!this.isCurrentMutation(generation) || this.state.privacyReadiness !== 'ready') return;
+      if (!(await this.cleanupUncommitted())) {
+        if (this.isCurrentMutation(generation)) this.dispatchPrivacyFailure(generation, false);
+        return;
+      }
+      if (!this.isCurrentMutation(generation)) return;
+
+      const validJob = typeof value === 'string' &&
+        !value.includes('\0') &&
+        codePointLength(value) <= MAX_JOB_DESCRIPTION_CODE_POINTS;
+      let consumeSource = false;
+      if (source?.kind === 'pdf') {
+        const activationConsumed = previousActivation?.sourceConsumed === true;
+        const leftPreNetwork = previousActivation?.phase === 'consentRead' ||
+          previousActivation?.phase === 'consentWrite' ||
+          wasConsentRequired;
+        const deletionAlreadyProved = !this.ownedPdfRequestIds.has(source.requestId);
+        const mustConsume = activationConsumed || leftPreNetwork || deletionAlreadyProved ||
+          this.cleanupFailures.has(source.requestId) || this.state.cleanupPending;
+        if (mustConsume) {
+          consumeSource = deletionAlreadyProved || await this.cleanupRequest(source.requestId);
+          if (!this.isCurrentMutation(generation)) return;
+          if (!consumeSource) {
+            this.dispatchPrivacyFailure(generation, false);
+            return;
+          }
+        }
+      }
+      if (!validJob) {
+        this.dispatch({
+          type: 'analysisFailed',
+          generation,
+          error: validationError(),
+          consumeSource,
+          cleanupPending: this.cleanupFailures.size > 0,
+        });
+        return;
+      }
+      this.dispatch({
+        type: 'jobUpdated',
+        generation,
+        jobDescription: value,
+        consumeSource,
+      });
+    });
+  }
+
+  private newActivation(source: ResumeSource, phase: ActivationPhase): Activation {
     const activation: Activation = {
       id: ++this.nextActivation,
       generation: this.generation,
       sourceRevision: this.sourceRevision,
       source,
       controller: new AbortController(),
+      phase,
       sourceConsumed: false,
       promise: Promise.resolve(),
     };
@@ -389,7 +565,12 @@ export class AnalysisCoordinator {
 
   private analyze(): Promise<void> {
     if (this.active !== null && this.activationIsCurrent(this.active)) return this.active.promise;
-    if (this.mounted && this.state.privacyReadiness === 'ready' && this.state.cleanupPending) {
+    if (
+      !this.mounted ||
+      this.state.privacyReadiness !== 'ready' ||
+      this.state.mutation !== 'none'
+    ) return Promise.resolve();
+    if (this.state.cleanupPending || this.cleanupFailures.size > 0) {
       this.dispatch({
         type: 'analysisFailed',
         generation: this.generation,
@@ -399,23 +580,16 @@ export class AnalysisCoordinator {
       });
       return Promise.resolve();
     }
-    if (
-      !this.mounted ||
-      this.state.privacyReadiness !== 'ready' ||
-      this.state.source === null ||
-      !validSource(this.state.source)
-    ) {
-      if (this.mounted && this.state.privacyReadiness === 'ready') {
-        this.dispatch({
-          type: 'analysisFailed',
-          generation: this.generation,
-          error: validationError(),
-          consumeSource: false,
-        });
-      }
+    if (this.state.source === null) {
+      this.dispatch({
+        type: 'analysisFailed',
+        generation: this.generation,
+        error: validationError(),
+        consumeSource: false,
+      });
       return Promise.resolve();
     }
-    const activation = this.newActivation(this.state.source);
+    const activation = this.newActivation(this.state.source, 'consentRead');
     activation.promise = this.checkConsentAndAnalyze(activation);
     return activation.promise;
   }
@@ -427,7 +601,7 @@ export class AnalysisCoordinator {
         activation.controller.signal,
       );
       if (!this.activationIsCurrent(activation)) return;
-      if (!accepted) {
+      if (accepted !== true) {
         this.consentContinuation = {
           generation: activation.generation,
           sourceRevision: activation.sourceRevision,
@@ -435,23 +609,13 @@ export class AnalysisCoordinator {
         this.dispatch({ type: 'consentRequired', generation: activation.generation });
         return;
       }
+      activation.phase = 'network';
       await this.runNetwork(activation);
     } catch (error) {
-      if (!this.activationIsCurrent(activation)) return;
-      if (error instanceof CoordinatorAbort) {
-        this.dispatch({
-          type: 'analysisCancelled',
-          generation: activation.generation,
-          consumeSource: false,
-        });
-      } else {
-        this.dispatch({
-          type: 'analysisFailed',
-          generation: activation.generation,
-          error: consentStorageError(),
-          consumeSource: false,
-        });
-      }
+      await this.finishPreNetwork(
+        activation,
+        error instanceof CoordinatorAbort ? 'cancelled' : 'consentFailure',
+      );
     } finally {
       if (this.active === activation) this.active = null;
     }
@@ -459,6 +623,7 @@ export class AnalysisCoordinator {
 
   private grantConsent(): Promise<void> {
     if (this.active !== null && this.activationIsCurrent(this.active)) return this.active.promise;
+    if (!this.mounted || this.state.mutation !== 'none') return Promise.resolve();
     const continuation = this.consentContinuation;
     if (
       continuation === null ||
@@ -468,7 +633,7 @@ export class AnalysisCoordinator {
       this.state.source === null
     ) return Promise.resolve();
 
-    const activation = this.newActivation(this.state.source);
+    const activation = this.newActivation(this.state.source, 'consentWrite');
     activation.promise = this.persistConsentAndAnalyze(activation);
     return activation.promise;
   }
@@ -481,25 +646,51 @@ export class AnalysisCoordinator {
       );
       if (!this.activationIsCurrent(activation)) return;
       this.consentContinuation = null;
+      activation.phase = 'network';
       await this.runNetwork(activation);
     } catch (error) {
-      if (!this.activationIsCurrent(activation)) return;
-      if (error instanceof CoordinatorAbort) {
-        this.dispatch({
-          type: 'analysisCancelled',
-          generation: activation.generation,
-          consumeSource: false,
-        });
-      } else {
-        this.dispatch({
-          type: 'analysisFailed',
-          generation: activation.generation,
-          error: consentStorageError(),
-          consumeSource: false,
-        });
-      }
+      await this.finishPreNetwork(
+        activation,
+        error instanceof CoordinatorAbort ? 'cancelled' : 'consentFailure',
+      );
     } finally {
       if (this.active === activation) this.active = null;
+    }
+  }
+
+  private async finishPreNetwork(
+    activation: Activation,
+    outcome: 'cancelled' | 'consentFailure',
+  ): Promise<void> {
+    let consumed = false;
+    if (activation.source.kind === 'pdf') {
+      consumed = await this.cleanupRequest(activation.source.requestId);
+      activation.sourceConsumed = consumed;
+    }
+    if (!this.activationIsCurrent(activation)) return;
+    if (activation.source.kind === 'pdf' && !consumed) {
+      this.dispatch({
+        type: 'analysisFailed',
+        generation: activation.generation,
+        error: privacyError(),
+        consumeSource: false,
+        cleanupPending: true,
+      });
+      return;
+    }
+    if (outcome === 'cancelled') {
+      this.dispatch({
+        type: 'analysisCancelled',
+        generation: activation.generation,
+        consumeSource: consumed,
+      });
+    } else {
+      this.dispatch({
+        type: 'analysisFailed',
+        generation: activation.generation,
+        error: consentStorageError(),
+        consumeSource: consumed,
+      });
     }
   }
 
@@ -538,10 +729,13 @@ export class AnalysisCoordinator {
     let failure: unknown = null;
     try {
       response = await raceWithAbort(
-        Promise.resolve().then(() => this.api.analyze(
-          this.requestFor(activation.source),
-          activation.controller.signal,
-        )),
+        Promise.resolve().then(() => {
+          if (activation.controller.signal.aborted) throw new CoordinatorAbort();
+          return this.api.analyze(
+            this.requestFor(activation.source),
+            activation.controller.signal,
+          );
+        }),
         activation.controller.signal,
       );
     } catch (error) {
@@ -598,43 +792,91 @@ export class AnalysisCoordinator {
     }
   }
 
-  private async declineConsent(): Promise<void> {
-    if (!this.mounted) return;
-    this.consentContinuation = null;
-    this.dispatch({ type: 'consentDeclined', generation: this.generation });
+  private declineConsent(): Promise<void> {
+    if (!this.mounted) return Promise.resolve();
+    if (
+      this.state.status !== 'consentRequired' &&
+      this.active?.phase !== 'consentWrite'
+    ) return Promise.resolve();
+    const source = this.state.source;
+    return this.enqueueMutation('consent', async ({ generation }) => {
+      if (!(await this.cleanupUncommitted())) {
+        if (this.isCurrentMutation(generation)) this.dispatchPrivacyFailure(generation, false);
+        return;
+      }
+      let consumed = false;
+      if (source?.kind === 'pdf') {
+        consumed = !this.ownedPdfRequestIds.has(source.requestId) ||
+          await this.cleanupRequest(source.requestId);
+        if (!this.isCurrentMutation(generation)) return;
+        if (!consumed) {
+          this.dispatchPrivacyFailure(generation, false);
+          return;
+        }
+      }
+      if (this.isCurrentMutation(generation)) {
+        this.dispatch({ type: 'consentDeclined', generation, consumeSource: consumed });
+      }
+    });
   }
 
-  private async cancel(): Promise<void> {
+  private cancel(): Promise<void> {
     const active = this.active;
-    if (active === null) return;
-    active.controller.abort();
-    await active.promise;
+    if (active !== null && this.activationIsCurrent(active)) {
+      active.controller.abort();
+      return active.promise;
+    }
+    if (this.mounted && this.state.status === 'consentRequired' && this.state.mutation === 'none') {
+      return this.cancelConsentRequired();
+    }
+    return Promise.resolve();
+  }
+
+  private cancelConsentRequired(): Promise<void> {
+    const source = this.state.source;
+    return this.enqueueMutation('consent', async ({ generation }) => {
+      if (!(await this.cleanupUncommitted())) {
+        if (this.isCurrentMutation(generation)) this.dispatchPrivacyFailure(generation, false);
+        return;
+      }
+      let consumed = false;
+      if (source?.kind === 'pdf') {
+        consumed = !this.ownedPdfRequestIds.has(source.requestId) ||
+          await this.cleanupRequest(source.requestId);
+        if (!this.isCurrentMutation(generation)) return;
+        if (!consumed) {
+          this.dispatchPrivacyFailure(generation, false);
+          return;
+        }
+      }
+      if (this.isCurrentMutation(generation)) {
+        this.dispatch({
+          type: 'analysisCancelled',
+          generation,
+          consumeSource: consumed,
+        });
+      }
+    });
   }
 
   async handleAppState(state: string): Promise<void> {
     if (state === 'background' || state === 'inactive') await this.cancel();
   }
 
-  private async reset(): Promise<void> {
-    if (!this.mounted) return;
-    const source = this.state.source;
-    const { generation, previous } = this.advanceGeneration();
-    if (previous !== null) await previous.promise;
-    if (source?.kind === 'pdf') {
-      const cleaned = await this.cleanupRequest(source.requestId);
-      if (!this.stillCurrent(generation)) return;
+  private reset(): Promise<void> {
+    if (!this.mounted) return Promise.resolve();
+    const initialization = this.initialize();
+    return this.enqueueMutation('resetting', async ({ generation }) => {
+      await initialization;
+      const cleaned = await this.cleanupAllOwned();
+      if (!this.isCurrentMutation(generation)) return;
       if (!cleaned) {
-        this.dispatch({
-          type: 'analysisFailed',
-          generation,
-          error: privacyError(),
-          consumeSource: false,
-          cleanupPending: true,
-        });
+        this.dispatchPrivacyFailure(generation, false);
         return;
       }
-    }
-    if (this.stillCurrent(generation)) this.dispatch({ type: 'reset', generation });
+      this.committedPdfRequestId = null;
+      this.dispatch({ type: 'reset', generation });
+    });
   }
 
   dispose(): Promise<void> {
@@ -644,17 +886,19 @@ export class AnalysisCoordinator {
   }
 
   private async performDisposal(): Promise<void> {
-    const source = this.state.source;
     const active = this.active;
     this.mounted = false;
     this.generation += 1;
     this.sourceRevision += 1;
     this.consentContinuation = null;
     active?.controller.abort();
+    await this.mutationTail;
     if (active !== null) await active.promise;
-    if (source?.kind === 'pdf') await this.cleanupRequest(source.requestId);
+    if (this.initialization !== null) await this.initialization;
+    await this.cleanupAllOwned();
     this.active = null;
     this.listeners.clear();
+    this.committedPdfRequestId = null;
     this.state = {
       ...createInitialAnalysisState(),
       privacyReadiness: this.state.privacyReadiness,
@@ -662,17 +906,59 @@ export class AnalysisCoordinator {
     };
   }
 
-  private async cleanupRequest(requestId: string): Promise<boolean> {
+  private dispatchPrivacyFailure(generation: number, consumeSource: boolean): void {
+    this.dispatch({
+      type: 'analysisFailed',
+      generation,
+      error: privacyError(),
+      consumeSource,
+      cleanupPending: true,
+    });
+  }
+
+  private async cleanupUncommitted(exceptRequestId: string | null = null): Promise<boolean> {
+    let clean = true;
+    for (const requestId of [...this.ownedPdfRequestIds]) {
+      if (requestId === this.committedPdfRequestId || requestId === exceptRequestId) continue;
+      if (!(await this.cleanupRequest(requestId))) clean = false;
+    }
+    return clean;
+  }
+
+  private async cleanupAllOwned(): Promise<boolean> {
+    let clean = true;
+    for (const requestId of [...this.ownedPdfRequestIds]) {
+      if (!(await this.cleanupRequest(requestId))) clean = false;
+    }
+    return clean;
+  }
+
+  private cleanupRequest(requestId: string): Promise<boolean> {
+    const current = this.cleanupOperations.get(requestId);
+    if (current !== undefined) return current;
+    const operation = this.performCleanupRequest(requestId);
+    this.cleanupOperations.set(requestId, operation);
+    void operation.finally(() => {
+      if (this.cleanupOperations.get(requestId) === operation) {
+        this.cleanupOperations.delete(requestId);
+      }
+    }).catch(() => undefined);
+    return operation;
+  }
+
+  private async performCleanupRequest(requestId: string): Promise<boolean> {
     try {
       const receipt = await this.boundedCleanup(() => this.tempFiles.cleanupRequest(requestId));
       if (!isVerifiedCleanupReceipt(receipt)) {
-        this.pendingCleanupRequestId = requestId;
+        this.cleanupFailures.add(requestId);
         return false;
       }
-      if (this.pendingCleanupRequestId === requestId) this.pendingCleanupRequestId = null;
+      this.cleanupFailures.delete(requestId);
+      this.ownedPdfRequestIds.delete(requestId);
+      if (this.committedPdfRequestId === requestId) this.committedPdfRequestId = null;
       return true;
     } catch {
-      this.pendingCleanupRequestId = requestId;
+      this.cleanupFailures.add(requestId);
       return false;
     }
   }

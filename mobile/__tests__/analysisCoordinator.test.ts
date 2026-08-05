@@ -19,6 +19,7 @@ const REQUEST_B = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
 const RESULT_A = '11111111-1111-4111-8111-111111111111';
 const RESULT_B = '22222222-2222-4222-8222-222222222222';
 const CLEAN: CleanupReceipt = { attempted: 0, deleted: 0, failed: 0, refused: 0 };
+const OWNED_PDF_PATTERN = /^file:\/\/\/app\/cache\/resume-ai-v1\/([0-9a-f-]+)\/([0-9a-f-]+\.pdf)$/;
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -59,6 +60,17 @@ function visionSource(reviewed: boolean): ResumeSource {
   return { kind: 'vision_text', text: 'Reviewed resume text', reviewed, pageCount: 2 };
 }
 
+function pdfOwnership() {
+  return {
+    assertOwnedFileUri: jest.fn((uri: unknown) => {
+      if (typeof uri !== 'string') throw new Error('not owned');
+      const match = OWNED_PDF_PATTERN.exec(uri);
+      if (match === null) throw new Error('not owned');
+      return { requestId: match[1], uri };
+    }),
+  };
+}
+
 function harness(overrides: Partial<AnalysisCoordinatorOptions> = {}) {
   let consent = true;
   const api = {
@@ -73,10 +85,12 @@ function harness(overrides: Partial<AnalysisCoordinatorOptions> = {}) {
     cleanupAbandoned: jest.fn(async () => CLEAN),
     cleanupRequest: jest.fn(async () => CLEAN),
   };
+  const ownership = pdfOwnership();
   const coordinator = new AnalysisCoordinator({
     api,
     consentStore,
     tempFiles,
+    pdfOwnership: ownership,
     cleanupTimeoutMs: 50,
     ...overrides,
   });
@@ -84,6 +98,7 @@ function harness(overrides: Partial<AnalysisCoordinatorOptions> = {}) {
     api,
     consentStore,
     coordinator,
+    pdfOwnership: ownership,
     setConsent(value: boolean) { consent = value; },
     tempFiles,
   };
@@ -125,6 +140,336 @@ describe('analysisReducer transition safety', () => {
       result: result(),
       consumeSource: false,
     })).toBe(state);
+  });
+});
+
+describe('review fixes: Task 10 ownership authority', () => {
+  it('rejects a suffix-identical external PDF with zero API calls', async () => {
+    const { api, coordinator, pdfOwnership: ownership, tempFiles } = harness();
+    await coordinator.initialize();
+    const external = {
+      ...pdfSource(),
+      uri: `file:///external/resume-ai-v1/${REQUEST_A}/11111111-1111-4111-8111-111111111111.pdf`,
+    };
+
+    await coordinator.commands.selectSource(external);
+    await coordinator.commands.analyze();
+
+    expect(ownership.assertOwnedFileUri).toHaveBeenCalledWith(external.uri);
+    expect(api.analyze).not.toHaveBeenCalled();
+    expect(tempFiles.cleanupRequest).not.toHaveBeenCalledWith(REQUEST_A);
+    expect(coordinator.getState()).toMatchObject({
+      status: 'failed',
+      source: null,
+      error: { category: 'validation' },
+    });
+  });
+
+  it('requires ownership authority to return the exact declared request ID', async () => {
+    const ownership = {
+      assertOwnedFileUri: jest.fn((uri: unknown) => ({ requestId: REQUEST_B, uri: String(uri) })),
+    };
+    const { api, coordinator, tempFiles } = harness({ pdfOwnership: ownership });
+    await coordinator.initialize();
+
+    await coordinator.commands.selectSource(pdfSource(REQUEST_A));
+    await coordinator.commands.analyze();
+
+    expect(api.analyze).not.toHaveBeenCalled();
+    expect(tempFiles.cleanupRequest).toHaveBeenCalledWith(REQUEST_B);
+    expect(coordinator.getState()).toMatchObject({ status: 'failed', source: null });
+  });
+});
+
+describe('review fixes: non-reentrant mutation transactions', () => {
+  it('does not expose an analyzable ready state while source replacement cleanup is pending', async () => {
+    const cleanup = deferred<CleanupReceipt>();
+    const cleanupRequest = jest.fn((requestId: string) =>
+      requestId === REQUEST_A ? cleanup.promise : Promise.resolve(CLEAN),
+    );
+    const { api, coordinator } = harness({
+      tempFiles: { cleanupAbandoned: jest.fn(async () => CLEAN), cleanupRequest },
+    });
+    await coordinator.initialize();
+    await coordinator.commands.selectSource(pdfSource(REQUEST_A));
+
+    const replacement = coordinator.commands.selectSource(textSource('replacement text'));
+    await flushPromises();
+    const blockedAnalyze = coordinator.commands.analyze();
+    await flushPromises();
+
+    expect(coordinator.getState()).toMatchObject({ mutation: 'selecting' });
+    expect(api.analyze).not.toHaveBeenCalled();
+    cleanup.resolve({ attempted: 1, deleted: 1, failed: 0, refused: 0 });
+    await Promise.all([replacement, blockedAnalyze]);
+    expect(coordinator.getState()).toMatchObject({
+      mutation: 'none',
+      status: 'ready',
+      source: textSource('replacement text'),
+    });
+  });
+
+  it('isolates throwing subscribers and blocks their reentrant Analyze call until an edit commits', async () => {
+    const { api, coordinator } = await readyHarness();
+    let reentered = false;
+    let secondSubscriberCalls = 0;
+    const unsubscribeThrower = coordinator.subscribe(() => {
+      if (reentered) return;
+      reentered = true;
+      void coordinator.commands.analyze();
+      throw new Error('subscriber private failure');
+    });
+    const unsubscribeSecond = coordinator.subscribe(() => { secondSubscriberCalls += 1; });
+
+    await expect(coordinator.commands.setJobDescription('new job draft')).resolves.toBeUndefined();
+
+    expect(api.analyze).not.toHaveBeenCalled();
+    expect(secondSubscriberCalls).toBeGreaterThan(0);
+    expect(coordinator.getState()).toMatchObject({
+      mutation: 'none',
+      status: 'ready',
+      jobDescription: 'new job draft',
+    });
+    unsubscribeThrower();
+    unsubscribeSecond();
+  });
+
+  it('blocks Analyze while reset waits for verified PDF cleanup', async () => {
+    const cleanup = deferred<CleanupReceipt>();
+    const { api, coordinator } = harness({
+      tempFiles: {
+        cleanupAbandoned: jest.fn(async () => CLEAN),
+        cleanupRequest: jest.fn(() => cleanup.promise),
+      },
+    });
+    await coordinator.initialize();
+    await coordinator.commands.selectSource(pdfSource());
+
+    const reset = coordinator.commands.reset();
+    await flushPromises();
+    const blockedAnalyze = coordinator.commands.analyze();
+    await flushPromises();
+    expect(api.analyze).not.toHaveBeenCalled();
+    expect(coordinator.getState()).toMatchObject({ mutation: 'resetting' });
+
+    cleanup.resolve({ attempted: 1, deleted: 1, failed: 0, refused: 0 });
+    await Promise.all([reset, blockedAnalyze]);
+    expect(coordinator.getState()).toMatchObject({ mutation: 'none', status: 'idle', source: null });
+  });
+});
+
+describe('review fixes: PDF consent exits', () => {
+  it('decline invalidates a pending consent grant so late persistence never uploads', async () => {
+    const grant = deferred<void>();
+    const { api, consentStore, coordinator, setConsent } = harness();
+    setConsent(false);
+    consentStore.grant.mockImplementationOnce(() => grant.promise);
+    await coordinator.initialize();
+    await coordinator.commands.selectSource(textSource());
+    await coordinator.commands.analyze();
+    const granting = coordinator.commands.grantConsent();
+    await flushPromises();
+
+    const decline = coordinator.commands.declineConsent();
+    grant.resolve();
+    await Promise.all([granting, decline]);
+
+    expect(api.analyze).not.toHaveBeenCalled();
+    expect(coordinator.getState()).toMatchObject({ status: 'ready', source: textSource() });
+  });
+
+  it('awaits verified PDF cleanup before exposing a consent-read failure', async () => {
+    const cleanup = deferred<CleanupReceipt>();
+    const consentStore = {
+      hasCurrentConsent: jest.fn(async () => { throw new Error('private consent read'); }),
+      grant: jest.fn(async () => undefined),
+    };
+    const { api, coordinator } = harness({
+      consentStore,
+      tempFiles: {
+        cleanupAbandoned: jest.fn(async () => CLEAN),
+        cleanupRequest: jest.fn(() => cleanup.promise),
+      },
+    });
+    await coordinator.initialize();
+    await coordinator.commands.selectSource(pdfSource());
+
+    const analysis = coordinator.commands.analyze();
+    await flushPromises();
+    expect(coordinator.getState().source).toMatchObject({ kind: 'pdf' });
+    cleanup.resolve({ attempted: 1, deleted: 1, failed: 0, refused: 0 });
+    await analysis;
+
+    expect(api.analyze).not.toHaveBeenCalled();
+    expect(coordinator.getState()).toMatchObject({
+      status: 'failed',
+      source: null,
+      error: { category: 'consent_storage' },
+    });
+  });
+
+  it('cleans a PDF after consent persistence failure without uploading', async () => {
+    const { api, consentStore, coordinator, setConsent, tempFiles } = harness();
+    setConsent(false);
+    consentStore.grant.mockRejectedValueOnce(new Error('private consent write'));
+    await coordinator.initialize();
+    await coordinator.commands.selectSource(pdfSource());
+    await coordinator.commands.analyze();
+
+    await coordinator.commands.grantConsent();
+
+    expect(api.analyze).not.toHaveBeenCalled();
+    expect(tempFiles.cleanupRequest).toHaveBeenCalledWith(REQUEST_A);
+    expect(coordinator.getState()).toMatchObject({
+      status: 'failed',
+      source: null,
+      error: { category: 'consent_storage' },
+    });
+  });
+
+  it('cleans a PDF when cancellation aborts a never-settling consent read', async () => {
+    const consent = deferred<boolean>();
+    const { api, consentStore, coordinator, tempFiles } = harness();
+    consentStore.hasCurrentConsent.mockImplementationOnce(() => consent.promise);
+    await coordinator.initialize();
+    await coordinator.commands.selectSource(pdfSource());
+    const analysis = coordinator.commands.analyze();
+    await flushPromises();
+
+    await coordinator.commands.cancel();
+    await analysis;
+
+    expect(api.analyze).not.toHaveBeenCalled();
+    expect(tempFiles.cleanupRequest).toHaveBeenCalledWith(REQUEST_A);
+    expect(coordinator.getState()).toMatchObject({ status: 'cancelled', source: null });
+  });
+
+  it.each(['decline', 'background'] as const)(
+    '%s leaves consentRequired only after cleaning the staged PDF',
+    async exit => {
+      const { api, coordinator, setConsent, tempFiles } = harness();
+      setConsent(false);
+      await coordinator.initialize();
+      await coordinator.commands.selectSource(pdfSource());
+      await coordinator.commands.analyze();
+      expect(coordinator.getState().status).toBe('consentRequired');
+
+      if (exit === 'decline') await coordinator.commands.declineConsent();
+      else await coordinator.handleAppState('background');
+
+      expect(api.analyze).not.toHaveBeenCalled();
+      expect(tempFiles.cleanupRequest).toHaveBeenCalledWith(REQUEST_A);
+      expect(coordinator.getState()).toMatchObject({
+        status: exit === 'decline' ? 'idle' : 'cancelled',
+        source: null,
+      });
+    },
+  );
+
+  it('privacy cleanup failure overrides a PDF consent-read error', async () => {
+    const { coordinator } = harness({
+      consentStore: {
+        hasCurrentConsent: jest.fn(async () => { throw new Error('private consent read'); }),
+        grant: jest.fn(async () => undefined),
+      },
+      tempFiles: {
+        cleanupAbandoned: jest.fn(async () => CLEAN),
+        cleanupRequest: jest.fn(async () => ({ attempted: 1, deleted: 0, failed: 1, refused: 0 })),
+      },
+    });
+    await coordinator.initialize();
+    await coordinator.commands.selectSource(pdfSource());
+    await coordinator.commands.analyze();
+
+    expect(coordinator.getState()).toMatchObject({
+      status: 'failed',
+      source: pdfSource(),
+      cleanupPending: true,
+      error: { category: 'privacy' },
+    });
+  });
+});
+
+describe('review fixes: concurrent staged PDF ownership', () => {
+  it('never commits a duplicate pending claim after the superseded owner deletes it', async () => {
+    const startup = deferred<CleanupReceipt>();
+    const cleanupRequest = jest.fn(async () => ({
+      attempted: 1,
+      deleted: 1,
+      failed: 0,
+      refused: 0,
+    }));
+    const { api, coordinator } = harness({
+      tempFiles: {
+        cleanupAbandoned: jest.fn(() => startup.promise),
+        cleanupRequest,
+      },
+      cleanupTimeoutMs: 1_000,
+    });
+
+    const first = coordinator.commands.selectSource(pdfSource(REQUEST_B));
+    const second = coordinator.commands.selectSource(pdfSource(REQUEST_B));
+    startup.resolve(CLEAN);
+    await Promise.all([first, second]);
+    await coordinator.commands.analyze();
+
+    expect(cleanupRequest).toHaveBeenCalledWith(REQUEST_B);
+    expect(api.analyze).not.toHaveBeenCalled();
+    expect(coordinator.getState().source).toBeNull();
+  });
+
+  it.each(['reset', 'replacement', 'dispose'] as const)(
+    '%s cleans pending PDF B when it supersedes B while prior PDF A cleanup is pending',
+    async nextCommand => {
+      const cleanupA = deferred<CleanupReceipt>();
+      const cleanupRequest = jest.fn((requestId: string) =>
+        requestId === REQUEST_A
+          ? cleanupA.promise
+          : Promise.resolve({ attempted: 1, deleted: 1, failed: 0, refused: 0 }),
+      );
+      const { coordinator } = harness({
+        tempFiles: { cleanupAbandoned: jest.fn(async () => CLEAN), cleanupRequest },
+        cleanupTimeoutMs: 1_000,
+      });
+      await coordinator.initialize();
+      await coordinator.commands.selectSource(pdfSource(REQUEST_A));
+      const selectingB = coordinator.commands.selectSource(pdfSource(REQUEST_B));
+      await flushPromises();
+
+      let superseding: Promise<void>;
+      if (nextCommand === 'reset') superseding = coordinator.commands.reset();
+      else if (nextCommand === 'replacement') {
+        superseding = coordinator.commands.selectSource(textSource('replacement C'));
+      } else superseding = coordinator.dispose();
+      cleanupA.resolve({ attempted: 1, deleted: 1, failed: 0, refused: 0 });
+      await Promise.all([selectingB, superseding]);
+
+      expect(cleanupRequest.mock.calls.map(call => call[0])).toContain(REQUEST_B);
+      if (nextCommand !== 'dispose') expect(coordinator.getState().source?.kind).not.toBe('pdf');
+    },
+  );
+
+  it('cleans incoming PDF B when prior PDF A cleanup fails before B can commit', async () => {
+    const cleanupRequest = jest.fn(async (requestId: string) =>
+      requestId === REQUEST_A
+        ? { attempted: 1, deleted: 0, failed: 1, refused: 0 }
+        : { attempted: 1, deleted: 1, failed: 0, refused: 0 },
+    );
+    const { coordinator } = harness({
+      tempFiles: { cleanupAbandoned: jest.fn(async () => CLEAN), cleanupRequest },
+    });
+    await coordinator.initialize();
+    await coordinator.commands.selectSource(pdfSource(REQUEST_A));
+
+    await coordinator.commands.selectSource(pdfSource(REQUEST_B));
+
+    expect(cleanupRequest.mock.calls.map(call => call[0])).toEqual([REQUEST_A, REQUEST_B]);
+    expect(coordinator.getState()).toMatchObject({
+      status: 'failed',
+      source: pdfSource(REQUEST_A),
+      cleanupPending: true,
+      error: { category: 'privacy' },
+    });
   });
 });
 

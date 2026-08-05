@@ -16,6 +16,13 @@ export type AnalysisErrorCategory =
   | 'privacy'
   | 'consent_storage';
 
+export type AnalysisMutation =
+  | 'none'
+  | 'selecting'
+  | 'editing'
+  | 'resetting'
+  | 'consent';
+
 export type PublicAnalysisError = Readonly<{
   category: AnalysisErrorCategory;
   message: string;
@@ -34,12 +41,18 @@ export type AnalysisState = Readonly<{
   generation: number;
   activation: number | null;
   cleanupPending: boolean;
+  mutation: AnalysisMutation;
 }>;
 
 export type AnalysisEvent =
   | Readonly<{ type: 'initializationReady' }>
   | Readonly<{ type: 'initializationFailed'; error: PublicAnalysisError }>
   | Readonly<{ type: 'generationAdvanced'; generation: number }>
+  | Readonly<{
+      type: 'mutationStarted';
+      generation: number;
+      mutation: Exclude<AnalysisMutation, 'none'>;
+    }>
   | Readonly<{ type: 'sourceReady'; generation: number; source: ResumeSource }>
   | Readonly<{
       type: 'jobUpdated';
@@ -48,7 +61,11 @@ export type AnalysisEvent =
       consumeSource?: boolean;
     }>
   | Readonly<{ type: 'consentRequired'; generation: number }>
-  | Readonly<{ type: 'consentDeclined'; generation: number }>
+  | Readonly<{
+      type: 'consentDeclined';
+      generation: number;
+      consumeSource: boolean;
+    }>
   | Readonly<{ type: 'analysisStarted'; generation: number; activation: number }>
   | Readonly<{
       type: 'analysisSucceeded';
@@ -84,6 +101,7 @@ export function createInitialAnalysisState(): AnalysisState {
     generation: 0,
     activation: null,
     cleanupPending: false,
+    mutation: 'none',
   };
 }
 
@@ -109,6 +127,7 @@ export function analysisReducer(state: AnalysisState, event: AnalysisEvent): Ana
         privacyReadiness: 'blocked',
         error: event.error,
         cleanupPending: true,
+        mutation: 'none',
       };
     case 'generationAdvanced':
       if (event.generation <= state.generation) return state;
@@ -119,9 +138,25 @@ export function analysisReducer(state: AnalysisState, event: AnalysisEvent): Ana
         error: null,
         generation: event.generation,
         activation: null,
+        mutation: 'none',
+      };
+    case 'mutationStarted':
+      if (event.generation <= state.generation) return state;
+      return {
+        ...state,
+        status: 'idle',
+        result: null,
+        error: null,
+        generation: event.generation,
+        activation: null,
+        mutation: event.mutation,
       };
     case 'sourceReady':
-      if (state.privacyReadiness !== 'ready' || event.generation !== state.generation) return state;
+      if (
+        state.privacyReadiness !== 'ready' ||
+        event.generation !== state.generation ||
+        state.mutation !== 'selecting'
+      ) return state;
       return {
         ...state,
         status: 'ready',
@@ -130,9 +165,14 @@ export function analysisReducer(state: AnalysisState, event: AnalysisEvent): Ana
         error: null,
         activation: null,
         cleanupPending: false,
+        mutation: 'none',
       };
     case 'jobUpdated':
-      if (state.privacyReadiness !== 'ready' || event.generation !== state.generation) return state;
+      if (
+        state.privacyReadiness !== 'ready' ||
+        event.generation !== state.generation ||
+        state.mutation !== 'editing'
+      ) return state;
       return {
         ...state,
         status: state.source === null || event.consumeSource === true ? 'idle' : 'ready',
@@ -142,6 +182,7 @@ export function analysisReducer(state: AnalysisState, event: AnalysisEvent): Ana
         error: null,
         activation: null,
         cleanupPending: event.consumeSource === true ? false : state.cleanupPending,
+        mutation: 'none',
       };
     case 'consentRequired':
       if (
@@ -152,13 +193,21 @@ export function analysisReducer(state: AnalysisState, event: AnalysisEvent): Ana
       ) return state;
       return { ...state, status: 'consentRequired', result: null, error: null };
     case 'consentDeclined':
-      if (state.status !== 'consentRequired' || event.generation !== state.generation) return state;
-      return { ...state, status: 'ready', error: null };
+      if (event.generation !== state.generation || state.mutation !== 'consent') return state;
+      return {
+        ...state,
+        status: event.consumeSource || state.source === null ? 'idle' : 'ready',
+        source: event.consumeSource ? null : state.source,
+        error: null,
+        cleanupPending: false,
+        mutation: 'none',
+      };
     case 'analysisStarted':
       if (
         state.privacyReadiness !== 'ready' ||
         state.source === null ||
         event.generation !== state.generation ||
+        state.mutation !== 'none' ||
         state.status === 'analyzing'
       ) return state;
       return {
@@ -178,6 +227,7 @@ export function analysisReducer(state: AnalysisState, event: AnalysisEvent): Ana
         error: null,
         activation: null,
         cleanupPending: false,
+        mutation: 'none',
       };
     case 'analysisFailed':
       if (!terminalMatches(state, event)) return state;
@@ -189,6 +239,7 @@ export function analysisReducer(state: AnalysisState, event: AnalysisEvent): Ana
         error: event.error,
         activation: null,
         cleanupPending: event.cleanupPending === true,
+        mutation: 'none',
       };
     case 'analysisCancelled':
       if (!terminalMatches(state, event)) return state;
@@ -200,9 +251,10 @@ export function analysisReducer(state: AnalysisState, event: AnalysisEvent): Ana
         error: null,
         activation: null,
         cleanupPending: false,
+        mutation: 'none',
       };
     case 'reset':
-      if (event.generation !== state.generation) return state;
+      if (event.generation !== state.generation || state.mutation !== 'resetting') return state;
       return {
         ...createInitialAnalysisState(),
         privacyReadiness: state.privacyReadiness,

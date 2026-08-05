@@ -33,7 +33,15 @@ function providerHarness() {
     cleanupAbandoned: jest.fn(async () => CLEAN),
     cleanupRequest: jest.fn(async () => CLEAN),
   };
-  const coordinator = new AnalysisCoordinator({ api, consentStore, tempFiles });
+  const pdfOwnership = {
+    assertOwnedFileUri(uri: unknown) {
+      if (typeof uri !== 'string') throw new Error('not owned');
+      const match = /^file:\/\/\/app\/cache\/resume-ai-v1\/([0-9a-f-]+)\/[0-9a-f-]+\.pdf$/.exec(uri);
+      if (match === null) throw new Error('not owned');
+      return { requestId: match[1], uri };
+    },
+  };
+  const coordinator = new AnalysisCoordinator({ api, consentStore, tempFiles, pdfOwnership });
   return { api, consentStore, coordinator, tempFiles };
 }
 
