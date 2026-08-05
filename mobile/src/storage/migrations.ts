@@ -2,6 +2,7 @@ import { z } from 'zod';
 
 export const REPORT_DATABASE_NAME = 'resume-ai-reports.db';
 export const REPORT_SCHEMA_VERSION = 1;
+const MIGRATION_LOCK_TABLE = '__resume_ai_report_migration_lock';
 
 export type ReportSqlValue = string | number | null | boolean | Uint8Array | ArrayBuffer;
 
@@ -22,7 +23,7 @@ export interface ReportDatabase extends ReportSqlExecutor {
   closeAsync(): Promise<void>;
 }
 
-const CREATE_VERSION_ONE_SQL = `CREATE TABLE reports (
+const REPORTS_DDL = `CREATE TABLE reports (
   id TEXT PRIMARY KEY,
   schema_version INTEGER NOT NULL,
   title TEXT NOT NULL,
@@ -30,11 +31,15 @@ const CREATE_VERSION_ONE_SQL = `CREATE TABLE reports (
   source_type TEXT NOT NULL,
   score_json TEXT NOT NULL,
   feedback_json TEXT NOT NULL
-);
-CREATE TABLE metadata (
+)`;
+
+const METADATA_DDL = `CREATE TABLE metadata (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL
-);`;
+)`;
+
+const CREATE_VERSION_ONE_SQL = `${REPORTS_DDL};
+${METADATA_DDL};`;
 
 const UserVersionRowSchema = z
   .object({ user_version: z.number().int().nonnegative() })
@@ -50,6 +55,16 @@ const ColumnRowSchema = z
     notnull: z.number().int().min(0).max(1),
     dflt_value: z.null(),
     pk: z.number().int().min(0).max(1),
+    hidden: z.number().int().min(0).max(3),
+  })
+  .strict();
+
+const SchemaObjectRowSchema = z
+  .object({
+    type: z.string(),
+    name: z.string(),
+    tbl_name: z.string(),
+    sql: z.string(),
   })
   .strict();
 
@@ -60,18 +75,23 @@ const MetadataRowSchema = z
 type ExpectedColumn = Readonly<z.infer<typeof ColumnRowSchema>>;
 
 const EXPECTED_REPORT_COLUMNS: readonly ExpectedColumn[] = Object.freeze([
-  { cid: 0, name: 'id', type: 'TEXT', notnull: 0, dflt_value: null, pk: 1 },
-  { cid: 1, name: 'schema_version', type: 'INTEGER', notnull: 1, dflt_value: null, pk: 0 },
-  { cid: 2, name: 'title', type: 'TEXT', notnull: 1, dflt_value: null, pk: 0 },
-  { cid: 3, name: 'created_at', type: 'TEXT', notnull: 1, dflt_value: null, pk: 0 },
-  { cid: 4, name: 'source_type', type: 'TEXT', notnull: 1, dflt_value: null, pk: 0 },
-  { cid: 5, name: 'score_json', type: 'TEXT', notnull: 1, dflt_value: null, pk: 0 },
-  { cid: 6, name: 'feedback_json', type: 'TEXT', notnull: 1, dflt_value: null, pk: 0 },
+  { cid: 0, name: 'id', type: 'TEXT', notnull: 0, dflt_value: null, pk: 1, hidden: 0 },
+  { cid: 1, name: 'schema_version', type: 'INTEGER', notnull: 1, dflt_value: null, pk: 0, hidden: 0 },
+  { cid: 2, name: 'title', type: 'TEXT', notnull: 1, dflt_value: null, pk: 0, hidden: 0 },
+  { cid: 3, name: 'created_at', type: 'TEXT', notnull: 1, dflt_value: null, pk: 0, hidden: 0 },
+  { cid: 4, name: 'source_type', type: 'TEXT', notnull: 1, dflt_value: null, pk: 0, hidden: 0 },
+  { cid: 5, name: 'score_json', type: 'TEXT', notnull: 1, dflt_value: null, pk: 0, hidden: 0 },
+  { cid: 6, name: 'feedback_json', type: 'TEXT', notnull: 1, dflt_value: null, pk: 0, hidden: 0 },
 ]);
 
 const EXPECTED_METADATA_COLUMNS: readonly ExpectedColumn[] = Object.freeze([
-  { cid: 0, name: 'key', type: 'TEXT', notnull: 0, dflt_value: null, pk: 1 },
-  { cid: 1, name: 'value', type: 'TEXT', notnull: 1, dflt_value: null, pk: 0 },
+  { cid: 0, name: 'key', type: 'TEXT', notnull: 0, dflt_value: null, pk: 1, hidden: 0 },
+  { cid: 1, name: 'value', type: 'TEXT', notnull: 1, dflt_value: null, pk: 0, hidden: 0 },
+]);
+
+const EXPECTED_SCHEMA_OBJECTS = Object.freeze([
+  { type: 'table', name: 'metadata', tbl_name: 'metadata', sql: METADATA_DDL },
+  { type: 'table', name: 'reports', tbl_name: 'reports', sql: REPORTS_DDL },
 ]);
 
 function migrationFailure(): Error {
@@ -89,7 +109,8 @@ async function readUserVersion(database: ReportSqlExecutor): Promise<number> {
 async function readTableNames(database: ReportSqlExecutor): Promise<string[]> {
   const rows = z.array(TableNameRowSchema).safeParse(
     await database.getAllAsync<unknown>(
-      "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name",
+      "SELECT name FROM sqlite_schema WHERE type = 'table' AND name NOT LIKE 'sqlite_%' AND name <> ? ORDER BY name",
+      MIGRATION_LOCK_TABLE,
     ),
   );
   if (!rows.success) throw migrationFailure();
@@ -102,7 +123,7 @@ async function attestColumns(
   expected: readonly ExpectedColumn[],
 ): Promise<void> {
   const rows = z.array(ColumnRowSchema).safeParse(
-    await database.getAllAsync<unknown>(`PRAGMA table_info('${table}')`),
+    await database.getAllAsync<unknown>(`PRAGMA table_xinfo('${table}')`),
   );
   if (!rows.success || JSON.stringify(rows.data) !== JSON.stringify(expected)) {
     throw migrationFailure();
@@ -120,6 +141,18 @@ async function attestVersionOne(database: ReportSqlExecutor): Promise<void> {
   await attestColumns(database, 'reports', EXPECTED_REPORT_COLUMNS);
   await attestColumns(database, 'metadata', EXPECTED_METADATA_COLUMNS);
 
+  const schemaObjects = z.array(SchemaObjectRowSchema).safeParse(
+    await database.getAllAsync<unknown>(
+      "SELECT type, name, tbl_name, sql FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name",
+    ),
+  );
+  if (
+    !schemaObjects.success ||
+    JSON.stringify(schemaObjects.data) !== JSON.stringify(EXPECTED_SCHEMA_OBJECTS)
+  ) {
+    throw migrationFailure();
+  }
+
   const metadata = z.array(MetadataRowSchema).safeParse(
     await database.getAllAsync<unknown>('SELECT key, value FROM metadata ORDER BY key'),
   );
@@ -134,6 +167,12 @@ async function attestVersionOne(database: ReportSqlExecutor): Promise<void> {
 
 export async function migrateReportDatabase(database: ReportDatabase): Promise<void> {
   await database.withExclusiveTransactionAsync(async transaction => {
+    // Expo SDK 57 starts this separate connection with deferred BEGIN. This
+    // main-schema write is intentionally first so no schema read can race a
+    // second fresh migration. It is removed before the transaction commits.
+    await transaction.execAsync(
+      `CREATE TABLE ${MIGRATION_LOCK_TABLE} (id INTEGER PRIMARY KEY)`,
+    );
     const userVersion = await readUserVersion(transaction);
     if (userVersion > REPORT_SCHEMA_VERSION) throw migrationFailure();
 
@@ -151,6 +190,7 @@ export async function migrateReportDatabase(database: ReportDatabase): Promise<v
       throw migrationFailure();
     }
 
+    await transaction.execAsync(`DROP TABLE ${MIGRATION_LOCK_TABLE}`);
     await attestVersionOne(transaction);
   });
 }

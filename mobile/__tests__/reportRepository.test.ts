@@ -1,18 +1,83 @@
 import validFixture from '../../contracts/fixtures/analysis-valid.json';
 
 import type { AnalysisResponse } from '../src/domain/contracts';
-import type { CleanupReceipt } from '../src/documents/tempFileRegistry';
+import {
+  TempFileRegistry,
+  type AbandonedCleanupReceipt,
+  type CleanupReceipt,
+  type DirectoryEntry,
+  type FileInspection,
+  type TempFileSystem,
+} from '../src/documents/tempFileRegistry';
 import {
   LocalStorageError,
   ReportRepository,
   type ReportRecord,
 } from '../src/storage/reportRepository';
 
-import { FakeReportDatabase, versionOneReportColumns } from '../test-utils/fakeReportDatabase';
+import {
+  FakeReportDatabase,
+  SharedDeferredReportStore,
+  versionOneReportColumns,
+} from '../test-utils/fakeReportDatabase';
 
 const FIRST_ID = '8ec8a3bc-7a15-4b75-9f94-a5353a2a2f9b';
 const SECOND_ID = 'ffffffff-ffff-4fff-8fff-ffffffffffff';
 const CLEAN: CleanupReceipt = { attempted: 0, deleted: 0, failed: 0, refused: 0 };
+const DETAILED_CLEAN: AbandonedCleanupReceipt = {
+  ...CLEAN,
+  deletedFiles: 0,
+  live: 0,
+};
+const REQUEST_A = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+const FILE_A = '11111111-1111-4111-8111-111111111111';
+const CACHE_NAMESPACE = 'file:///app/cache/resume-ai-v1';
+
+class LiveCacheFileSystem implements TempFileSystem {
+  readonly cacheDirectoryUri = 'file:///app/cache/';
+  readonly directories = new Set<string>();
+  readonly files = new Set<string>();
+  readonly deleted: string[] = [];
+
+  async createDirectory(uri: string): Promise<void> {
+    this.directories.add(uri);
+  }
+
+  async directoryExists(uri: string): Promise<boolean> {
+    return this.directories.has(uri);
+  }
+
+  async listDirectory(uri: string): Promise<readonly DirectoryEntry[]> {
+    if (uri === CACHE_NAMESPACE) {
+      return [...this.directories]
+        .filter(candidate => candidate.startsWith(`${CACHE_NAMESPACE}/`))
+        .map(candidate => ({ uri: candidate, kind: 'directory' as const }));
+    }
+    return [...this.files]
+      .filter(candidate => candidate.startsWith(`${uri}/`))
+      .map(candidate => ({ uri: candidate, kind: 'file' as const }));
+  }
+
+  async copyFile(_source: string, destination: string): Promise<void> {
+    this.files.add(destination);
+  }
+
+  async inspectFile(uri: string): Promise<FileInspection> {
+    return {
+      exists: this.files.has(uri),
+      size: 128,
+      header: new Uint8Array([0x25, 0x50, 0x44, 0x46, 0x2d]),
+    };
+  }
+
+  async deleteDirectory(uri: string): Promise<void> {
+    this.deleted.push(uri);
+    this.directories.delete(uri);
+    for (const file of [...this.files]) {
+      if (file.startsWith(`${uri}/`)) this.files.delete(file);
+    }
+  }
+}
 
 function copy<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T;
@@ -40,12 +105,12 @@ function harness(options: {
 } = {}) {
   const database = options.database ?? new FakeReportDatabase();
   const cleanupAbandoned = jest.fn(async () =>
-    (await (options.cleanup ?? (async () => CLEAN))()) as CleanupReceipt
+    (await (options.cleanup ?? (async () => DETAILED_CLEAN))()) as AbandonedCleanupReceipt
   );
   const openDatabase = jest.fn(async () => database);
   const repository = new ReportRepository({
     openDatabase,
-    tempFiles: { cleanupAbandoned },
+    tempFiles: { cleanupAbandonedDetailed: cleanupAbandoned },
     now: options.now ?? (() => new Date('2026-08-05T19:20:30.000Z')),
     cleanupTimeoutMs: options.cleanupTimeoutMs,
   });
@@ -59,6 +124,25 @@ function expectLocalStorageError(error: unknown): void {
 }
 
 describe('report schema migration', () => {
+  it('serializes two fresh migrations after the real deferred transaction begins', async () => {
+    const store = new SharedDeferredReportStore();
+    const first = new ReportRepository({
+      openDatabase: async () => store.connection(),
+      tempFiles: { cleanupAbandonedDetailed: async () => DETAILED_CLEAN },
+    });
+    const second = new ReportRepository({
+      openDatabase: async () => store.connection(),
+      tempFiles: { cleanupAbandonedDetailed: async () => DETAILED_CLEAN },
+    });
+
+    await expect(Promise.all([first.initialize(), second.initialize()])).resolves.toEqual([
+      undefined,
+      undefined,
+    ]);
+    expect(store.database.userVersion).toBe(1);
+    expect(store.database.tables).toEqual(['metadata', 'reports']);
+  });
+
   it('creates exact version-one tables inside an exclusive transaction', async () => {
     const { database, repository } = harness();
 
@@ -87,9 +171,9 @@ describe('report schema migration', () => {
     ['future user version', () => { const db = FakeReportDatabase.versionOne(); db.userVersion = 2; return db; }],
     ['future metadata version', () => { const db = FakeReportDatabase.versionOne(); db.metadata[0] = { key: 'schema_version', value: '2' }; return db; }],
     ['unexpected table', () => { const db = FakeReportDatabase.versionOne(); db.tables.push('private_drafts'); return db; }],
-    ['missing column', () => { const db = FakeReportDatabase.versionOne(); db.columns.reports = db.columns.reports.slice(0, -1); return db; }],
-    ['extra column', () => { const db = FakeReportDatabase.versionOne(); db.columns.reports = [...db.columns.reports, { cid: 7, name: 'resume_text', type: 'TEXT', notnull: 0, dflt_value: null, pk: 0 }]; return db; }],
-    ['changed column declaration', () => { const db = FakeReportDatabase.versionOne(); db.columns.reports = db.columns.reports.map(column => column.name === 'title' ? { ...column, notnull: 0 } : column); return db; }],
+    ['missing column', () => { const db = FakeReportDatabase.versionOne(); db.xcolumns.reports = db.xcolumns.reports.slice(0, -1); return db; }],
+    ['extra column', () => { const db = FakeReportDatabase.versionOne(); db.xcolumns.reports = [...db.xcolumns.reports, { cid: 7, name: 'resume_text', type: 'TEXT', notnull: 0, dflt_value: null, pk: 0, hidden: 0 }]; return db; }],
+    ['changed column declaration', () => { const db = FakeReportDatabase.versionOne(); db.xcolumns.reports = db.xcolumns.reports.map(column => column.name === 'title' ? { ...column, notnull: 0 } : column); return db; }],
     ['unexpected metadata', () => { const db = FakeReportDatabase.versionOne(); db.metadata.push({ key: 'request_id', value: FIRST_ID }); return db; }],
     ['version-zero legacy table', () => { const db = new FakeReportDatabase(); db.tables = ['reports']; return db; }],
   ])('fails closed for %s without destructive downgrade', async (_name, createDatabase) => {
@@ -100,6 +184,63 @@ describe('report schema migration', () => {
     const error = await repository.initialize().catch(reason => reason as unknown);
     expectLocalStorageError(error);
     expect({ tables: database.tables, rows: database.rows, metadata: database.metadata }).toEqual(original);
+  });
+
+  it.each([
+    ['stored generated column', () => {
+      const db = FakeReportDatabase.versionOne();
+      db.xcolumns.reports = [...db.xcolumns.reports, {
+        cid: 7,
+        name: 'private_generated',
+        type: 'TEXT',
+        notnull: 0,
+        dflt_value: null,
+        pk: 0,
+        hidden: 3,
+      }];
+      return db;
+    }],
+    ['trigger', () => {
+      const db = FakeReportDatabase.versionOne();
+      db.schemaObjects.push({
+        type: 'trigger',
+        name: 'private_trigger',
+        tbl_name: 'reports',
+        sql: 'CREATE TRIGGER private_trigger AFTER INSERT ON reports BEGIN SELECT 1; END',
+      });
+      return db;
+    }],
+    ['view', () => {
+      const db = FakeReportDatabase.versionOne();
+      db.schemaObjects.push({
+        type: 'view',
+        name: 'private_view',
+        tbl_name: 'private_view',
+        sql: 'CREATE VIEW private_view AS SELECT * FROM reports',
+      });
+      return db;
+    }],
+    ['explicit index', () => {
+      const db = FakeReportDatabase.versionOne();
+      db.schemaObjects.push({
+        type: 'index',
+        name: 'private_index',
+        tbl_name: 'reports',
+        sql: 'CREATE INDEX private_index ON reports(title)',
+      });
+      return db;
+    }],
+    ['altered table constraint', () => {
+      const db = FakeReportDatabase.versionOne();
+      db.schemaObjects = db.schemaObjects.map(object => object.name === 'reports'
+        ? { ...object, sql: `${object.sql} STRICT` }
+        : object);
+      return db;
+    }],
+  ])('rejects schema attestation with an unexpected %s', async (_name, createDatabase) => {
+    const { repository } = harness({ database: createDatabase() });
+
+    await expect(repository.initialize()).rejects.toMatchObject({ category: 'local_storage' });
   });
 });
 
@@ -148,6 +289,33 @@ describe('report projection reads and writes', () => {
 
     await expect(repository.save({ result: result(), title: 'Replacement' })).rejects.toMatchObject({ category: 'local_storage' });
     expect(await repository.get(FIRST_ID)).toMatchObject({ title: 'Original' });
+  });
+
+  it('snapshots the allowlisted projection before waiting behind an earlier operation', async () => {
+    const blocker = deferred<void>();
+    const { database, repository } = harness();
+    await repository.initialize();
+    database.beforeList = () => blocker.promise;
+    const predecessor = repository.list();
+    const input = {
+      result: result(),
+      filename: 'Private Name.pdf',
+      resumeText: 'private original draft',
+    };
+
+    const saving = repository.save(input);
+    input.result.feedback.summary = 'Mutated after save was called.';
+    input.filename = 'Mutated Private Name.pdf';
+    input.resumeText = 'mutated private draft';
+    blocker.resolve();
+    await predecessor;
+
+    await expect(saving).resolves.toMatchObject({
+      feedback: { summary: validFixture.feedback.summary },
+    });
+    expect(database.rows[0]?.feedback_json).toBe(JSON.stringify(validFixture.feedback));
+    expect(JSON.stringify(database.calls)).not.toContain('Mutated Private Name.pdf');
+    expect(JSON.stringify(database.calls)).not.toContain('mutated private draft');
   });
 
   it.each([
@@ -215,10 +383,11 @@ describe('serialized deletion and lifecycle', () => {
 
   it.each([
     ['cleanup rejection', async () => { throw new Error('private disk path'); }],
-    ['failed cleanup', async () => ({ attempted: 1, deleted: 0, failed: 1, refused: 0 })],
-    ['refused cleanup', async () => ({ attempted: 0, deleted: 0, failed: 0, refused: 1 })],
-    ['untruthful cleanup', async () => ({ attempted: 2, deleted: 1, failed: 0, refused: 0 })],
-    ['malformed cleanup', async () => ({ attempted: -1, deleted: -1, failed: 0, refused: 0, path: 'private' })],
+    ['failed cleanup', async () => ({ ...DETAILED_CLEAN, attempted: 1, failed: 1 })],
+    ['refused cleanup', async () => ({ ...DETAILED_CLEAN, refused: 1 })],
+    ['live cleanup', async () => ({ ...DETAILED_CLEAN, live: 1 })],
+    ['untruthful cleanup', async () => ({ ...DETAILED_CLEAN, attempted: 2, deleted: 1 })],
+    ['malformed cleanup', async () => ({ ...DETAILED_CLEAN, attempted: -1, deleted: -1, path: 'private' })],
   ])('rolls back report deletion for %s', async (_name, cleanup) => {
     const { repository } = harness({ cleanup });
     await repository.initialize();
@@ -238,7 +407,14 @@ describe('serialized deletion and lifecycle', () => {
   });
 
   it('returns only truthful committed report and temp-file counts', async () => {
-    const cleanup: CleanupReceipt = { attempted: 2, deleted: 2, failed: 0, refused: 0 };
+    const cleanup: AbandonedCleanupReceipt = {
+      attempted: 2,
+      deleted: 2,
+      failed: 0,
+      refused: 0,
+      deletedFiles: 2,
+      live: 0,
+    };
     const { repository } = harness({ cleanup: async () => cleanup });
     await repository.initialize();
     await repository.save({ result: result(FIRST_ID) });
@@ -250,6 +426,49 @@ describe('serialized deletion and lifecycle', () => {
       failures: 0,
     });
     await expect(repository.list()).resolves.toEqual([]);
+  });
+
+  it('reports verified file deletions rather than deleted request directories', async () => {
+    const repository = new ReportRepository({
+      openDatabase: async () => new FakeReportDatabase(),
+      tempFiles: {
+        cleanupAbandonedDetailed: async () => ({
+          attempted: 1,
+          deleted: 1,
+          failed: 0,
+          refused: 0,
+          deletedFiles: 3,
+          live: 0,
+        }),
+      },
+    });
+    await repository.initialize();
+    await repository.save({ result: result() });
+
+    await expect(repository.deleteAll()).resolves.toEqual({
+      deletedReports: 1,
+      deletedTempFiles: 3,
+      failures: 0,
+    });
+  });
+
+  it('rolls delete-all back while a staged PDF has a live cache lease', async () => {
+    const fileSystem = new LiveCacheFileSystem();
+    const owner = new TempFileRegistry({ fileSystem });
+    const cleaner = new TempFileRegistry({ fileSystem });
+    const liveUri = `file:///app/cache/resume-ai-v1/${REQUEST_A}/${FILE_A}.pdf`;
+    await owner.stagePdf(REQUEST_A, FILE_A, 'file:///provider/resume.pdf');
+    const repository = new ReportRepository({
+      openDatabase: async () => new FakeReportDatabase(),
+      tempFiles: cleaner,
+    });
+    await repository.initialize();
+    await repository.save({ result: result() });
+
+    await expect(repository.deleteAll()).rejects.toMatchObject({ category: 'local_storage' });
+    await expect(repository.list()).resolves.toHaveLength(1);
+    expect(fileSystem.files.has(liveUri)).toBe(true);
+    expect(fileSystem.deleted).toEqual([]);
   });
 
   it('does not claim report deletion when the database fails before or after cleanup', async () => {
@@ -302,7 +521,7 @@ describe('serialized deletion and lifecycle', () => {
     const database = FakeReportDatabase.versionOne();
     const repository = new ReportRepository({
       openDatabase: () => opened.promise,
-      tempFiles: { cleanupAbandoned: async () => CLEAN },
+      tempFiles: { cleanupAbandonedDetailed: async () => DETAILED_CLEAN },
     });
     const initializing = repository.initialize();
     const closing = repository.close();

@@ -26,34 +26,59 @@ export function DataProvider({
   createRepository = defaultRepositoryFactory,
 }: DataProviderProps) {
   const factory = useRef(createRepository);
+  const handoff = useRef<Promise<boolean> | null>(null);
   const [state, setState] = useState<ReportDataState>({ status: 'loading', repository: null });
 
   useEffect(() => {
     let active = true;
-    let repository: ReportRepositoryPort | null = null;
+    let dispose!: () => void;
+    const disposed = new Promise<void>(resolve => { dispose = resolve; });
     setState({ status: 'loading', repository: null });
 
-    try {
-      repository = factory.current();
-    } catch {
-      setState({ status: 'blocked', repository: null });
-      return () => { active = false; };
-    }
-
-    const ownedRepository = repository;
-    void ownedRepository.initialize().then(
-      () => {
-        if (active) setState({ status: 'ready', repository: ownedRepository });
-      },
-      () => {
+    const prior = handoff.current;
+    const closeOwned = async (repository: ReportRepositoryPort): Promise<boolean> => {
+      try {
+        await repository.close();
+        return true;
+      } catch {
+        return false;
+      }
+    };
+    const ownLifecycle = async (priorClosed: boolean): Promise<boolean> => {
+      if (!priorClosed) {
         if (active) setState({ status: 'blocked', repository: null });
-        void ownedRepository.close().catch(() => undefined);
-      },
-    );
+        return false;
+      }
+
+      let repository: ReportRepositoryPort;
+      try {
+        repository = factory.current();
+      } catch {
+        if (active) setState({ status: 'blocked', repository: null });
+        return false;
+      }
+
+      try {
+        await repository.initialize();
+      } catch {
+        if (active) setState({ status: 'blocked', repository: null });
+        await closeOwned(repository);
+        return false;
+      }
+
+      if (!active) return closeOwned(repository);
+      setState({ status: 'ready', repository });
+      await disposed;
+      return closeOwned(repository);
+    };
+    const lifecycle = prior === null
+      ? ownLifecycle(true)
+      : prior.then(ownLifecycle, () => ownLifecycle(false));
+    handoff.current = lifecycle.catch(() => false);
 
     return () => {
       active = false;
-      void ownedRepository.close().catch(() => undefined);
+      dispose();
     };
   }, []);
 

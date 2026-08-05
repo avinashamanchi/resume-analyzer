@@ -8,7 +8,32 @@ export type FakeColumn = Readonly<{
   notnull: number;
   dflt_value: unknown;
   pk: number;
+  hidden?: number;
 }>;
+
+export type FakeSchemaObject = Readonly<{
+  type: string;
+  name: string;
+  tbl_name: string;
+  sql: string;
+}>;
+
+const REPORT_DDL = `CREATE TABLE reports (
+  id TEXT PRIMARY KEY,
+  schema_version INTEGER NOT NULL,
+  title TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  source_type TEXT NOT NULL,
+  score_json TEXT NOT NULL,
+  feedback_json TEXT NOT NULL
+)`;
+
+const METADATA_DDL = `CREATE TABLE metadata (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+)`;
+
+const MIGRATION_LOCK = '__resume_ai_report_migration_lock';
 
 const REPORT_COLUMNS: readonly FakeColumn[] = Object.freeze([
   { cid: 0, name: 'id', type: 'TEXT', notnull: 0, dflt_value: null, pk: 1 },
@@ -25,6 +50,10 @@ const METADATA_COLUMNS: readonly FakeColumn[] = Object.freeze([
   { cid: 1, name: 'value', type: 'TEXT', notnull: 1, dflt_value: null, pk: 0 },
 ]);
 
+function xinfo(columns: readonly FakeColumn[]): readonly FakeColumn[] {
+  return columns.map(column => ({ ...column, hidden: column.hidden ?? 0 }));
+}
+
 function clone<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T;
 }
@@ -37,6 +66,8 @@ export class FakeReportDatabase {
   userVersion = 0;
   tables: string[] = [];
   columns: Record<string, readonly FakeColumn[]> = {};
+  xcolumns: Record<string, readonly FakeColumn[]> = {};
+  schemaObjects: FakeSchemaObject[] = [];
   metadata: Row[] = [];
   rows: Row[] = [];
   calls: Array<{ sql: string; params: readonly unknown[] }> = [];
@@ -60,6 +91,14 @@ export class FakeReportDatabase {
       metadata: clone(METADATA_COLUMNS),
       reports: clone(REPORT_COLUMNS),
     };
+    this.xcolumns = {
+      metadata: clone(xinfo(METADATA_COLUMNS)),
+      reports: clone(xinfo(REPORT_COLUMNS)),
+    };
+    this.schemaObjects = [
+      { type: 'table', name: 'metadata', tbl_name: 'metadata', sql: METADATA_DDL },
+      { type: 'table', name: 'reports', tbl_name: 'reports', sql: REPORT_DDL },
+    ];
     this.metadata = [{ key: 'schema_version', value: '1' }];
   }
 
@@ -80,12 +119,46 @@ export class FakeReportDatabase {
 
   async execAsync(sql: string): Promise<void> {
     const compact = this.record(sql, []);
+    if (compact.startsWith(`CREATE TABLE ${MIGRATION_LOCK}`)) {
+      if (this.tables.includes(MIGRATION_LOCK)) throw new Error('migration lock already exists');
+      this.tables = [...this.tables, MIGRATION_LOCK].sort();
+      this.schemaObjects.push({
+        type: 'table',
+        name: MIGRATION_LOCK,
+        tbl_name: MIGRATION_LOCK,
+        sql: `CREATE TABLE ${MIGRATION_LOCK} (id INTEGER PRIMARY KEY)`,
+      });
+      this.columns[MIGRATION_LOCK] = [
+        { cid: 0, name: 'id', type: 'INTEGER', notnull: 0, dflt_value: null, pk: 1 },
+      ];
+      this.xcolumns[MIGRATION_LOCK] = xinfo(this.columns[MIGRATION_LOCK]);
+    }
+    if (compact === `DROP TABLE ${MIGRATION_LOCK}`) {
+      this.tables = this.tables.filter(name => name !== MIGRATION_LOCK);
+      this.schemaObjects = this.schemaObjects.filter(object => object.name !== MIGRATION_LOCK);
+      delete this.columns[MIGRATION_LOCK];
+      delete this.xcolumns[MIGRATION_LOCK];
+    }
     if (compact.includes('CREATE TABLE reports') && compact.includes('CREATE TABLE metadata')) {
-      this.tables = ['metadata', 'reports'];
+      if (this.tables.includes('reports') || this.tables.includes('metadata')) {
+        throw new Error('schema objects already exist');
+      }
+      this.tables = [...this.tables, 'metadata', 'reports'].sort();
       this.columns = {
+        ...this.columns,
         metadata: clone(METADATA_COLUMNS),
         reports: clone(REPORT_COLUMNS),
       };
+      this.xcolumns = {
+        ...this.xcolumns,
+        metadata: clone(xinfo(METADATA_COLUMNS)),
+        reports: clone(xinfo(REPORT_COLUMNS)),
+      };
+      this.schemaObjects = [
+        ...this.schemaObjects,
+        { type: 'table', name: 'metadata', tbl_name: 'metadata', sql: METADATA_DDL },
+        { type: 'table', name: 'reports', tbl_name: 'reports', sql: REPORT_DDL },
+      ];
     }
     const pragma = /PRAGMA user_version\s*=\s*(\d+)/i.exec(compact);
     if (pragma !== null) this.userVersion = Number(pragma[1]);
@@ -143,14 +216,26 @@ export class FakeReportDatabase {
 
   async getAllAsync<T>(sql: string, ...params: unknown[]): Promise<T[]> {
     const compact = this.record(sql, params);
-    if (/FROM sqlite_master/i.test(compact)) {
-      return this.tables.slice().sort().map(name => ({ name })) as T[];
+    if (/SELECT name FROM sqlite_(?:master|schema)/i.test(compact)) {
+      const excluded = typeof params[0] === 'string' ? params[0] : null;
+      return this.tables.filter(name => name !== excluded).slice().sort().map(name => ({ name })) as T[];
+    }
+    if (/SELECT type, name, tbl_name, sql FROM sqlite_schema/i.test(compact)) {
+      return clone(this.schemaObjects.slice().sort((left, right) =>
+        left.type.localeCompare(right.type) || left.name.localeCompare(right.name)
+      )) as T[];
     }
     if (/^PRAGMA table_info\('reports'\)$/i.test(compact)) {
       return clone(this.columns.reports ?? []) as T[];
     }
     if (/^PRAGMA table_info\('metadata'\)$/i.test(compact)) {
       return clone(this.columns.metadata ?? []) as T[];
+    }
+    if (/^PRAGMA table_xinfo\('reports'\)$/i.test(compact)) {
+      return clone(this.xcolumns.reports ?? []) as T[];
+    }
+    if (/^PRAGMA table_xinfo\('metadata'\)$/i.test(compact)) {
+      return clone(this.xcolumns.metadata ?? []) as T[];
     }
     if (/FROM metadata ORDER BY key/i.test(compact)) {
       return clone(this.metadata.slice().sort((left, right) => String(left.key).localeCompare(String(right.key)))) as T[];
@@ -171,6 +256,8 @@ export class FakeReportDatabase {
       userVersion: this.userVersion,
       tables: this.tables,
       columns: this.columns,
+      xcolumns: this.xcolumns,
+      schemaObjects: this.schemaObjects,
       metadata: this.metadata,
       rows: this.rows,
     });
@@ -182,6 +269,8 @@ export class FakeReportDatabase {
       this.userVersion = snapshot.userVersion;
       this.tables = snapshot.tables;
       this.columns = snapshot.columns;
+      this.xcolumns = snapshot.xcolumns;
+      this.schemaObjects = snapshot.schemaObjects;
       this.metadata = snapshot.metadata;
       this.rows = snapshot.rows;
       this.calls.push({ sql: 'ROLLBACK', params: [] });
@@ -197,3 +286,140 @@ export class FakeReportDatabase {
 }
 
 export const versionOneReportColumns = REPORT_COLUMNS;
+
+type SharedSnapshot = Readonly<{
+  userVersion: number;
+  tables: string[];
+  columns: Record<string, readonly FakeColumn[]>;
+  xcolumns: Record<string, readonly FakeColumn[]>;
+  schemaObjects: FakeSchemaObject[];
+  metadata: Row[];
+  rows: Row[];
+}>;
+
+function snapshot(database: FakeReportDatabase): SharedSnapshot {
+  return clone({
+    userVersion: database.userVersion,
+    tables: database.tables,
+    columns: database.columns,
+    xcolumns: database.xcolumns,
+    schemaObjects: database.schemaObjects,
+    metadata: database.metadata,
+    rows: database.rows,
+  });
+}
+
+function restore(database: FakeReportDatabase, value: SharedSnapshot): void {
+  database.userVersion = value.userVersion;
+  database.tables = value.tables;
+  database.columns = value.columns;
+  database.xcolumns = value.xcolumns;
+  database.schemaObjects = value.schemaObjects;
+  database.metadata = value.metadata;
+  database.rows = value.rows;
+}
+
+export class SharedDeferredReportStore {
+  readonly database = new FakeReportDatabase();
+  readonly connections: SharedDeferredReportConnection[] = [];
+  private locked = false;
+  private readonly waiters: Array<() => void> = [];
+
+  connection(options: { failClose?: boolean; beforeClose?: () => Promise<void> } = {}): SharedDeferredReportConnection {
+    const connection = new SharedDeferredReportConnection(this, options);
+    this.connections.push(connection);
+    return connection;
+  }
+
+  async acquire(): Promise<() => void> {
+    if (this.locked) await new Promise<void>(resolve => this.waiters.push(resolve));
+    this.locked = true;
+    return () => {
+      const next = this.waiters.shift();
+      if (next === undefined) this.locked = false;
+      else next();
+    };
+  }
+}
+
+class DeferredTransaction {
+  private release: (() => void) | null = null;
+  private beforeWrite: SharedSnapshot | null = null;
+
+  constructor(private readonly store: SharedDeferredReportStore) {}
+
+  private async writeLock(): Promise<void> {
+    if (this.release !== null) return;
+    this.release = await this.store.acquire();
+    this.beforeWrite = snapshot(this.store.database);
+  }
+
+  async execAsync(sql: string): Promise<void> {
+    await this.writeLock();
+    await this.store.database.execAsync(sql);
+  }
+
+  async runAsync(sql: string, ...params: unknown[]): Promise<{ lastInsertRowId: number; changes: number }> {
+    await this.writeLock();
+    return this.store.database.runAsync(sql, ...params);
+  }
+
+  getFirstAsync<T>(sql: string, ...params: unknown[]): Promise<T | null> {
+    return this.store.database.getFirstAsync<T>(sql, ...params);
+  }
+
+  getAllAsync<T>(sql: string, ...params: unknown[]): Promise<T[]> {
+    return this.store.database.getAllAsync<T>(sql, ...params);
+  }
+
+  finish(commit: boolean): void {
+    if (!commit && this.beforeWrite !== null) restore(this.store.database, this.beforeWrite);
+    this.release?.();
+    this.release = null;
+  }
+}
+
+export class SharedDeferredReportConnection {
+  closeCount = 0;
+
+  constructor(
+    private readonly store: SharedDeferredReportStore,
+    private readonly options: { failClose?: boolean; beforeClose?: () => Promise<void> },
+  ) {}
+
+  execAsync(sql: string): Promise<void> {
+    return this.store.database.execAsync(sql);
+  }
+
+  runAsync(sql: string, ...params: unknown[]): Promise<{ lastInsertRowId: number; changes: number }> {
+    return this.store.database.runAsync(sql, ...params);
+  }
+
+  getFirstAsync<T>(sql: string, ...params: unknown[]): Promise<T | null> {
+    return this.store.database.getFirstAsync<T>(sql, ...params);
+  }
+
+  getAllAsync<T>(sql: string, ...params: unknown[]): Promise<T[]> {
+    return this.store.database.getAllAsync<T>(sql, ...params);
+  }
+
+  async withExclusiveTransactionAsync(task: (transaction: DeferredTransaction) => Promise<void>): Promise<void> {
+    this.store.database.calls.push({ sql: 'BEGIN DEFERRED', params: [] });
+    const transaction = new DeferredTransaction(this.store);
+    try {
+      await task(transaction);
+      transaction.finish(true);
+      this.store.database.calls.push({ sql: 'COMMIT', params: [] });
+    } catch (error) {
+      transaction.finish(false);
+      this.store.database.calls.push({ sql: 'ROLLBACK', params: [] });
+      throw error;
+    }
+  }
+
+  async closeAsync(): Promise<void> {
+    this.closeCount += 1;
+    await this.options.beforeClose?.();
+    if (this.options.failClose) throw new Error('private shared close failure');
+  }
+}

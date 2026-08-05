@@ -7,7 +7,10 @@ import {
   ScoreSchema,
 } from '../domain/contracts';
 import { codePointLength } from '../domain/limits';
-import { TempFileRegistry, type CleanupReceipt } from '../documents/tempFileRegistry';
+import {
+  TempFileRegistry,
+  type AbandonedCleanupReceipt,
+} from '../documents/tempFileRegistry';
 import {
   REPORT_DATABASE_NAME,
   REPORT_SCHEMA_VERSION,
@@ -69,12 +72,14 @@ const CountRowSchema = z.object({ count: z.number().int().nonnegative() }).stric
 const RunResultSchema = z
   .object({ lastInsertRowId: z.number().int(), changes: z.number().int().nonnegative() })
   .strict();
-const CleanupReceiptSchema = z
+const AbandonedCleanupReceiptSchema = z
   .object({
     attempted: z.number().int().nonnegative(),
     deleted: z.number().int().nonnegative(),
     failed: z.number().int().nonnegative(),
     refused: z.number().int().nonnegative(),
+    deletedFiles: z.number().int().nonnegative(),
+    live: z.number().int().nonnegative(),
   })
   .strict();
 
@@ -93,8 +98,14 @@ export type DeleteReceipt = Readonly<{
 }>;
 
 export interface AbandonedCacheCleanup {
-  cleanupAbandoned(): Promise<CleanupReceipt>;
+  cleanupAbandonedDetailed(): Promise<AbandonedCleanupReceipt>;
 }
+
+type PreparedReportWrite = Readonly<{
+  record: ReportRecord;
+  scoreJson: string;
+  feedbackJson: string;
+}>;
 
 export class LocalStorageError extends Error {
   readonly category = 'local_storage' as const;
@@ -183,12 +194,13 @@ function assertRunResult(value: unknown, maximumChanges = 1): number {
   return parsed.data.changes;
 }
 
-function verifiedCleanupReceipt(value: unknown): CleanupReceipt {
-  const parsed = CleanupReceiptSchema.safeParse(value);
+function verifiedCleanupReceipt(value: unknown): AbandonedCleanupReceipt {
+  const parsed = AbandonedCleanupReceiptSchema.safeParse(value);
   if (
     !parsed.success ||
     parsed.data.failed !== 0 ||
     parsed.data.refused !== 0 ||
+    parsed.data.live !== 0 ||
     parsed.data.attempted !== parsed.data.deleted
   ) {
     throw storageError();
@@ -271,10 +283,21 @@ export class ReportRepository implements ReportRepositoryPort {
   }
 
   save(input: SaveReportInput): Promise<ReportRecord> {
+    if (this.closeRequested) return Promise.reject(storageError());
+    let prepared: PreparedReportWrite;
+    try {
+      const record = projectionFromInput(input, assertDate(this.now()));
+      prepared = { record, ...serializeRecord(record) };
+    } catch {
+      return Promise.reject(storageError());
+    }
+    return this.enqueuePreparedSave(prepared);
+  }
+
+  private enqueuePreparedSave(prepared: PreparedReportWrite): Promise<ReportRecord> {
     return this.enqueue(async () => {
       const database = this.readyDatabase();
-      const record = projectionFromInput(input, assertDate(this.now()));
-      const { scoreJson, feedbackJson } = serializeRecord(record);
+      const { record, scoreJson, feedbackJson } = prepared;
       const write = await database.runAsync(
         `INSERT INTO reports
           (id, schema_version, title, created_at, source_type, score_json, feedback_json)
@@ -332,7 +355,7 @@ export class ReportRepository implements ReportRepositoryPort {
     return this.enqueue(async () => {
       const database = this.readyDatabase();
       let deletedReports: number | null = null;
-      let cleanup: CleanupReceipt | null = null;
+      let cleanup: AbandonedCleanupReceipt | null = null;
       await database.withExclusiveTransactionAsync(async transaction => {
         const count = CountRowSchema.safeParse(
           await transaction.getFirstAsync<unknown>('SELECT COUNT(*) AS count FROM reports'),
@@ -343,7 +366,7 @@ export class ReportRepository implements ReportRepositoryPort {
         if (changes !== count.data.count) throw storageError();
 
         const receipt = await withTimeout(
-          () => this.tempFiles.cleanupAbandoned(),
+          () => this.tempFiles.cleanupAbandonedDetailed(),
           this.cleanupTimeoutMs,
         );
         cleanup = verifiedCleanupReceipt(receipt);
@@ -352,7 +375,7 @@ export class ReportRepository implements ReportRepositoryPort {
       if (deletedReports === null || cleanup === null) throw storageError();
       return {
         deletedReports,
-        deletedTempFiles: (cleanup as CleanupReceipt).deleted,
+        deletedTempFiles: (cleanup as AbandonedCleanupReceipt).deletedFiles,
         failures: 0,
       };
     });

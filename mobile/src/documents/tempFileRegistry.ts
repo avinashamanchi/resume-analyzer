@@ -13,6 +13,11 @@ export type CleanupReceipt = Readonly<{
   refused: number;
 }>;
 
+export type AbandonedCleanupReceipt = CleanupReceipt & Readonly<{
+  deletedFiles: number;
+  live: number;
+}>;
+
 export type FileInspection = Readonly<{
   exists: boolean;
   size: number;
@@ -46,6 +51,14 @@ type LocalFileLocation = Readonly<{
   path: string;
   segments: readonly string[];
 }>;
+
+type CacheCoordination = {
+  tail: Promise<void>;
+  readonly liveRequests: Set<string>;
+};
+
+const DEFAULT_FILE_SYSTEM_SCOPE = {};
+const CACHE_COORDINATION = new WeakMap<object, Map<string, CacheCoordination>>();
 
 export class DocumentPrivacyError extends Error {
   readonly category = 'privacy' as const;
@@ -125,6 +138,24 @@ function emptyReceipt(): CleanupReceipt {
   return { attempted: 0, deleted: 0, failed: 0, refused: 0 };
 }
 
+function emptyDetailedReceipt(): AbandonedCleanupReceipt {
+  return { ...emptyReceipt(), deletedFiles: 0, live: 0 };
+}
+
+function coordinationFor(scope: object, namespaceUri: string): CacheCoordination {
+  let namespaces = CACHE_COORDINATION.get(scope);
+  if (namespaces === undefined) {
+    namespaces = new Map();
+    CACHE_COORDINATION.set(scope, namespaces);
+  }
+  let coordination = namespaces.get(namespaceUri);
+  if (coordination === undefined) {
+    coordination = { tail: Promise.resolve(), liveRequests: new Set() };
+    namespaces.set(namespaceUri, coordination);
+  }
+  return coordination;
+}
+
 class ExpoTempFileSystem implements TempFileSystem {
   get cacheDirectoryUri(): string {
     return Paths.cache.uri;
@@ -175,12 +206,16 @@ export type TempFileRegistryOptions = Readonly<{
 export class TempFileRegistry {
   private readonly fileSystem: TempFileSystem;
   private readonly namespace: LocalFileLocation;
-  private readonly cleanupOperations = new Map<string, Promise<CleanupReceipt>>();
+  private readonly coordination: CacheCoordination;
 
   constructor(options: TempFileRegistryOptions = {}) {
     this.fileSystem = options.fileSystem ?? new ExpoTempFileSystem();
     const cache = canonicalizeLocalFileUri(this.fileSystem.cacheDirectoryUri);
     this.namespace = appendLocation(cache, TEMP_CACHE_NAMESPACE);
+    this.coordination = coordinationFor(
+      options.fileSystem ?? DEFAULT_FILE_SYSTEM_SCOPE,
+      this.namespace.uri,
+    );
   }
 
   private requestLocation(requestId: string): LocalFileLocation {
@@ -257,9 +292,11 @@ export class TempFileRegistry {
 
   async createRequest(requestId: string): Promise<string> {
     const request = this.requestLocation(requestId);
-    await this.fileSystem.createDirectory(this.namespace.uri);
-    await this.fileSystem.createDirectory(request.uri);
-    return request.uri;
+    return this.enqueueCacheMutation(async () => {
+      this.coordination.liveRequests.add(requestId);
+      await this.createRequestLocation(request);
+      return request.uri;
+    });
   }
 
   async stagePdf(
@@ -269,26 +306,24 @@ export class TempFileRegistry {
   ): Promise<{ uri: string; inspection: FileInspection }> {
     const source = this.validateProviderFileUri(providerUri);
     const destination = this.fileLocation(requestId, fileId);
-    await this.createRequest(requestId);
-    await this.fileSystem.copyFile(source, destination.uri);
-    const inspection = await this.fileSystem.inspectFile(destination.uri);
-    return { uri: destination.uri, inspection };
+    return this.enqueueCacheMutation(async () => {
+      this.coordination.liveRequests.add(requestId);
+      await this.createRequestLocation(this.requestLocation(requestId));
+      await this.fileSystem.copyFile(source, destination.uri);
+      const inspection = await this.fileSystem.inspectFile(destination.uri);
+      return { uri: destination.uri, inspection };
+    });
   }
 
   async cleanupRequest(requestId: string): Promise<CleanupReceipt> {
     const request = this.requestLocation(requestId);
-    const previous = this.cleanupOperations.get(requestId);
-    const operation = (previous ?? Promise.resolve(emptyReceipt()))
-      .catch(() => emptyReceipt())
-      .then(() => this.cleanupRequestLocation(request));
-    this.cleanupOperations.set(requestId, operation);
-    try {
-      return await operation;
-    } finally {
-      if (this.cleanupOperations.get(requestId) === operation) {
-        this.cleanupOperations.delete(requestId);
+    return this.enqueueCacheMutation(async () => {
+      const receipt = await this.cleanupRequestLocation(request);
+      if (receipt.failed === 0 && receipt.refused === 0) {
+        this.coordination.liveRequests.delete(requestId);
       }
-    }
+      return receipt;
+    });
   }
 
   private async cleanupRequestLocation(request: LocalFileLocation): Promise<CleanupReceipt> {
@@ -312,25 +347,41 @@ export class TempFileRegistry {
   }
 
   async cleanupAbandoned(): Promise<CleanupReceipt> {
+    const detailed = await this.cleanupAbandonedDetailed();
+    return {
+      attempted: detailed.attempted,
+      deleted: detailed.deleted,
+      failed: detailed.failed,
+      refused: detailed.refused + detailed.live,
+    };
+  }
+
+  async cleanupAbandonedDetailed(): Promise<AbandonedCleanupReceipt> {
+    return this.enqueueCacheMutation(() => this.cleanupAbandonedUnfenced());
+  }
+
+  private async cleanupAbandonedUnfenced(): Promise<AbandonedCleanupReceipt> {
     let namespaceExists: boolean;
     try {
       namespaceExists = await this.fileSystem.directoryExists(this.namespace.uri);
     } catch {
-      return { attempted: 0, deleted: 0, failed: 1, refused: 0 };
+      return { ...emptyDetailedReceipt(), failed: 1 };
     }
-    if (!namespaceExists) return emptyReceipt();
+    if (!namespaceExists) return emptyDetailedReceipt();
 
     let entries: readonly DirectoryEntry[];
     try {
       entries = await this.fileSystem.listDirectory(this.namespace.uri);
     } catch {
-      return { attempted: 0, deleted: 0, failed: 1, refused: 0 };
+      return { ...emptyDetailedReceipt(), failed: 1 };
     }
 
     let attempted = 0;
     let deleted = 0;
     let failed = 0;
     let refused = 0;
+    let deletedFiles = 0;
+    let live = 0;
     for (const entry of entries) {
       let location: LocalFileLocation;
       try {
@@ -349,16 +400,60 @@ export class TempFileRegistry {
         continue;
       }
 
+      if (this.coordination.liveRequests.has(requestId)) {
+        live += 1;
+        continue;
+      }
+
       attempted += 1;
+      let children: readonly DirectoryEntry[];
+      try {
+        children = await this.fileSystem.listDirectory(location.uri);
+      } catch {
+        failed += 1;
+        continue;
+      }
+
+      const uniqueChildren = new Set<string>();
+      let childrenAreOwnedPdfs = true;
+      for (const child of children) {
+        let childLocation: LocalFileLocation;
+        try {
+          childLocation = canonicalizeLocalFileUri(child.uri);
+        } catch {
+          refused += 1;
+          childrenAreOwnedPdfs = false;
+          continue;
+        }
+        const filename = childLocation.segments[location.segments.length];
+        const fileId = filename?.endsWith('.pdf') ? filename.slice(0, -4) : '';
+        if (
+          child.kind !== 'file' ||
+          !isDirectChild(location, childLocation) ||
+          !FILE_ID_PATTERN.test(fileId) ||
+          uniqueChildren.has(childLocation.uri)
+        ) {
+          refused += 1;
+          childrenAreOwnedPdfs = false;
+          continue;
+        }
+        uniqueChildren.add(childLocation.uri);
+      }
+      if (!childrenAreOwnedPdfs) continue;
+
       try {
         await this.fileSystem.deleteDirectory(location.uri);
-        if (await this.fileSystem.directoryExists(location.uri)) failed += 1;
-        else deleted += 1;
+        if (await this.fileSystem.directoryExists(location.uri)) {
+          failed += 1;
+        } else {
+          deleted += 1;
+          deletedFiles += uniqueChildren.size;
+        }
       } catch {
         failed += 1;
       }
     }
-    return { attempted, deleted, failed, refused };
+    return { attempted, deleted, failed, refused, deletedFiles, live };
   }
 
   async withRequestCleanup<T>(requestId: string, operation: () => Promise<T>): Promise<T> {
@@ -370,5 +465,19 @@ export class TempFileRegistry {
         throw privacyError('cache_cleanup_failed');
       }
     }
+  }
+
+  private async createRequestLocation(request: LocalFileLocation): Promise<void> {
+    await this.fileSystem.createDirectory(this.namespace.uri);
+    await this.fileSystem.createDirectory(request.uri);
+  }
+
+  private enqueueCacheMutation<T>(operation: () => Promise<T>): Promise<T> {
+    const result = this.coordination.tail.then(operation);
+    this.coordination.tail = result.then(
+      () => undefined,
+      () => undefined,
+    );
+    return result;
   }
 }

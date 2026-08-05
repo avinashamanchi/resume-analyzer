@@ -5,11 +5,43 @@ import { Text } from 'react-native';
 import validFixture from '../../contracts/fixtures/analysis-valid.json';
 
 import { DataProvider, useReportData } from '../src/storage/DataProvider';
-import { ReportRepository } from '../src/storage/reportRepository';
+import { ReportRepository, type ReportRepositoryPort } from '../src/storage/reportRepository';
 
 import { FakeReportDatabase } from '../test-utils/fakeReportDatabase';
 
-const CLEAN = { attempted: 0, deleted: 0, failed: 0, refused: 0 } as const;
+const DETAILED_CLEAN = {
+  attempted: 0,
+  deleted: 0,
+  failed: 0,
+  refused: 0,
+  deletedFiles: 0,
+  live: 0,
+} as const;
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason: unknown) => void;
+  const promise = new Promise<T>((onResolve, onReject) => {
+    resolve = onResolve;
+    reject = onReject;
+  });
+  return { promise, resolve, reject };
+}
+
+function lifecycleRepository(
+  initialize: () => Promise<void>,
+  close: () => Promise<void>,
+): ReportRepositoryPort {
+  return {
+    initialize,
+    save: async () => { throw new Error('not used'); },
+    list: async () => [],
+    get: async () => null,
+    delete: async () => 0,
+    deleteAll: async () => ({ deletedReports: 0, deletedTempFiles: 0, failures: 0 }),
+    close,
+  };
+}
 
 function Probe() {
   const data = useReportData();
@@ -30,7 +62,7 @@ describe('local history privacy', () => {
     const database = new FakeReportDatabase();
     const repository = new ReportRepository({
       openDatabase: async () => database,
-      tempFiles: { cleanupAbandoned: async () => CLEAN },
+      tempFiles: { cleanupAbandonedDetailed: async () => DETAILED_CLEAN },
       now: () => new Date('2026-08-05T19:20:30.000Z'),
     });
     await repository.initialize();
@@ -77,7 +109,7 @@ describe('local history privacy', () => {
     database.failNext = /^SELECT .* FROM reports ORDER BY/;
     const repository = new ReportRepository({
       openDatabase: async () => database,
-      tempFiles: { cleanupAbandoned: async () => { throw new Error(privateCause); } },
+      tempFiles: { cleanupAbandonedDetailed: async () => { throw new Error(privateCause); } },
     });
     const errorLog = jest.spyOn(console, 'error').mockImplementation(() => undefined);
     const warnLog = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
@@ -102,7 +134,7 @@ describe('local history privacy', () => {
         await openBarrier;
         return database;
       },
-      tempFiles: { cleanupAbandoned: async () => CLEAN },
+      tempFiles: { cleanupAbandonedDetailed: async () => DETAILED_CLEAN },
     });
     const view = await render(React.createElement(
       DataProvider,
@@ -132,7 +164,7 @@ describe('local history privacy', () => {
           const database = new FakeReportDatabase();
           const repository = new ReportRepository({
             openDatabase: async () => database,
-            tempFiles: { cleanupAbandoned: async () => CLEAN },
+            tempFiles: { cleanupAbandonedDetailed: async () => DETAILED_CLEAN },
           });
           databases.push(database);
           repositories.push(repository);
@@ -152,6 +184,61 @@ describe('local history privacy', () => {
     expect(databases.every(database => database.closeCount === 1)).toBe(true);
   });
 
+  it('does not initialize a StrictMode replacement until the discarded repository closes', async () => {
+    const closing = deferred<void>();
+    const initializeCalls = [0, 0];
+    const repositories = [
+      lifecycleRepository(async () => { initializeCalls[0] += 1; }, () => closing.promise),
+      lifecycleRepository(async () => { initializeCalls[1] += 1; }, async () => undefined),
+    ];
+    let created = 0;
+    const view = await render(React.createElement(
+      StrictMode,
+      null,
+      React.createElement(
+        DataProvider,
+        { createRepository: () => repositories[created++] },
+        React.createElement(Probe),
+      ),
+    ));
+
+    expect(created).toBe(1);
+    expect(initializeCalls[1]).toBe(0);
+    expect(view.getByTestId('status').props.children).toBe('loading');
+    await act(async () => { closing.resolve(); });
+    await waitFor(() => expect(view.getByTestId('status').props.children).toBe('ready'));
+    expect(created).toBe(2);
+    expect(initializeCalls[1]).toBe(1);
+    await view.unmount();
+  });
+
+  it('blocks a StrictMode replacement when the discarded repository cannot close', async () => {
+    const initializeCalls = [0, 0];
+    const repositories = [
+      lifecycleRepository(
+        async () => { initializeCalls[0] += 1; },
+        async () => { throw new Error('private close cause'); },
+      ),
+      lifecycleRepository(async () => { initializeCalls[1] += 1; }, async () => undefined),
+    ];
+    let created = 0;
+    const view = await render(React.createElement(
+      StrictMode,
+      null,
+      React.createElement(
+        DataProvider,
+        { createRepository: () => repositories[created++] },
+        React.createElement(Probe),
+      ),
+    ));
+
+    await waitFor(() => expect(view.getByTestId('status').props.children).toBe('blocked'));
+    expect(view.getByTestId('repository').props.children).toBe('hidden');
+    expect(created).toBe(1);
+    expect(initializeCalls[1]).toBe(0);
+    await view.unmount();
+  });
+
   it('blocks on initialization failure without surfacing raw errors', async () => {
     const database = new FakeReportDatabase();
     database.failNext = /^PRAGMA user_version$/;
@@ -161,7 +248,7 @@ describe('local history privacy', () => {
       {
         createRepository: () => new ReportRepository({
           openDatabase: async () => database,
-          tempFiles: { cleanupAbandoned: async () => CLEAN },
+          tempFiles: { cleanupAbandonedDetailed: async () => DETAILED_CLEAN },
         }),
       },
       React.createElement(Probe),

@@ -1,4 +1,5 @@
 import {
+  AbandonedCleanupReceipt,
   CleanupReceipt,
   FileInspection,
   TempFileRegistry,
@@ -7,11 +8,25 @@ import {
 
 const REQUEST_A = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const REQUEST_B = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+const FILE_A = '11111111-1111-4111-8111-111111111111';
+const FILE_B = '22222222-2222-4222-8222-222222222222';
+const NAMESPACE_URI = 'file:///app/cache/resume-ai-v1';
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>(onResolve => { resolve = onResolve; });
+  return { promise, resolve };
+}
+
+function cleanupDetailed(registry: TempFileRegistry): Promise<AbandonedCleanupReceipt> {
+  return registry.cleanupAbandonedDetailed();
+}
 
 class RegistryFileSystem implements TempFileSystem {
   readonly cacheDirectoryUri = 'file:///app/cache/';
   readonly directories = new Set<string>();
   entries: Array<{ uri: string; kind: 'file' | 'directory' }> = [];
+  entriesByDirectory = new Map<string, Array<{ uri: string; kind: 'file' | 'directory' }>>();
   deleteFailures = new Set<string>();
   deleted: string[] = [];
   inspected: string[] = [];
@@ -31,9 +46,9 @@ class RegistryFileSystem implements TempFileSystem {
     return this.directories.has(uri);
   }
 
-  async listDirectory(): Promise<readonly { uri: string; kind: 'file' | 'directory' }[]> {
+  async listDirectory(uri: string): Promise<readonly { uri: string; kind: 'file' | 'directory' }[]> {
     if (this.listFailure) throw new Error('private listing details');
-    return this.entries;
+    return this.entriesByDirectory.get(uri) ?? this.entries;
   }
 
   async copyFile(): Promise<void> {}
@@ -220,7 +235,7 @@ describe('TempFileRegistry cleanup', () => {
   it('cleans only valid abandoned request directories and refuses every unexpected entry', async () => {
     const { fileSystem, registry } = harness();
     fileSystem.directories.add('file:///app/cache/resume-ai-v1');
-    fileSystem.entries = [
+    fileSystem.entriesByDirectory.set(NAMESPACE_URI, [
       { uri: requestUri(REQUEST_A), kind: 'directory' },
       { uri: requestUri(REQUEST_B), kind: 'directory' },
       { uri: 'file:///app/cache/resume-ai-v1/not-a-uuid', kind: 'directory' },
@@ -228,7 +243,9 @@ describe('TempFileRegistry cleanup', () => {
       { uri: 'file:///app/cache/resume-ai-v1-evil/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', kind: 'directory' },
       { uri: `${requestUri(REQUEST_A)}/nested`, kind: 'directory' },
       { uri: `${requestUri(REQUEST_A)}.pdf`, kind: 'file' },
-    ];
+    ]);
+    fileSystem.entriesByDirectory.set(requestUri(REQUEST_A), []);
+    fileSystem.entriesByDirectory.set(requestUri(REQUEST_B), []);
     fileSystem.deleteFailures.add(requestUri(REQUEST_B));
 
     await expect(registry.cleanupAbandoned()).resolves.toEqual<CleanupReceipt>({
@@ -251,5 +268,119 @@ describe('TempFileRegistry cleanup', () => {
       failed: 1,
       refused: 0,
     });
+  });
+
+  it.each([
+    ['empty request', [], 0],
+    ['one PDF', [{ uri: `${requestUri(REQUEST_A)}/${FILE_A}.pdf`, kind: 'file' as const }], 1],
+    ['multiple PDFs', [
+      { uri: `${requestUri(REQUEST_A)}/${FILE_A}.pdf`, kind: 'file' as const },
+      { uri: `${requestUri(REQUEST_A)}/${FILE_B}.pdf`, kind: 'file' as const },
+    ], 2],
+  ])('reports actual deleted file count for %s', async (_name, files, deletedFiles) => {
+    const { fileSystem, registry } = harness();
+    fileSystem.directories.add(NAMESPACE_URI);
+    fileSystem.directories.add(requestUri(REQUEST_A));
+    fileSystem.entriesByDirectory.set(NAMESPACE_URI, [
+      { uri: requestUri(REQUEST_A), kind: 'directory' },
+    ]);
+    fileSystem.entriesByDirectory.set(requestUri(REQUEST_A), files);
+
+    await expect(cleanupDetailed(registry)).resolves.toEqual({
+      attempted: 1,
+      deleted: 1,
+      failed: 0,
+      refused: 0,
+      deletedFiles,
+      live: 0,
+    });
+  });
+
+  it('refuses an unexpected child without deleting its request directory', async () => {
+    const { fileSystem, registry } = harness();
+    fileSystem.directories.add(NAMESPACE_URI);
+    fileSystem.directories.add(requestUri(REQUEST_A));
+    fileSystem.entriesByDirectory.set(NAMESPACE_URI, [
+      { uri: requestUri(REQUEST_A), kind: 'directory' },
+    ]);
+    fileSystem.entriesByDirectory.set(requestUri(REQUEST_A), [
+      { uri: `${requestUri(REQUEST_A)}/private.txt`, kind: 'file' },
+    ]);
+
+    await expect(cleanupDetailed(registry)).resolves.toEqual({
+      attempted: 1,
+      deleted: 0,
+      failed: 0,
+      refused: 1,
+      deletedFiles: 0,
+      live: 0,
+    });
+    expect(fileSystem.deleted).toEqual([]);
+  });
+
+  it('skips a live staged request across registry instances', async () => {
+    const fileSystem = new RegistryFileSystem();
+    const owner = new TempFileRegistry({ fileSystem });
+    const cleaner = new TempFileRegistry({ fileSystem });
+    await owner.stagePdf(REQUEST_A, FILE_A, 'file:///provider/resume.pdf');
+    fileSystem.entriesByDirectory.set(NAMESPACE_URI, [
+      { uri: requestUri(REQUEST_A), kind: 'directory' },
+    ]);
+    fileSystem.entriesByDirectory.set(requestUri(REQUEST_A), [
+      { uri: `${requestUri(REQUEST_A)}/${FILE_A}.pdf`, kind: 'file' },
+    ]);
+
+    await expect(cleanupDetailed(cleaner)).resolves.toEqual({
+      attempted: 0,
+      deleted: 0,
+      failed: 0,
+      refused: 0,
+      deletedFiles: 0,
+      live: 1,
+    });
+    expect(fileSystem.deleted).toEqual([]);
+    expect(fileSystem.directories.has(requestUri(REQUEST_A))).toBe(true);
+  });
+
+  it('keeps staging fenced after a caller times out until late abandoned cleanup quiesces', async () => {
+    const listed = deferred<void>();
+    const release = deferred<void>();
+    class DeferredEnumerationFileSystem extends RegistryFileSystem {
+      override async listDirectory(uri: string) {
+        if (uri === NAMESPACE_URI) {
+          listed.resolve();
+          await release.promise;
+          return [...this.directories]
+            .filter(candidate => candidate !== NAMESPACE_URI)
+            .map(uri => ({ uri, kind: 'directory' as const }));
+        }
+        return [];
+      }
+    }
+    const fileSystem = new DeferredEnumerationFileSystem();
+    fileSystem.directories.add(NAMESPACE_URI);
+    fileSystem.directories.add(requestUri(REQUEST_A));
+    const cleaner = new TempFileRegistry({ fileSystem });
+    const stager = new TempFileRegistry({ fileSystem });
+    const cleanup = cleaner.cleanupAbandoned();
+    await listed.promise;
+
+    await expect(Promise.race([
+      cleanup.then(() => 'settled'),
+      new Promise<string>(resolve => setTimeout(() => resolve('timed_out'), 5)),
+    ])).resolves.toBe('timed_out');
+    let stageSettled = false;
+    const staging = stager.stagePdf(REQUEST_B, FILE_B, 'file:///provider/resume.pdf')
+      .then(value => { stageSettled = true; return value; });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(stageSettled).toBe(false);
+    expect(fileSystem.directories.has(requestUri(REQUEST_B))).toBe(false);
+
+    release.resolve();
+    await cleanup;
+    await staging;
+    expect(fileSystem.deleted).toEqual([requestUri(REQUEST_A)]);
+    expect(fileSystem.directories.has(requestUri(REQUEST_B))).toBe(true);
   });
 });
