@@ -25,6 +25,8 @@ function cleanupDetailed(registry: TempFileRegistry): Promise<AbandonedCleanupRe
 class RegistryFileSystem implements TempFileSystem {
   readonly cacheDirectoryUri = 'file:///app/cache/';
   readonly directories = new Set<string>();
+  readonly created: string[] = [];
+  readonly copied: string[] = [];
   entries: Array<{ uri: string; kind: 'file' | 'directory' }> = [];
   entriesByDirectory = new Map<string, Array<{ uri: string; kind: 'file' | 'directory' }>>();
   deleteFailures = new Set<string>();
@@ -38,8 +40,10 @@ class RegistryFileSystem implements TempFileSystem {
   listFailure = false;
   deleteNoop = false;
   inspectFailure = false;
+  copyFailure = false;
 
   async createDirectory(uri: string): Promise<void> {
+    this.created.push(uri);
     this.directories.add(uri);
     if (uri.startsWith(`${NAMESPACE_URI}/`) && !uri.slice(NAMESPACE_URI.length + 1).includes('/')) {
       const entries = this.entriesByDirectory.get(NAMESPACE_URI) ?? [];
@@ -62,6 +66,8 @@ class RegistryFileSystem implements TempFileSystem {
   }
 
   async copyFile(_source: string, destination: string): Promise<void> {
+    if (this.copyFailure) throw new Error('private copy details');
+    this.copied.push(destination);
     const separator = destination.lastIndexOf('/');
     const directory = destination.slice(0, separator);
     const entries = this.entriesByDirectory.get(directory) ?? [];
@@ -371,6 +377,151 @@ describe('TempFileRegistry cleanup', () => {
     });
     expect(fileSystem.deleted).toEqual([]);
     expect(fileSystem.directories.has(requestUri(REQUEST_A))).toBe(true);
+  });
+
+  it.each([
+    ['copy would succeed', false],
+    ['copy would fail', true],
+  ])('rejects a live request collision before filesystem touches when %s', async (_label, copyFailure) => {
+    const fileSystem = new RegistryFileSystem();
+    const owner = new TempFileRegistry({ fileSystem });
+    const collider = new TempFileRegistry({ fileSystem });
+    const cleaner = new TempFileRegistry({ fileSystem });
+    const original = await owner.stagePdf(
+      REQUEST_A,
+      FILE_A,
+      'file:///provider/original.pdf',
+    );
+    const touchesBeforeCollision = {
+      created: fileSystem.created.length,
+      copied: fileSystem.copied.length,
+      inspected: fileSystem.inspected.length,
+    };
+    fileSystem.copyFailure = copyFailure;
+
+    await expect(collider.stagePdf(
+      REQUEST_A,
+      FILE_B,
+      'file:///provider/collision.pdf',
+    )).rejects.toMatchObject({
+      category: 'privacy',
+      code: 'cache_request_in_use',
+      requestAcquired: false,
+    });
+    expect({
+      created: fileSystem.created.length,
+      copied: fileSystem.copied.length,
+      inspected: fileSystem.inspected.length,
+    }).toEqual(touchesBeforeCollision);
+    expect(fileSystem.copied).toEqual([original.uri]);
+
+    await expect(cleaner.cleanupAbandonedDetailed()).resolves.toEqual({
+      attempted: 0,
+      deleted: 0,
+      failed: 0,
+      refused: 0,
+      deletedFiles: 0,
+      live: 1,
+    });
+    await expect(owner.cleanupRequest(REQUEST_A)).resolves.toEqual({
+      attempted: 1,
+      deleted: 1,
+      failed: 0,
+      refused: 0,
+    });
+  });
+
+  it('rejects a quarantined request ID until abandoned cleanup removes its directory', async () => {
+    const fileSystem = new RegistryFileSystem();
+    const owner = new TempFileRegistry({ fileSystem });
+    const collider = new TempFileRegistry({ fileSystem });
+    fileSystem.inspectFailure = true;
+    await expect(owner.stagePdf(
+      REQUEST_A,
+      FILE_A,
+      'file:///provider/failed.pdf',
+    )).rejects.toBeInstanceOf(Error);
+    fileSystem.inspectFailure = false;
+    const copiedBeforeCollision = [...fileSystem.copied];
+
+    await expect(collider.stagePdf(
+      REQUEST_A,
+      FILE_B,
+      'file:///provider/collision.pdf',
+    )).rejects.toMatchObject({
+      category: 'privacy',
+      code: 'cache_request_recovery_required',
+      requestAcquired: false,
+    });
+    expect(fileSystem.copied).toEqual(copiedBeforeCollision);
+
+    await expect(collider.cleanupAbandonedDetailed()).resolves.toMatchObject({
+      attempted: 1,
+      deleted: 1,
+      deletedFiles: 1,
+      live: 0,
+    });
+    await expect(collider.stagePdf(
+      REQUEST_A,
+      FILE_B,
+      'file:///provider/retry.pdf',
+    )).resolves.toMatchObject({ uri: `${requestUri(REQUEST_A)}/${FILE_B}.pdf` });
+    await expect(owner.cleanupRequest(REQUEST_A)).resolves.toMatchObject({ deleted: 1 });
+  });
+
+  it('waits for same-request terminal cleanup before safely reacquiring ownership', async () => {
+    const deletionStarted = deferred<void>();
+    const releaseDeletion = deferred<void>();
+    class DeferredDeleteFileSystem extends RegistryFileSystem {
+      override async deleteDirectory(uri: string): Promise<void> {
+        deletionStarted.resolve();
+        await releaseDeletion.promise;
+        return super.deleteDirectory(uri);
+      }
+    }
+    const fileSystem = new DeferredDeleteFileSystem();
+    const owner = new TempFileRegistry({ fileSystem });
+    const nextOwner = new TempFileRegistry({ fileSystem });
+    await owner.stagePdf(REQUEST_A, FILE_A, 'file:///provider/original.pdf');
+
+    const cleanup = owner.cleanupRequest(REQUEST_A);
+    await deletionStarted.promise;
+    let restaged = false;
+    const staging = nextOwner.stagePdf(REQUEST_A, FILE_B, 'file:///provider/next.pdf')
+      .then(value => { restaged = true; return value; });
+    await Promise.resolve();
+    expect(restaged).toBe(false);
+    releaseDeletion.resolve();
+
+    await expect(cleanup).resolves.toMatchObject({ deleted: 1 });
+    await expect(staging).resolves.toMatchObject({ uri: `${requestUri(REQUEST_A)}/${FILE_B}.pdf` });
+    await expect(nextOwner.cleanupRequest(REQUEST_A)).resolves.toMatchObject({ deleted: 1 });
+  });
+
+  it('quarantines a same-request restage queued behind failed terminal cleanup', async () => {
+    const fileSystem = new RegistryFileSystem();
+    const owner = new TempFileRegistry({ fileSystem });
+    const nextOwner = new TempFileRegistry({ fileSystem });
+    const cleaner = new TempFileRegistry({ fileSystem });
+    await owner.stagePdf(REQUEST_A, FILE_A, 'file:///provider/original.pdf');
+    fileSystem.deleteFailures.add(requestUri(REQUEST_A));
+
+    const cleanup = owner.cleanupRequest(REQUEST_A);
+    const staging = nextOwner.stagePdf(REQUEST_A, FILE_B, 'file:///provider/next.pdf');
+
+    await expect(cleanup).resolves.toMatchObject({ deleted: 0, failed: 1 });
+    await expect(staging).rejects.toMatchObject({
+      category: 'privacy',
+      code: 'cache_request_recovery_required',
+      requestAcquired: false,
+    });
+    fileSystem.deleteFailures.delete(requestUri(REQUEST_A));
+    await expect(cleaner.cleanupAbandonedDetailed()).resolves.toMatchObject({
+      attempted: 1,
+      deleted: 1,
+      deletedFiles: 1,
+      live: 0,
+    });
   });
 
   it('recovers an inspection-failed stage after its immediate cleanup transiently fails', async () => {

@@ -54,7 +54,7 @@ type LocalFileLocation = Readonly<{
 
 type CacheCoordination = {
   tail: Promise<void>;
-  readonly liveRequests: Set<string>;
+  readonly liveRequests: Map<string, symbol>;
 };
 
 const DEFAULT_FILE_SYSTEM_SCOPE = {};
@@ -68,6 +68,16 @@ export class DocumentPrivacyError extends Error {
     super('Temporary resume data could not be handled safely.');
     this.name = 'DocumentPrivacyError';
     this.code = code;
+  }
+}
+
+export class PdfStagingError extends DocumentPrivacyError {
+  readonly requestAcquired: boolean;
+
+  constructor(code: string, requestAcquired: boolean) {
+    super(code);
+    this.name = 'PdfStagingError';
+    this.requestAcquired = requestAcquired;
   }
 }
 
@@ -150,7 +160,7 @@ function coordinationFor(scope: object, namespaceUri: string): CacheCoordination
   }
   let coordination = namespaces.get(namespaceUri);
   if (coordination === undefined) {
-    coordination = { tail: Promise.resolve(), liveRequests: new Set() };
+    coordination = { tail: Promise.resolve(), liveRequests: new Map() };
     namespaces.set(namespaceUri, coordination);
   }
   return coordination;
@@ -293,12 +303,12 @@ export class TempFileRegistry {
   async createRequest(requestId: string): Promise<string> {
     const request = this.requestLocation(requestId);
     return this.enqueueCacheMutation(async () => {
-      this.coordination.liveRequests.add(requestId);
+      const owner = await this.acquireRequest(requestId, request);
       try {
         await this.createRequestLocation(request);
         return request.uri;
       } catch (error) {
-        this.coordination.liveRequests.delete(requestId);
+        this.releaseRequest(requestId, owner);
         throw error;
       }
     });
@@ -312,15 +322,16 @@ export class TempFileRegistry {
     const source = this.validateProviderFileUri(providerUri);
     const destination = this.fileLocation(requestId, fileId);
     return this.enqueueCacheMutation(async () => {
-      this.coordination.liveRequests.add(requestId);
+      const request = this.requestLocation(requestId);
+      const owner = await this.acquireRequest(requestId, request);
       try {
-        await this.createRequestLocation(this.requestLocation(requestId));
+        await this.createRequestLocation(request);
         await this.fileSystem.copyFile(source, destination.uri);
         const inspection = await this.fileSystem.inspectFile(destination.uri);
         return { uri: destination.uri, inspection };
-      } catch (error) {
-        this.coordination.liveRequests.delete(requestId);
-        throw error;
+      } catch {
+        this.releaseRequest(requestId, owner);
+        throw new PdfStagingError('pdf_staging_failed', true);
       }
     });
   }
@@ -482,6 +493,39 @@ export class TempFileRegistry {
   private async createRequestLocation(request: LocalFileLocation): Promise<void> {
     await this.fileSystem.createDirectory(this.namespace.uri);
     await this.fileSystem.createDirectory(request.uri);
+  }
+
+  private async acquireRequest(
+    requestId: string,
+    request: LocalFileLocation,
+  ): Promise<symbol> {
+    // This check must remain the first operation inside the shared mutation
+    // fence so a colliding caller cannot touch files owned by the live caller.
+    if (this.coordination.liveRequests.has(requestId)) {
+      throw new PdfStagingError('cache_request_in_use', false);
+    }
+
+    let exists: boolean;
+    try {
+      exists = await this.fileSystem.directoryExists(request.uri);
+    } catch {
+      throw new PdfStagingError('cache_request_state_unavailable', false);
+    }
+    if (exists) {
+      // A directory without a live owner is quarantined for abandoned cleanup.
+      // Reusing it could combine a new source with bytes from a failed stage.
+      throw new PdfStagingError('cache_request_recovery_required', false);
+    }
+
+    const owner = Symbol(requestId);
+    this.coordination.liveRequests.set(requestId, owner);
+    return owner;
+  }
+
+  private releaseRequest(requestId: string, owner: symbol): void {
+    if (this.coordination.liveRequests.get(requestId) === owner) {
+      this.coordination.liveRequests.delete(requestId);
+    }
   }
 
   private enqueueCacheMutation<T>(operation: () => Promise<T>): Promise<T> {

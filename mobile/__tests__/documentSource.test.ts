@@ -13,6 +13,7 @@ import { VisionAdapter } from '../src/documents/visionAdapter';
 
 const REQUEST_ID = '11111111-1111-4111-8111-111111111111';
 const FILE_ID = '22222222-2222-4222-8222-222222222222';
+const SECOND_FILE_ID = '33333333-3333-4333-8333-333333333333';
 const PROVIDER_URI = 'file:///provider/resume.pdf';
 const NAMESPACE_URI = 'file:///app/cache/resume-ai-v1';
 
@@ -289,6 +290,112 @@ describe('DocumentSourceService', () => {
     });
     expect(source).toMatchObject({ kind: 'pdf', requestId: REQUEST_ID });
     expect(fileSystem.deleted).toEqual([]);
+  });
+
+  it.each([
+    ['the second copy would succeed', false],
+    ['the second copy would fail', true],
+  ])('preserves the first PdfSource when a same-request picker collides and %s', async (_label, copyFailure) => {
+    const fileSystem = new SourceFileSystem();
+    const registry = new TempFileRegistry({ fileSystem });
+    const firstPicker = {
+      pick: jest.fn(async () => successResult()),
+      release: jest.fn(async () => undefined),
+    };
+    const secondPicker = {
+      pick: jest.fn(async () => successResult()),
+      release: jest.fn(async () => undefined),
+    };
+    const firstService = new DocumentSourceService({
+      picker: firstPicker,
+      registry,
+      requestId: () => REQUEST_ID,
+      fileId: () => FILE_ID,
+    });
+    const secondService = new DocumentSourceService({
+      picker: secondPicker,
+      registry,
+      requestId: () => REQUEST_ID,
+      fileId: () => SECOND_FILE_ID,
+    });
+    const original = await firstService.pickPdf();
+    fileSystem.copyFailure = copyFailure;
+
+    await expect(secondService.pickPdf()).rejects.toMatchObject({
+      category: 'privacy',
+      code: 'cache_request_in_use',
+    });
+    expect(fileSystem.copied).toEqual([
+      {
+        source: PROVIDER_URI,
+        destination: `file:///app/cache/resume-ai-v1/${REQUEST_ID}/${FILE_ID}.pdf`,
+      },
+    ]);
+    expect(fileSystem.directories.has(
+      `file:///app/cache/resume-ai-v1/${REQUEST_ID}`,
+    )).toBe(true);
+    expect(original).toMatchObject({
+      kind: 'pdf',
+      requestId: REQUEST_ID,
+      uri: `file:///app/cache/resume-ai-v1/${REQUEST_ID}/${FILE_ID}.pdf`,
+    });
+
+    await expect(registry.cleanupAbandonedDetailed()).resolves.toMatchObject({
+      attempted: 0,
+      deleted: 0,
+      live: 1,
+    });
+    await expect(registry.cleanupRequest(REQUEST_ID)).resolves.toEqual({
+      attempted: 1,
+      deleted: 1,
+      failed: 0,
+      refused: 0,
+    });
+    expect(fileSystem.directories.has(
+      `file:///app/cache/resume-ai-v1/${REQUEST_ID}`,
+    )).toBe(false);
+  });
+
+  it('does not delete the first PdfSource when a colliding picker release also fails', async () => {
+    const fileSystem = new SourceFileSystem();
+    const registry = new TempFileRegistry({ fileSystem });
+    const firstService = new DocumentSourceService({
+      picker: {
+        pick: jest.fn(async () => successResult()),
+        release: jest.fn(async () => undefined),
+      },
+      registry,
+      requestId: () => REQUEST_ID,
+      fileId: () => FILE_ID,
+    });
+    const collidingService = new DocumentSourceService({
+      picker: {
+        pick: jest.fn(async () => successResult()),
+        release: jest.fn(async () => {
+          throw new Error('private provider release details');
+        }),
+      },
+      registry,
+      requestId: () => REQUEST_ID,
+      fileId: () => SECOND_FILE_ID,
+    });
+    const original = await firstService.pickPdf();
+
+    await expect(collidingService.pickPdf()).rejects.toMatchObject({
+      category: 'privacy',
+      code: 'provider_cleanup_failed',
+    });
+    expect(fileSystem.deleted).toEqual([]);
+    expect(original).toMatchObject({
+      requestId: REQUEST_ID,
+      uri: `file:///app/cache/resume-ai-v1/${REQUEST_ID}/${FILE_ID}.pdf`,
+    });
+    await expect(registry.cleanupAbandonedDetailed()).resolves.toMatchObject({
+      attempted: 0,
+      deleted: 0,
+      live: 1,
+    });
+    await expect(registry.cleanupRequest(REQUEST_ID)).resolves.toMatchObject({ deleted: 1 });
   });
 
   it('fails closed and removes the owned copy when the picker cache copy cannot be released', async () => {

@@ -10,6 +10,7 @@ import {
 } from '../domain/limits';
 import {
   DocumentPrivacyError,
+  PdfStagingError,
   TempFileRegistry,
   canonicalizeLocalFileUri,
   isDirectLocalFileChild,
@@ -198,6 +199,7 @@ export class DocumentSourceService {
     if (result?.canceled === true && result.assets === null) return null;
     const providerUris = selectedUris(result);
     let requestId: string | null = null;
+    let requestAcquired = false;
     try {
       if (result?.canceled !== false || !Array.isArray(result.assets) || result.assets.length !== 1) {
         throw asValidationError('invalid_picker_result');
@@ -213,11 +215,20 @@ export class DocumentSourceService {
       }
 
       try {
-        const staged = await this.registry.stagePdf(
-          requestId,
-          fileId,
-          selected.providerUri,
-        );
+        let staged;
+        try {
+          staged = await this.registry.stagePdf(
+            requestId,
+            fileId,
+            selected.providerUri,
+          );
+          requestAcquired = true;
+        } catch (error) {
+          if (error instanceof PdfStagingError) {
+            requestAcquired = error.requestAcquired;
+          }
+          throw error;
+        }
         const { inspection } = staged;
         if (
           !inspection.exists ||
@@ -236,9 +247,18 @@ export class DocumentSourceService {
           size: inspection.size,
         };
       } catch (error) {
-        const receipt = await this.registry.cleanupRequest(requestId);
-        if (receipt.failed > 0 || receipt.deleted !== receipt.attempted) {
-          throw new DocumentSourceError('privacy', 'cache_cleanup_failed');
+        if (requestAcquired) {
+          const receipt = await this.registry.cleanupRequest(requestId);
+          requestAcquired = false;
+          if (receipt.failed > 0 || receipt.deleted !== receipt.attempted) {
+            throw new DocumentSourceError('privacy', 'cache_cleanup_failed');
+          }
+        }
+        if (error instanceof PdfStagingError) {
+          if (!error.requestAcquired) {
+            throw new DocumentSourceError('privacy', error.code);
+          }
+          throw asValidationError('pdf_staging_failed');
         }
         if (error instanceof DocumentPrivacyError) {
           throw new DocumentSourceError('privacy', error.code);
@@ -255,8 +275,9 @@ export class DocumentSourceService {
         }
       }
       if (releaseFailed) {
-        if (requestId !== null) {
+        if (requestId !== null && requestAcquired) {
           const receipt = await this.registry.cleanupRequest(requestId);
+          requestAcquired = false;
           if (receipt.failed > 0 || receipt.deleted !== receipt.attempted) {
             throw new DocumentSourceError('privacy', 'cache_cleanup_failed');
           }
