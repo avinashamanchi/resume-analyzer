@@ -98,6 +98,13 @@ class RateLimiter:
             _validated_limit(installation_issue_ip_daily_limit, DAY_SECONDS),
         )
 
+    def healthcheck(self) -> bool:
+        """Verify shared-store reachability without exposing connection details."""
+        try:
+            return self._redis.ping() is True
+        except RedisError:
+            return False
+
     def check(self, installation_id: UUID, ip_key: str) -> RateLimitDecision:
         _validate_uuid(installation_id, "installation_id")
         _validate_ip_key(ip_key)
@@ -228,6 +235,13 @@ class RedisRequestLeaseStore:
             f"redis_request_lease_owners_{id(self)}",
             default=None,
         )
+
+    def healthcheck(self) -> bool:
+        """Verify shared-store reachability without mutating lease state."""
+        try:
+            return self._redis.ping() is True
+        except RedisError:
+            return False
 
     def acquire(
         self,

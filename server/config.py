@@ -40,8 +40,8 @@ def _parse_origins(raw_value: str) -> tuple[str, ...]:
     if not origins:
         raise ConfigurationError("ALLOWED_WEB_ORIGINS must contain at least one origin")
     for origin in origins:
-        if origin == "*":
-            continue
+        if "*" in origin:
+            raise ConfigurationError("wildcard CORS origins are forbidden")
         parsed = urlsplit(origin)
         if (
             parsed.scheme not in {"http", "https"}

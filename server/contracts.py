@@ -17,6 +17,7 @@ from .errors import ErrorCode
 
 
 ShortText = Annotated[str, StringConstraints(min_length=1, max_length=240)]
+InstallationToken = Annotated[str, StringConstraints(min_length=1, max_length=2_048)]
 FeedbackText = Annotated[str, StringConstraints(min_length=1, max_length=600)]
 SimulatedRecruiterComment = Annotated[
     str,
@@ -100,6 +101,11 @@ class AnalysisResponseV1(StrictContract):
     @classmethod
     def parses_json_uuid(cls, value: object) -> object:
         return UUID(value) if isinstance(value, str) else value
+
+
+class InstallationResponseV1(StrictContract):
+    schemaVersion: Literal[1]
+    installationToken: InstallationToken
 
 
 class PublicErrorV1(StrictContract):

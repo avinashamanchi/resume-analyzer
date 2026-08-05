@@ -138,6 +138,33 @@ class UnavailableRedis:
     def delete(self, *args: object, **kwargs: object):
         raise RedisConnectionError("private redis host details")
 
+    def ping(self):
+        raise RedisConnectionError("private redis host details")
+
+
+def test_health_checks_verify_the_shared_store_without_exposing_outage_details(
+    redis_client: fakeredis.FakeRedis,
+):
+    limiter = RateLimiter(
+        redis_client,
+        key_secret=KEY_SECRET,
+        now=lambda: 1_800_000_000,
+    )
+    leases = RedisRequestLeaseStore(redis_client, key_secret=KEY_SECRET)
+    unavailable_limiter = RateLimiter(
+        UnavailableRedis(),
+        key_secret=KEY_SECRET,
+        now=lambda: 1_800_000_000,
+    )
+    unavailable_leases = RedisRequestLeaseStore(
+        UnavailableRedis(), key_secret=KEY_SECRET
+    )
+
+    assert limiter.healthcheck() is True
+    assert leases.healthcheck() is True
+    assert unavailable_limiter.healthcheck() is False
+    assert unavailable_leases.healthcheck() is False
+
 
 def test_redis_outage_fails_closed_in_production_without_private_details():
     limiter = RateLimiter(

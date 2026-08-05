@@ -68,3 +68,16 @@ def test_development_settings_parse_origins_and_deadlines():
     )
     assert settings.provider_deadline_seconds == 4.5
     assert settings.request_deadline_seconds == 7.0
+
+
+@pytest.mark.parametrize("origin", ["*", "https://*.example.com"])
+def test_development_rejects_wildcard_cors_because_only_first_party_origins_are_valid(
+    origin: str,
+):
+    with pytest.raises(ConfigurationError, match="wildcard"):
+        Settings.from_environ(
+            {
+                "APP_ENV": "development",
+                "ALLOWED_WEB_ORIGINS": origin,
+            }
+        )
