@@ -24,3 +24,11 @@ class ErrorCode(StrEnum):
     INVALID_AI_RESPONSE = "invalid_ai_response"
     SERVICE_MISCONFIGURED = "service_misconfigured"
     SERVICE_UNAVAILABLE = "service_unavailable"
+
+
+class PublicServiceError(Exception):
+    """Content-free service failure safe to translate at the API boundary."""
+
+    def __init__(self, code: ErrorCode | str) -> None:
+        self.code = ErrorCode(code)
+        super().__init__(self.code.value)
