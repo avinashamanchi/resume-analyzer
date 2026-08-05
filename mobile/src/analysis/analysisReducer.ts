@@ -42,11 +42,13 @@ export type AnalysisState = Readonly<{
   activation: number | null;
   cleanupPending: boolean;
   mutation: AnalysisMutation;
+  lifecycleEpoch: number;
 }>;
 
 export type AnalysisEvent =
   | Readonly<{ type: 'initializationReady' }>
   | Readonly<{ type: 'initializationFailed'; error: PublicAnalysisError }>
+  | Readonly<{ type: 'lifecycleInvalidated'; lifecycleEpoch: number }>
   | Readonly<{ type: 'generationAdvanced'; generation: number }>
   | Readonly<{
       type: 'mutationStarted';
@@ -102,6 +104,7 @@ export function createInitialAnalysisState(): AnalysisState {
     activation: null,
     cleanupPending: false,
     mutation: 'none',
+    lifecycleEpoch: 0,
   };
 }
 
@@ -129,6 +132,9 @@ export function analysisReducer(state: AnalysisState, event: AnalysisEvent): Ana
         cleanupPending: true,
         mutation: 'none',
       };
+    case 'lifecycleInvalidated':
+      if (event.lifecycleEpoch <= state.lifecycleEpoch) return state;
+      return { ...state, lifecycleEpoch: event.lifecycleEpoch };
     case 'generationAdvanced':
       if (event.generation <= state.generation) return state;
       return {
@@ -259,6 +265,7 @@ export function analysisReducer(state: AnalysisState, event: AnalysisEvent): Ana
         ...createInitialAnalysisState(),
         privacyReadiness: state.privacyReadiness,
         generation: event.generation,
+        lifecycleEpoch: state.lifecycleEpoch,
       };
   }
 }

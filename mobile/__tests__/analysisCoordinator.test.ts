@@ -455,6 +455,38 @@ describe('review fixes: PDF consent exits', () => {
     },
   );
 
+  it('background keeps a consent-gated PDF privacy-blocked when lifecycle cleanup fails', async () => {
+    const cleanupRequest = jest.fn(async () => ({
+      attempted: 1,
+      deleted: 0,
+      failed: 1,
+      refused: 0,
+    }));
+    const { api, coordinator, setConsent } = harness({
+      tempFiles: {
+        cleanupAbandoned: jest.fn(async () => CLEAN),
+        cleanupRequest,
+      },
+    });
+    setConsent(false);
+    await coordinator.initialize();
+    await coordinator.commands.selectSource(pdfSource());
+    await coordinator.commands.analyze();
+    expect(coordinator.getState().status).toBe('consentRequired');
+
+    await coordinator.handleAppState('background');
+
+    expect(api.analyze).not.toHaveBeenCalled();
+    expect(cleanupRequest).toHaveBeenCalledWith(REQUEST_A, LEASE_A);
+    expect(coordinator.getState()).toMatchObject({
+      status: 'failed',
+      source: pdfSource(),
+      cleanupPending: true,
+      lifecycleEpoch: 1,
+      error: { category: 'privacy' },
+    });
+  });
+
   it('privacy cleanup failure overrides a PDF consent-read error', async () => {
     const { coordinator } = harness({
       consentStore: {
@@ -1009,6 +1041,44 @@ describe('analysis generations and cancellation', () => {
     expect(api.analyze).toHaveBeenCalledTimes(1);
     expect(coordinator.getState().status).toBe('cancelled');
   });
+
+  it.each(['background', 'inactive'] as const)(
+    '%s invalidates a pending source receipt and active foreground does not revive it',
+    async lifecycle => {
+      const { coordinator } = harness();
+      await coordinator.initialize();
+
+      const staleSelection = coordinator.commands.selectSource(textSource('stale private resume'));
+      expect(coordinator.getState().mutation).toBe('selecting');
+      const transition = coordinator.handleAppState(lifecycle);
+      const [staleReceipt] = await Promise.all([staleSelection, transition]);
+      await coordinator.handleAppState('active');
+
+      expect(staleReceipt).toEqual({ committed: false });
+      expect(coordinator.getState()).toMatchObject({ source: null, lifecycleEpoch: 1 });
+      await expect(coordinator.commands.selectSource(textSource('new foreground resume')))
+        .resolves.toMatchObject({ committed: true });
+    },
+  );
+
+  it.each(['background', 'inactive'] as const)(
+    '%s invalidates a pending job receipt and active foreground does not revive it',
+    async lifecycle => {
+      const { coordinator } = await readyHarness();
+
+      const staleJob = coordinator.commands.setJobDescription('stale private job');
+      expect(coordinator.getState().mutation).toBe('editing');
+      const transition = coordinator.handleAppState(lifecycle);
+      const [staleReceipt] = await Promise.all([staleJob, transition]);
+      await coordinator.handleAppState('active');
+
+      expect(staleReceipt).toEqual({ committed: false });
+      expect(coordinator.getState()).toMatchObject({ source: null, lifecycleEpoch: 1 });
+      await coordinator.commands.selectSource(textSource('new foreground resume'));
+      await expect(coordinator.commands.setJobDescription('new foreground job'))
+        .resolves.toMatchObject({ committed: true });
+    },
+  );
 
   it('source and job edits advance the opaque generation and reset clears memory', async () => {
     const { coordinator } = await readyHarness();

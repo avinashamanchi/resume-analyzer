@@ -32,6 +32,7 @@ const readyState: AnalysisState = {
   activation: null,
   cleanupPending: false,
   mutation: 'none',
+  lifecycleEpoch: 0,
 };
 
 function pdfSource(identity: symbol, requestId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa') {
@@ -342,6 +343,78 @@ describe('native Analyze and Results flows', () => {
     expect(dismiss).not.toHaveBeenCalled();
     expect(values.analysis.commands.analyze).not.toHaveBeenCalled();
   });
+
+  it.each(['background', 'inactive'] as const)(
+    'does not continue a deferred source preparation after %s lifecycle invalidation',
+    async _lifecycle => {
+      const pendingSource = deferred<{ committed: true; sourceIdentity: null; generation: number }>();
+      const dismiss = jest.spyOn(Keyboard, 'dismiss');
+      dismiss.mockClear();
+      const values = harness();
+      values.analysis.commands.selectSource.mockReturnValueOnce(pendingSource.promise);
+      const view = await render(<AppControllerProvider value={values}><AnalyzeScreen /></AppControllerProvider>);
+      await act(async () => { fireEvent.press(view.getByRole('tab', { name: 'Paste text' })); });
+      await act(async () => { fireEvent.changeText(view.getByLabelText('Paste resume text'), 'Validated resume text'); });
+      await act(async () => { fireEvent.press(view.getByRole('button', { name: 'Analyze resume' })); });
+      await waitFor(() => expect(values.analysis.commands.selectSource).toHaveBeenCalledTimes(1));
+
+      await view.rerender(
+        <AppControllerProvider value={{
+          ...values,
+          analysis: {
+            ...values.analysis,
+            state: { ...readyState, status: 'idle', generation: 4, lifecycleEpoch: 1 },
+          },
+        }}><AnalyzeScreen /></AppControllerProvider>,
+      );
+      await act(async () => {
+        pendingSource.resolve({ committed: true, sourceIdentity: null, generation: 3 });
+        await pendingSource.promise;
+      });
+
+      expect(values.analysis.commands.setJobDescription).not.toHaveBeenCalled();
+      expect(dismiss).not.toHaveBeenCalled();
+      expect(values.analysis.commands.analyze).not.toHaveBeenCalled();
+      expect(view.queryByTestId('consent-dialog')).toBeNull();
+    },
+  );
+
+  it.each(['background', 'inactive'] as const)(
+    'invalidates a deferred job on %s and permits one newer foreground preparation',
+    async _lifecycle => {
+      const pendingJob = deferred<{ committed: true; generation: number }>();
+      const dismiss = jest.spyOn(Keyboard, 'dismiss');
+      dismiss.mockClear();
+      const values = harness();
+      values.analysis.commands.setJobDescription.mockReturnValueOnce(pendingJob.promise);
+      const view = await render(<AppControllerProvider value={values}><AnalyzeScreen /></AppControllerProvider>);
+      await act(async () => { fireEvent.press(view.getByRole('tab', { name: 'Paste text' })); });
+      await act(async () => { fireEvent.changeText(view.getByLabelText('Paste resume text'), 'Validated resume text'); });
+      await act(async () => { fireEvent.press(view.getByRole('button', { name: 'Analyze resume' })); });
+      await waitFor(() => expect(values.analysis.commands.setJobDescription).toHaveBeenCalledTimes(1));
+
+      const foregroundValues = {
+        ...values,
+        analysis: {
+          ...values.analysis,
+          state: { ...readyState, status: 'idle' as const, generation: 4, lifecycleEpoch: 1 },
+        },
+      };
+      await view.rerender(<AppControllerProvider value={foregroundValues}><AnalyzeScreen /></AppControllerProvider>);
+      await act(async () => {
+        pendingJob.resolve({ committed: true, generation: 3 });
+        await pendingJob.promise;
+      });
+      expect(dismiss).not.toHaveBeenCalled();
+      expect(values.analysis.commands.analyze).not.toHaveBeenCalled();
+
+      await act(async () => { fireEvent.changeText(view.getByLabelText('Paste resume text'), 'New foreground resume'); });
+      await act(async () => { fireEvent.press(view.getByRole('button', { name: 'Analyze resume' })); });
+      await waitFor(() => expect(values.analysis.commands.analyze).toHaveBeenCalledTimes(1));
+      expect(dismiss).toHaveBeenCalledTimes(1);
+      expect(values.analysis.commands.setJobDescription).toHaveBeenCalledTimes(2);
+    },
+  );
 
   it.each(['source', 'job'] as const)('keeps a rejected %s preparation content-free and outside consent', async stage => {
     const dismiss = jest.spyOn(Keyboard, 'dismiss');

@@ -28,6 +28,7 @@ export default function AnalyzeScreen() {
   const [localError, setLocalError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const priorGeneration = useRef(state.generation);
+  const priorLifecycleEpoch = useRef(state.lifecycleEpoch);
   const operationEpoch = useRef(0);
   const mounted = useRef(true);
 
@@ -38,6 +39,14 @@ export default function AnalyzeScreen() {
       operationEpoch.current += 1;
     };
   }, []);
+
+  useEffect(() => {
+    if (state.lifecycleEpoch !== priorLifecycleEpoch.current) {
+      operationEpoch.current += 1;
+      setBusy(false);
+    }
+    priorLifecycleEpoch.current = state.lifecycleEpoch;
+  }, [state.lifecycleEpoch]);
 
   const beginOperation = () => {
     operationEpoch.current += 1;

@@ -242,6 +242,7 @@ export class AnalysisCoordinator {
   private readonly cleanupTimeoutMs: number;
   private generation = 0;
   private sourceRevision = 0;
+  private lifecycleEpoch = 0;
   private nextActivation = 0;
   private active: Activation | null = null;
   private consentContinuation: ConsentContinuation | null = null;
@@ -1039,7 +1040,14 @@ export class AnalysisCoordinator {
   }
 
   async handleAppState(state: string): Promise<void> {
-    if (state === 'background' || state === 'inactive') await this.cancel();
+    if (state !== 'background' && state !== 'inactive') return;
+    this.lifecycleEpoch += 1;
+    this.dispatch({ type: 'lifecycleInvalidated', lifecycleEpoch: this.lifecycleEpoch });
+    if (this.state.mutation === 'selecting' || this.state.mutation === 'editing') {
+      await this.reset();
+      return;
+    }
+    await this.cancel();
   }
 
   private reset(): Promise<void> {
@@ -1082,6 +1090,7 @@ export class AnalysisCoordinator {
       ...createInitialAnalysisState(),
       privacyReadiness: this.state.privacyReadiness,
       generation: this.generation,
+      lifecycleEpoch: this.lifecycleEpoch,
     };
   }
 
