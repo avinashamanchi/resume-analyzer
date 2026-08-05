@@ -5,7 +5,8 @@ const MAX_PDF_BYTES = 10 * 1024 * 1024;
 const MAX_RESUME_CHARACTERS = 30000;
 const MAX_JOB_DESCRIPTION_CHARACTERS = 20000;
 const TOKEN_KEY = "resume-ai.installation-token.v1";
-const MAX_ITEMS = 12;
+const { validateAnalysisResponse, validateInstallationResponse, validatePublicError } = globalThis.ResumeAIContract;
+const { RequestLifecycle } = globalThis.ResumeAILifecycle;
 
 const errorMessages = {
   invalid_request: "Check the selected material and consent, then submit again.",
@@ -28,7 +29,8 @@ const errorMessages = {
   service_unavailable: "The service is unavailable. You may submit again later."
 };
 
-const state = { mode: "pdf", file: null, controller: null, installationToken: null };
+const state = { mode: "pdf", file: null, installationToken: null };
+const lifecycle = new RequestLifecycle();
 const form = document.querySelector("#analysis-form");
 const pdfInput = document.querySelector("#resume-pdf");
 const textInput = document.querySelector("#resume-text");
@@ -49,12 +51,12 @@ function initialToken() {
 
 function saveToken(token) {
   state.installationToken = token;
-  try { sessionStorage.setItem(TOKEN_KEY, token); } catch { /* session memory is optional */ }
+  try { sessionStorage.setItem(TOKEN_KEY, token); } catch { /* Session memory is optional. */ }
 }
 
 function clearToken() {
   state.installationToken = null;
-  try { sessionStorage.removeItem(TOKEN_KEY); } catch { /* session memory is optional */ }
+  try { sessionStorage.removeItem(TOKEN_KEY); } catch { /* Session memory is optional. */ }
 }
 
 function setMode(mode) {
@@ -85,6 +87,12 @@ function setBusy(isBusy) {
   cancelButton.disabled = !isBusy;
 }
 
+function invalidateForEdit() {
+  const hadActiveRequest = Boolean(lifecycle.active);
+  lifecycle.invalidate();
+  if (hadActiveRequest) setBusy(false);
+}
+
 function localValidation() {
   const resumeText = textInput.value.trim();
   const roleText = jobDescription.value.trim();
@@ -102,72 +110,73 @@ function localValidation() {
 }
 
 async function responseData(response) {
-  try { return await response.json(); } catch { return {}; }
+  try { return await response.json(); } catch { return null; }
 }
 
-function safeError(data, fallback) {
-  const code = data && typeof data.code === "string" ? data.code : "";
-  return errorMessages[code] || fallback;
+function stableError(data, fallback) {
+  try { return errorMessages[validatePublicError(data).code] || fallback; } catch { return fallback; }
 }
 
-async function issueInstallation(signal) {
-  const response = await fetch("/v1/installations", { method: "POST", signal, credentials: "same-origin" });
+async function issueInstallation(owner) {
+  const response = await fetch("/v1/installations", {
+    method: "POST",
+    signal: owner.controller.signal,
+    credentials: "same-origin"
+  });
+  if (!lifecycle.owns(owner)) return null;
   const data = await responseData(response);
-  if (!response.ok || !data || typeof data.installationToken !== "string" || !data.installationToken) {
-    throw new Error(safeError(data, "A temporary browser token could not be issued. Try again later."));
-  }
-  saveToken(data.installationToken);
-  return data.installationToken;
+  if (!lifecycle.owns(owner)) return null;
+  if (response.status !== 201) throw new Error(stableError(data, "A temporary browser token could not be issued. Try again later."));
+  const installation = validateInstallationResponse(data);
+  if (!lifecycle.owns(owner)) return null;
+  saveToken(installation.installationToken);
+  return installation.installationToken;
 }
 
-async function installationToken(signal) {
+async function installationToken(owner) {
   if (state.installationToken) return state.installationToken;
-  return issueInstallation(signal);
+  return issueInstallation(owner);
 }
 
-function safeText(value, maximum = 800) {
-  return typeof value === "string" ? value.slice(0, maximum) : "";
-}
-
-function boundedItems(value, maximum = MAX_ITEMS) {
-  if (!Array.isArray(value)) return [];
-  return value.slice(0, maximum).map((item) => safeText(item, 600)).filter(Boolean);
-}
-
-function setList(id, values, className) {
+function setList(id, values) {
   const list = document.querySelector(id);
   list.replaceChildren();
   const entries = values.length ? values : ["None identified in this review."];
   for (const entry of entries) {
     const item = document.createElement("li");
-    if (className) item.className = className;
     item.textContent = entry;
     list.append(item);
   }
 }
 
-function scoreValue(score) {
-  const value = score && Number.isInteger(score.readinessScore) ? score.readinessScore : null;
-  return value !== null && value >= 0 && value <= 100 ? value : null;
-}
-
-function renderReport(data) {
-  const score = data && typeof data.score === "object" && data.score ? data.score : {};
-  const feedback = data && typeof data.feedback === "object" && data.feedback ? data.feedback : {};
-  const readiness = scoreValue(score);
-  if (readiness === null || !safeText(score.label, 40)) throw new Error("The readiness result could not be validated. You may submit again later.");
-
-  document.querySelector("#readiness-score").textContent = String(readiness);
-  document.querySelector("#readiness-label").textContent = safeText(score.label, 40);
-  document.querySelector("#readiness-summary").textContent = safeText(feedback.summary, 500) || "No summary was returned for this review.";
-  setList("#matched-keywords", boundedItems(feedback.matchedKeywords, 20));
-  setList("#missing-keywords", boundedItems(feedback.missingKeywords, 20));
-  setList("#strengths", boundedItems(feedback.strengths));
-  setList("#improvements", boundedItems(feedback.improvements));
-  setList("#power-bullets", boundedItems(feedback.powerBullets, 10));
-  document.querySelector("#recruiter-comment").textContent = safeText(feedback.simulatedRecruiterComment, 800) || "No simulated recruiter comment was returned for this review.";
+function renderReport(analysis) {
+  const { score, feedback } = analysis;
+  document.querySelector("#readiness-score").textContent = String(score.readinessScore);
+  document.querySelector("#readiness-label").textContent = score.label;
+  document.querySelector("#readiness-summary").textContent = feedback.summary;
+  setList("#matched-keywords", feedback.matchedKeywords);
+  setList("#missing-keywords", feedback.missingKeywords);
+  setList("#strengths", feedback.strengths);
+  setList("#improvements", feedback.improvements);
+  setList("#power-bullets", feedback.powerBullets);
+  document.querySelector("#recruiter-comment").textContent = feedback.simulatedRecruiterComment;
   report.hidden = false;
   report.focus();
+}
+
+function requestPayload() {
+  const formData = new FormData();
+  formData.append("consent_version", CONSENT_VERSION);
+  formData.append("request_id", crypto.randomUUID());
+  const roleText = jobDescription.value.trim();
+  if (roleText) formData.append("job_description", roleText);
+  if (state.mode === "pdf") {
+    formData.append("resume_pdf", state.file, state.file.name);
+  } else {
+    formData.append("resume_text", textInput.value.trim());
+    formData.append("source_type", "text");
+  }
+  return formData;
 }
 
 async function submitAnalysis(event) {
@@ -176,58 +185,78 @@ async function submitAnalysis(event) {
   const validationError = localValidation();
   if (validationError) { showError(validationError); return; }
 
-  const controller = new AbortController();
-  state.controller = controller;
+  const owner = lifecycle.begin(new AbortController());
   report.hidden = true;
   setBusy(true);
   try {
-    const formData = new FormData();
-    formData.append("consent_version", CONSENT_VERSION);
-    formData.append("request_id", crypto.randomUUID());
-    const roleText = jobDescription.value.trim();
-    if (roleText) formData.append("job_description", roleText);
-    if (state.mode === "pdf") {
-      formData.append("resume_pdf", state.file, state.file.name);
-    } else {
-      formData.append("resume_text", textInput.value.trim());
-      formData.append("source_type", "text");
-    }
-    const token = await installationToken(controller.signal);
+    const token = await installationToken(owner);
+    if (!lifecycle.owns(owner)) return;
+    if (!token) return;
     const response = await fetch("/v1/analyses", {
       method: "POST",
       headers: { Authorization: `Installation ${token}` },
-      body: formData,
-      signal: controller.signal,
+      body: requestPayload(),
+      signal: owner.controller.signal,
       credentials: "same-origin"
     });
+    if (!lifecycle.owns(owner)) return;
     const data = await responseData(response);
-    if (!response.ok) {
+    if (!lifecycle.owns(owner)) return;
+    if (response.status !== 200) {
       if (response.status === 401) clearToken();
-      throw new Error(safeError(data, "The review could not be completed. You may submit again when ready."));
+      throw new Error(stableError(data, "The review could not be completed. You may submit again when ready."));
     }
-    renderReport(data);
+    const analysis = validateAnalysisResponse(data);
+    if (!lifecycle.owns(owner)) return;
+    lifecycle.applyIfCurrent(owner, () => renderReport(analysis));
   } catch (error) {
+    if (!lifecycle.owns(owner)) return;
     if (error && error.name === "AbortError") {
       showError("Analysis canceled in this browser. You can edit your material before starting again.");
     } else {
       showError(error instanceof Error ? error.message : "The review could not be completed. You may submit again when ready.");
     }
   } finally {
-    if (state.controller === controller) {
-      state.controller = null;
+    lifecycle.applyIfCurrent(owner, () => {
+      lifecycle.finish(owner);
       setBusy(false);
-    }
+    });
   }
 }
 
 state.installationToken = initialToken();
 for (const radio of document.querySelectorAll("input[name='source']")) {
-  radio.addEventListener("change", () => setMode(radio.value));
+  radio.addEventListener("change", () => {
+    invalidateForEdit();
+    setMode(radio.value);
+  });
 }
 pdfInput.addEventListener("change", () => {
+  invalidateForEdit();
   state.file = pdfInput.files && pdfInput.files[0] ? pdfInput.files[0] : null;
   fileName.textContent = state.file ? `${state.file.name} selected.` : "No file selected.";
   clearError();
 });
+textInput.addEventListener("input", invalidateForEdit);
+jobDescription.addEventListener("input", invalidateForEdit);
+form.addEventListener("reset", () => {
+  lifecycle.invalidate();
+  setBusy(false);
+  queueMicrotask(() => {
+    state.file = null;
+    fileName.textContent = "No file selected.";
+    setMode("pdf");
+  });
+});
 form.addEventListener("submit", submitAnalysis);
-cancelButton.addEventListener("click", () => { if (state.controller) state.controller.abort(); });
+cancelButton.addEventListener("click", () => {
+  const owner = lifecycle.active;
+  if (!owner) {
+    lifecycle.invalidate();
+    return;
+  }
+  lifecycle.cancel(owner);
+  setBusy(false);
+  showError("Analysis canceled in this browser. You can edit your material before starting again.");
+});
+window.addEventListener("pagehide", () => lifecycle.pagehide());

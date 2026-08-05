@@ -6,6 +6,8 @@
   <meta name="color-scheme" content="light">
   <title>Resume.AI — readiness coaching</title>
   <link rel="stylesheet" href="/static/styles.css">
+  <script src="/static/contract.js" defer></script>
+  <script src="/static/lifecycle.js" defer></script>
   <script src="/static/app.js" defer></script>
 </head>
 <body>
@@ -59,6 +61,18 @@
           <label for="groq-consent">I agree to send this resume and optional role description to Groq for AI coaching. I understand that this is optional AI feedback and not a hiring decision.</label>
           <p>Read how requests are handled in <a href="/static/privacy.html">Privacy</a>.</p>
         </div>
+
+        <section class="privacy-disclosure" aria-labelledby="privacy-boundary-title">
+          <h2 id="privacy-boundary-title">Privacy boundary</h2>
+          <ul>
+            <li>Resume.AI transiently processes the selected PDF and extracts text.</li>
+            <li>Raw PDF bytes are never sent to Groq.</li>
+            <li>Extracted resume text and any optional job description are sent to Groq only after consent.</li>
+            <li>No server history is kept.</li>
+            <li>No tracking or analytics are used.</li>
+            <li>Only a session installation token is kept in this browser.</li>
+          </ul>
+        </section>
 
         <div class="actions">
           <button id="analyze-button" class="primary-action" type="submit">Review resume readiness</button>

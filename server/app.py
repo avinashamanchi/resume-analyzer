@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
@@ -34,6 +35,7 @@ _CONTENT_SECURITY_POLICY = (
 _CORS_METHODS = "GET, POST, OPTIONS"
 _CORS_HEADERS = "Authorization, Content-Type"
 _CORS_HEADER_NAMES = frozenset({"authorization", "content-type"})
+_WEB_STATIC_DIRECTORY = Path(__file__).resolve().parent.parent / "static"
 
 
 def create_app(
@@ -60,7 +62,11 @@ def create_app(
         allowed_web_origins=canonical_origins,
     )
     allowed_origins = frozenset(canonical_origins)
-    app = Flask(__name__)
+    app = Flask(
+        __name__,
+        static_folder=str(_WEB_STATIC_DIRECTORY),
+        static_url_path="/static",
+    )
     app.request_class = MemoryOnlyRequest
     app.config.from_mapping(
         APP_ENV=configured_settings.app_env,
@@ -72,6 +78,10 @@ def create_app(
     app.extensions["resume_ai.settings"] = configured_settings
     if services is not None:
         app.extensions["resume_ai.services"] = services
+
+    @app.get("/")
+    def web_index() -> Any:
+        return app.send_static_file("index.html")
 
     @app.before_request
     def assign_request_id() -> None:

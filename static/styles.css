@@ -63,6 +63,9 @@ textarea::placeholder { color: #6b7a85; }
 .consent-card input { accent-color: var(--blueprint); float: left; height: 1.25rem; margin: .2rem .7rem 0 0; width: 1.25rem; }
 .consent-card label { font-weight: 600; }
 .consent-card p { clear: both; padding-top: .45rem; }
+.privacy-disclosure { border-top: 1px solid var(--rule); margin-top: 1.5rem; padding-top: 1rem; }
+.privacy-disclosure h2 { font-family: var(--body); font-size: .96rem; letter-spacing: 0; }
+.privacy-disclosure ul { color: var(--muted); font-size: .84rem; margin: 0; padding-left: 1.25rem; }
 .actions { display: flex; flex-wrap: wrap; gap: .75rem; margin-top: 1.5rem; }
 button { border: 1px solid transparent; cursor: pointer; min-height: 2.75rem; padding: .65rem 1rem; }
 button:disabled { cursor: not-allowed; opacity: .62; }
