@@ -21,6 +21,7 @@
         "pdf_timeout",
         "scan_required",
         "resume_too_long",
+        "scoring_input_limit",
         "ai_timeout",
         "ai_unavailable",
         "invalid_ai_response",

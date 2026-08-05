@@ -6,6 +6,7 @@ import pytest
 
 from server.scoring import (
     ScoreSignals,
+    ScoringInputError,
     collect_signals,
     component_scores,
     label_for_score,
@@ -166,3 +167,43 @@ def test_readability_penalizes_overlong_resumes_and_excessive_bullets():
         job_keywords=(),
     )
     assert component_scores(signals, has_job=False).readability == 0
+
+
+def test_collect_signals_accepts_an_exact_resume_code_point_boundary():
+    signals = collect_signals("a" * 30_000)
+    assert signals.word_count == 1
+
+
+def test_score_resume_rejects_a_resume_over_the_code_point_boundary_without_echoing_it():
+    resume = "x" * 30_001
+    with pytest.raises(ScoringInputError) as caught:
+        score_resume(resume, None)
+    assert caught.value.code == "scoring_input_limit"
+    assert resume not in str(caught.value)
+
+
+def test_score_resume_accepts_an_exact_job_description_code_point_boundary():
+    result = score_resume("Experience", "a" * 20_000)
+    assert result.components.keywords == 0
+
+
+def test_collect_signals_rejects_a_job_description_over_the_code_point_boundary():
+    with pytest.raises(ScoringInputError):
+        collect_signals("Experience", "x" * 20_001)
+
+
+def test_resume_length_is_measured_in_unicode_code_points_not_utf8_bytes():
+    signals = collect_signals("é" * 30_000)
+    assert signals.word_count == 1
+    with pytest.raises(ScoringInputError):
+        collect_signals("🧠" * 30_001)
+
+
+def test_tokenize_keywords_keeps_all_tokens_at_the_defensive_cap():
+    tokens = tokenize_keywords("ab " * 10_000)
+    assert len(tokens) == 10_000
+
+
+def test_tokenize_keywords_fails_closed_when_casefold_expands_past_the_cap():
+    with pytest.raises(ScoringInputError):
+        tokenize_keywords("ß " * 15_000)

@@ -11,9 +11,13 @@ from dataclasses import dataclass
 import re
 
 from .contracts import ScoreComponentsV1, ScoreV1
+from .errors import ErrorCode
 
 
 SCORE_VERSION = "resume-readiness-v1"
+MAX_RESUME_CODE_POINTS = 30_000
+MAX_JOB_DESCRIPTION_CODE_POINTS = 20_000
+MAX_DERIVED_TOKENS = 10_000
 
 WEIGHTS_WITH_JOB = {
     "structure": 25,
@@ -129,12 +133,30 @@ class ScoreSignals:
     job_keywords: tuple[str, ...]
 
 
+class ScoringInputError(ValueError):
+    """Content-free rejection for scoring inputs that exceed a hard limit."""
+
+    code = ErrorCode.SCORING_INPUT_LIMIT
+
+    def __init__(self) -> None:
+        super().__init__("Scoring input exceeds a supported limit.")
+
+
+def _validate_code_point_limit(text: str, maximum: int) -> None:
+    if len(text) > maximum:
+        raise ScoringInputError()
+
+
 def tokenize_keywords(text: str) -> tuple[str, ...]:
     """Return bounded, case-folded v1 keyword tokens in source order."""
+    _validate_code_point_limit(text, MAX_RESUME_CODE_POINTS)
     tokens: list[str] = []
-    for raw_token in _WORD_PATTERN.findall(text.casefold()):
+    for match in _WORD_PATTERN.finditer(text.casefold()):
+        raw_token = match.group()
         if not 2 <= len(raw_token) <= 40 or raw_token in STOPWORDS_V1:
             continue
+        if len(tokens) >= MAX_DERIVED_TOKENS:
+            raise ScoringInputError()
         tokens.append(raw_token)
     return tuple(tokens)
 
@@ -167,6 +189,9 @@ def _is_measurable_bullet(body: str) -> bool:
 
 def collect_signals(resume_text: str, job_description: str | None = None) -> ScoreSignals:
     """Derive only score inputs; contact matches are immediately discarded."""
+    _validate_code_point_limit(resume_text, MAX_RESUME_CODE_POINTS)
+    if job_description is not None:
+        _validate_code_point_limit(job_description, MAX_JOB_DESCRIPTION_CODE_POINTS)
     contact_present = _contains_contact(resume_text)
     non_contact_text = _without_contacts(resume_text)
     headings = {line.strip().casefold() for line in non_contact_text.splitlines()}

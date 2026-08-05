@@ -18,6 +18,7 @@ class ErrorCode(StrEnum):
     PDF_TIMEOUT = "pdf_timeout"
     SCAN_REQUIRED = "scan_required"
     RESUME_TOO_LONG = "resume_too_long"
+    SCORING_INPUT_LIMIT = "scoring_input_limit"
     AI_TIMEOUT = "ai_timeout"
     AI_UNAVAILABLE = "ai_unavailable"
     INVALID_AI_RESPONSE = "invalid_ai_response"
