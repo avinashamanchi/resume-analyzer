@@ -44,12 +44,22 @@ function pdfSource(identity: symbol, requestId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaa
   };
 }
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((onResolve, onReject) => {
+    resolve = onResolve;
+    reject = onReject;
+  });
+  return { promise, resolve, reject };
+}
+
 function harness(overrides: Record<string, unknown> = {}): any {
   const analysis = {
     state: readyState,
     commands: {
-      selectSource: jest.fn(async () => undefined),
-      setJobDescription: jest.fn(async () => undefined),
+      selectSource: jest.fn(async () => ({ committed: true, sourceIdentity: null, generation: 2 })),
+      setJobDescription: jest.fn(async () => ({ committed: true, generation: 3 })),
       analyze: jest.fn(async () => undefined),
       grantConsent: jest.fn(async () => undefined),
       declineConsent: jest.fn(async () => undefined),
@@ -263,6 +273,7 @@ describe('native Analyze and Results flows', () => {
 
   it('dismisses the focused keyboard after validation and immediately before requesting consent', async () => {
     const dismiss = jest.spyOn(Keyboard, 'dismiss');
+    dismiss.mockClear();
     const values = harness();
     const view = await render(<AppControllerProvider value={values}><AnalyzeScreen /></AppControllerProvider>);
     await act(async () => { fireEvent.press(view.getByRole('tab', { name: 'Paste text' })); });
@@ -275,6 +286,81 @@ describe('native Analyze and Results flows', () => {
     expect(values.analysis.commands.analyze).toHaveBeenCalledTimes(1);
     expect(dismiss.mock.invocationCallOrder[0]).toBeLessThan(values.analysis.commands.analyze.mock.invocationCallOrder[0]);
     expect(values.analysis.commands.setJobDescription.mock.invocationCallOrder[0]).toBeLessThan(dismiss.mock.invocationCallOrder[0]);
+  });
+
+  it('stops preparation when the pasted source is not authoritatively committed', async () => {
+    const dismiss = jest.spyOn(Keyboard, 'dismiss');
+    dismiss.mockClear();
+    const values = harness();
+    values.analysis.commands.selectSource.mockResolvedValueOnce({ committed: false });
+    const view = await render(<AppControllerProvider value={values}><AnalyzeScreen /></AppControllerProvider>);
+    await act(async () => { fireEvent.press(view.getByRole('tab', { name: 'Paste text' })); });
+    await act(async () => { fireEvent.changeText(view.getByLabelText('Paste resume text'), 'Validated resume text'); });
+
+    await act(async () => { fireEvent.press(view.getByRole('button', { name: 'Analyze resume' })); });
+
+    await waitFor(() => expect(view.getByText('Check the resume and job-description limits before analyzing.')).toBeTruthy());
+    expect(values.analysis.commands.setJobDescription).not.toHaveBeenCalled();
+    expect(dismiss).not.toHaveBeenCalled();
+    expect(values.analysis.commands.analyze).not.toHaveBeenCalled();
+  });
+
+  it('stops preparation when the job edit is not authoritatively committed', async () => {
+    const dismiss = jest.spyOn(Keyboard, 'dismiss');
+    dismiss.mockClear();
+    const values = harness();
+    values.analysis.commands.setJobDescription.mockResolvedValueOnce({ committed: false });
+    const view = await render(<AppControllerProvider value={values}><AnalyzeScreen /></AppControllerProvider>);
+    await act(async () => { fireEvent.press(view.getByRole('tab', { name: 'Paste text' })); });
+    await act(async () => { fireEvent.changeText(view.getByLabelText('Paste resume text'), 'Validated resume text'); });
+
+    await act(async () => { fireEvent.press(view.getByRole('button', { name: 'Analyze resume' })); });
+
+    await waitFor(() => expect(view.getByText('Check the resume and job-description limits before analyzing.')).toBeTruthy());
+    expect(dismiss).not.toHaveBeenCalled();
+    expect(values.analysis.commands.analyze).not.toHaveBeenCalled();
+  });
+
+  it('does not continue a deferred job preparation after the screen unmounts', async () => {
+    const pendingJob = deferred<{ committed: true; generation: number }>();
+    const dismiss = jest.spyOn(Keyboard, 'dismiss');
+    dismiss.mockClear();
+    const values = harness();
+    values.analysis.commands.setJobDescription.mockReturnValueOnce(pendingJob.promise);
+    const view = await render(<AppControllerProvider value={values}><AnalyzeScreen /></AppControllerProvider>);
+    await act(async () => { fireEvent.press(view.getByRole('tab', { name: 'Paste text' })); });
+    await act(async () => { fireEvent.changeText(view.getByLabelText('Paste resume text'), 'Validated resume text'); });
+    await act(async () => { fireEvent.press(view.getByRole('button', { name: 'Analyze resume' })); });
+    await waitFor(() => expect(values.analysis.commands.setJobDescription).toHaveBeenCalledTimes(1));
+
+    await view.unmount();
+    await act(async () => {
+      pendingJob.resolve({ committed: true, generation: 4 });
+      await pendingJob.promise;
+    });
+
+    expect(dismiss).not.toHaveBeenCalled();
+    expect(values.analysis.commands.analyze).not.toHaveBeenCalled();
+  });
+
+  it.each(['source', 'job'] as const)('keeps a rejected %s preparation content-free and outside consent', async stage => {
+    const dismiss = jest.spyOn(Keyboard, 'dismiss');
+    dismiss.mockClear();
+    const privateCause = new Error('file:///private/Secret Resume.pdf');
+    const values = harness();
+    if (stage === 'source') values.analysis.commands.selectSource.mockRejectedValueOnce(privateCause);
+    else values.analysis.commands.setJobDescription.mockRejectedValueOnce(privateCause);
+    const view = await render(<AppControllerProvider value={values}><AnalyzeScreen /></AppControllerProvider>);
+    await act(async () => { fireEvent.press(view.getByRole('tab', { name: 'Paste text' })); });
+    await act(async () => { fireEvent.changeText(view.getByLabelText('Paste resume text'), 'Validated resume text'); });
+
+    await act(async () => { fireEvent.press(view.getByRole('button', { name: 'Analyze resume' })); });
+
+    await waitFor(() => expect(view.getByText('Check the resume and job-description limits before analyzing.')).toBeTruthy());
+    expect(JSON.stringify(view.toJSON())).not.toContain(privateCause.message);
+    expect(view.queryByTestId('consent-dialog')).toBeNull();
+    expect(dismiss).not.toHaveBeenCalled();
+    expect(values.analysis.commands.analyze).not.toHaveBeenCalled();
   });
 
   it('navigates only when the coordinator owns a succeeded result', async () => {

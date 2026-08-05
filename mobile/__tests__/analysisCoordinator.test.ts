@@ -307,7 +307,10 @@ describe('review fixes: non-reentrant mutation transactions', () => {
     });
     const unsubscribeSecond = coordinator.subscribe(() => { secondSubscriberCalls += 1; });
 
-    await expect(coordinator.commands.setJobDescription('new job draft')).resolves.toBeUndefined();
+    await expect(coordinator.commands.setJobDescription('new job draft')).resolves.toEqual({
+      committed: true,
+      generation: coordinator.getState().generation,
+    });
 
     expect(api.analyze).not.toHaveBeenCalled();
     expect(secondSubscriberCalls).toBeGreaterThan(0);
@@ -1025,6 +1028,17 @@ describe('analysis generations and cancellation', () => {
     });
   });
 
+  it('returns a failed job receipt when reset supersedes the edit transaction', async () => {
+    const { coordinator } = await readyHarness();
+
+    const staleJob = coordinator.commands.setJobDescription('stale private job');
+    const reset = coordinator.commands.reset();
+
+    await expect(staleJob).resolves.toEqual({ committed: false });
+    await reset;
+    expect(coordinator.getState()).toMatchObject({ source: null, jobDescription: '' });
+  });
+
   it.each([
     ['timeout', true],
     ['indeterminate', true],
@@ -1428,9 +1442,10 @@ describe('PDF terminal cleanup', () => {
     void coordinator.commands.analyze();
     await flushPromises();
 
-    await coordinator.commands.setJobDescription('updated private job draft');
+    const edit = await coordinator.commands.setJobDescription('updated private job draft');
 
     expect(cleanupRequest).toHaveBeenCalled();
+    expect(edit).toEqual({ committed: false });
     expect(coordinator.getState()).toMatchObject({
       status: 'failed',
       source: pdfSource(),

@@ -28,6 +28,24 @@ export default function AnalyzeScreen() {
   const [localError, setLocalError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const priorGeneration = useRef(state.generation);
+  const operationEpoch = useRef(0);
+  const mounted = useRef(true);
+
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+      operationEpoch.current += 1;
+    };
+  }, []);
+
+  const beginOperation = () => {
+    operationEpoch.current += 1;
+    return operationEpoch.current;
+  };
+
+  const operationIsCurrent = (epoch: number) =>
+    mounted.current && operationEpoch.current === epoch;
 
   useEffect(() => {
     if (state.status === 'succeeded' && state.result !== null) {
@@ -63,9 +81,11 @@ export default function AnalyzeScreen() {
 
   const changeMode = async (next: SourceMode) => {
     if (next === mode || busy || state.status === 'analyzing') return;
+    const epoch = beginOperation();
     setBusy(true);
     setLocalError(null);
     await commands.reset();
+    if (!operationIsCurrent(epoch)) return;
     setPdfDisplay(null);
     setPasteText('');
     setJobDescription('');
@@ -75,40 +95,46 @@ export default function AnalyzeScreen() {
 
   const choosePdf = async () => {
     if (busy) return;
+    const epoch = beginOperation();
     setBusy(true);
     setLocalError(null);
     try {
       const picked = await actions.pickPdfForDisplay();
-      if (picked !== null) {
+      if (operationIsCurrent(epoch) && picked !== null) {
         setPdfDisplay(picked);
       }
     } catch {
-      setLocalError('The PDF could not be selected safely.');
+      if (operationIsCurrent(epoch)) setLocalError('The PDF could not be selected safely.');
     } finally {
-      setBusy(false);
+      if (operationIsCurrent(epoch)) setBusy(false);
     }
   };
 
   const analyze = async () => {
     if (busy || state.status === 'analyzing') return;
+    const epoch = beginOperation();
     setBusy(true);
     setLocalError(null);
     try {
       if (mode === 'paste') {
-        await commands.selectSource(createPastedTextSource(pasteText));
+        const sourceReceipt = await commands.selectSource(createPastedTextSource(pasteText));
+        if (!operationIsCurrent(epoch)) return;
+        if (!sourceReceipt.committed) throw new Error(INPUT_ERROR);
       } else if (state.source?.kind !== 'pdf') {
         throw new Error(INPUT_ERROR);
       }
       if (jobDescription.includes('\0') || codePointLength(jobDescription) > MAX_JOB_DESCRIPTION_CODE_POINTS) {
         throw new Error(INPUT_ERROR);
       }
-      await commands.setJobDescription(jobDescription);
+      const jobReceipt = await commands.setJobDescription(jobDescription);
+      if (!operationIsCurrent(epoch)) return;
+      if (!jobReceipt.committed) throw new Error(INPUT_ERROR);
       Keyboard.dismiss();
       await commands.analyze();
     } catch {
-      setLocalError(INPUT_ERROR);
+      if (operationIsCurrent(epoch)) setLocalError(INPUT_ERROR);
     } finally {
-      setBusy(false);
+      if (operationIsCurrent(epoch)) setBusy(false);
     }
   };
 

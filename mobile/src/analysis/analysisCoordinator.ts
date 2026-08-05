@@ -60,7 +60,7 @@ export type AnalysisCoordinatorOptions = Readonly<{
 
 export type AnalysisCommands = Readonly<{
   selectSource(source: ResumeSource): Promise<SourceSelectionReceipt>;
-  setJobDescription(value: string): Promise<void>;
+  setJobDescription(value: string): Promise<JobDescriptionCommitReceipt>;
   analyze(): Promise<void>;
   grantConsent(): Promise<void>;
   declineConsent(): Promise<void>;
@@ -71,6 +71,10 @@ export type AnalysisCommands = Readonly<{
 export type SourceSelectionReceipt =
   | Readonly<{ committed: false }>
   | Readonly<{ committed: true; sourceIdentity: symbol | null; generation: number }>;
+
+export type JobDescriptionCommitReceipt =
+  | Readonly<{ committed: false }>
+  | Readonly<{ committed: true; generation: number }>;
 
 type ActivationPhase = 'consentRead' | 'consentWrite' | 'network';
 
@@ -648,13 +652,14 @@ export class AnalysisCoordinator {
       : { committed: false };
   }
 
-  private setJobDescription(value: string): Promise<void> {
-    if (!this.mounted) return Promise.resolve();
+  private async setJobDescription(value: string): Promise<JobDescriptionCommitReceipt> {
+    if (!this.mounted) return { committed: false };
     const source = this.state.source;
     const sourceClaim = this.committedPdfClaim;
     const wasConsentRequired = this.state.status === 'consentRequired';
     const initialization = this.initialize();
-    return this.enqueueMutation('editing', async ({ generation, previousActivation }) => {
+    let committedGeneration: number | null = null;
+    await this.enqueueMutation('editing', async ({ generation, previousActivation }) => {
       await initialization;
       if (!this.isCurrentMutation(generation) || this.state.privacyReadiness !== 'ready') return;
       if (!(await this.cleanupUncommitted())) {
@@ -696,6 +701,7 @@ export class AnalysisCoordinator {
         });
         return;
       }
+      committedGeneration = generation;
       this.dispatch({
         type: 'jobUpdated',
         generation,
@@ -703,6 +709,12 @@ export class AnalysisCoordinator {
         consumeSource,
       });
     });
+    return committedGeneration !== null &&
+      this.state.mutation === 'none' &&
+      this.state.generation === committedGeneration &&
+      this.state.jobDescription === value
+      ? { committed: true, generation: committedGeneration }
+      : { committed: false };
   }
 
   private newActivation(source: ResumeSource, phase: ActivationPhase): Activation {
