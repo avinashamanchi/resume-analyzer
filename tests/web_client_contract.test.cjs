@@ -81,6 +81,11 @@ test("uses audited Unicode casefold equivalence when rejecting keyword overlap",
   distinct.feedback.matchedKeywords = ["Straße"];
   distinct.feedback.missingKeywords = ["STRASSE X"];
   assert.deepEqual(contract.validateAnalysisResponse(distinct, { hasJobDescription: true }), distinct);
+
+  const unicode15Unassigned = copy(fixture);
+  unicode15Unassigned.feedback.matchedKeywords = ["꟱"];
+  unicode15Unassigned.feedback.missingKeywords = ["S"];
+  assert.deepEqual(contract.validateAnalysisResponse(unicode15Unassigned, { hasJobDescription: true }), unicode15Unassigned);
 });
 
 test("validates installation and public error contracts fail closed", () => {

@@ -4,10 +4,13 @@
   const unicodeCasefold = typeof module === "object" && module.exports
     ? require("./unicode_casefold.js")
     : root && root.ResumeAIUnicodeCasefold;
-  const api = factory(unicodeCasefold);
+  const unicodeNormalization = typeof module === "object" && module.exports
+    ? require("./unicode_normalization.js")
+    : root && root.ResumeAIUnicodeNormalization;
+  const api = factory(unicodeCasefold, unicodeNormalization);
   if (typeof module === "object" && module.exports) module.exports = api;
   if (root) root.ResumeAIContract = api;
-})(typeof globalThis === "object" ? globalThis : null, function createContract(unicodeCasefold) {
+})(typeof globalThis === "object" ? globalThis : null, function createContract(unicodeCasefold, unicodeNormalization) {
   const ERROR_CODES = new Set([
     "invalid_request", "invalid_installation", "rate_limited", "request_in_progress",
     "unsupported_file", "file_too_large", "pdf_too_many_pages", "pdf_encrypted",
@@ -48,11 +51,14 @@
     return value.map(item);
   }
   function requireUnicodeCasefold() {
-    if (!unicodeCasefold || typeof unicodeCasefold.casefoldCharacter !== "function" || typeof unicodeCasefold.isPythonStripCharacter !== "function" || !Number.isInteger(unicodeCasefold.mappingCount) || unicodeCasefold.mappingCount < 1) invalid();
+    if (!unicodeCasefold || unicodeCasefold.unicodeVersion !== "15.0.0" || unicodeCasefold.mappingCount !== 1530 || typeof unicodeCasefold.casefoldCharacter !== "function" || typeof unicodeCasefold.isPythonStripCharacter !== "function") invalid();
+    if (!unicodeNormalization || unicodeNormalization.unicodeVersion !== "15.0.0" || unicodeNormalization.mappingCount !== 4928 || unicodeNormalization.assignedRangeCount !== 707 || typeof unicodeNormalization.normalizeNfkc !== "function" || typeof unicodeNormalization.isUnicode15Assigned !== "function") invalid();
   }
   function normalizedTerm(value) {
     requireUnicodeCasefold();
-    const codePoints = Array.from(value.normalize("NFKC"));
+    const normalized = unicodeNormalization.normalizeNfkc(value);
+    if (typeof normalized !== "string") invalid();
+    const codePoints = Array.from(normalized);
     let start = 0;
     let end = codePoints.length;
     while (start < end && unicodeCasefold.isPythonStripCharacter(codePoints[start])) start += 1;
