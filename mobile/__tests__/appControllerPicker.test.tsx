@@ -8,7 +8,10 @@ import {
   type AppServices,
   useAppController,
 } from '../src/controllers/AppController';
-import type { PickedPdfForDisplay } from '../src/documents/documentSource';
+import {
+  DocumentSourceError,
+  type PickedPdfForDisplay,
+} from '../src/documents/documentSource';
 
 let mockAnalysisValue: AppControllerValue['analysis'];
 
@@ -56,10 +59,17 @@ function Probe({ capture }: Readonly<{ capture(value: AppControllerValue): void 
 async function controllerHarness(options: Readonly<{
   pickPdfForDisplay: jest.Mock<Promise<PickedPdfForDisplay | null>, []>;
   cleanupRequest?: jest.Mock;
+  cleanupAbandoned?: jest.Mock;
   cleanupTimeoutMs?: number;
   inspectOwnedFileUri?: jest.Mock;
 }>) {
   const cleanupRequest = options.cleanupRequest ?? jest.fn(async () => CLEAN);
+  const cleanupAbandoned = options.cleanupAbandoned ?? jest.fn(async () => ({
+    attempted: 0,
+    deleted: 0,
+    failed: 0,
+    refused: 0,
+  }));
   const coordinator = new AnalysisCoordinator({
     api: { analyze: jest.fn() },
     consentStore: {
@@ -67,7 +77,7 @@ async function controllerHarness(options: Readonly<{
       grant: jest.fn(async () => undefined),
     },
     tempFiles: {
-      cleanupAbandoned: jest.fn(async () => ({ attempted: 0, deleted: 0, failed: 0, refused: 0 })),
+      cleanupAbandoned,
       cleanupRequest,
     },
     pdfOwnership: {
@@ -114,6 +124,7 @@ async function controllerHarness(options: Readonly<{
   await waitFor(() => expect(value).not.toBeNull());
   return {
     coordinator,
+    cleanupAbandoned,
     cleanupRequest,
     view,
     async close() {
@@ -366,6 +377,97 @@ describe('native picker operation authority', () => {
       .resolves.toBeNull();
     expect(harness.coordinator.getState().source).toBeNull();
     expect(cleanupRequest).not.toHaveBeenCalled();
+    await harness.close();
+  });
+
+  it('blocks privacy when native staging rejects after unverified cache cleanup', async () => {
+    const stagingError = new DocumentSourceError('privacy', 'cache_cleanup_failed');
+    const pickPdfForDisplay = jest.fn()
+      .mockRejectedValueOnce(stagingError)
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(PDF_A);
+    const harness = await controllerHarness({ pickPdfForDisplay });
+
+    const controllerReceipt = harness.value.actions.pickPdfForDisplay(
+      new AbortController().signal,
+    ).catch(error => error);
+
+    await expect(controllerReceipt).resolves.toBe(stagingError);
+    expect(harness.coordinator.getState()).toMatchObject({
+      status: 'failed',
+      privacyReadiness: 'blocked',
+      source: null,
+      cleanupPending: true,
+      error: {
+        category: 'privacy',
+        message: 'Temporary resume data could not be removed safely.',
+        retryable: false,
+      },
+    });
+    await harness.value.analysis.commands.reset();
+    await harness.coordinator.handleAppState('active');
+    await expect(harness.value.actions.pickPdfForDisplay(new AbortController().signal))
+      .resolves.toBeNull();
+    await expect(harness.value.analysis.commands.selectSource({
+      kind: 'text',
+      text: 'later resume',
+    })).resolves.toEqual({ committed: false });
+    expect(harness.cleanupAbandoned).toHaveBeenCalledTimes(1);
+
+    const publicBoundary = JSON.stringify({
+      controllerReceipt: await controllerReceipt,
+      state: harness.coordinator.getState(),
+    });
+    for (const privateValue of [
+      'Private A.pdf',
+      '/app/cache',
+      REQUEST_A,
+      'later resume',
+      'lease-a',
+      'recovery-token',
+      'private native cause',
+    ]) expect(publicBoundary).not.toContain(privateValue);
+
+    await expect(harness.value.analysis.commands.recoverPrivacyCleanup()).resolves.toBe(true);
+    await expect(harness.value.analysis.commands.recoverPrivacyCleanup()).resolves.toBe(false);
+    expect(harness.cleanupAbandoned).toHaveBeenCalledTimes(2);
+
+    const foregroundPick = await harness.value.actions.pickPdfForDisplay(
+      new AbortController().signal,
+    );
+    expect(foregroundPick).toMatchObject({
+      sourceIdentity: LEASE_A,
+      displayName: 'Private A.pdf',
+    });
+    expect(harness.coordinator.getState()).toMatchObject({
+      privacyReadiness: 'ready',
+      cleanupPending: false,
+      source: { requestId: REQUEST_A, lease: LEASE_A },
+    });
+    await harness.close();
+  });
+
+  it.each([
+    ['picker cancellation', null],
+    ['validation failure', new DocumentSourceError('validation', 'picker_failed')],
+    ['other privacy failure', new DocumentSourceError('privacy', 'provider_cleanup_failed')],
+  ] as const)('%s does not invent abandoned-cleanup recovery', async (_label, outcome) => {
+    const pickPdfForDisplay = outcome === null
+      ? jest.fn(async () => null)
+      : jest.fn(async () => { throw outcome; });
+    const harness = await controllerHarness({ pickPdfForDisplay });
+
+    const pick = harness.value.actions.pickPdfForDisplay(new AbortController().signal);
+    if (outcome === null) await expect(pick).resolves.toBeNull();
+    else await expect(pick).rejects.toBe(outcome);
+
+    expect(harness.coordinator.getState()).toMatchObject({
+      privacyReadiness: 'ready',
+      cleanupPending: false,
+    });
+    await expect(harness.value.analysis.commands.recoverPrivacyCleanup()).resolves.toBe(false);
+    expect(harness.cleanupAbandoned).toHaveBeenCalledTimes(1);
+    expect(harness.cleanupRequest).not.toHaveBeenCalled();
     await harness.close();
   });
 });

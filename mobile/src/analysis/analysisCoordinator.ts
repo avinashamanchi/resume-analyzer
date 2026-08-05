@@ -60,6 +60,10 @@ export type AnalysisCoordinatorOptions = Readonly<{
 
 export type AnalysisCommands = Readonly<{
   beginPdfPick(signal: AbortSignal): PdfPickAuthority;
+  failPdfPick(
+    authority: PdfPickAuthority,
+    failure: 'abandoned_cleanup_required',
+  ): Promise<void>;
   completePdfPick(
     authority: PdfPickAuthority,
     source: PdfSource | null,
@@ -274,10 +278,17 @@ export class AnalysisCoordinator {
   private readonly pickerCleanupFailures = new Map<TempFileLease, PdfClaim>();
   private readonly cleanupOperations = new Map<TempFileLease, Promise<boolean>>();
   private readonly preReadyPdfCleanupOperations = new Set<Promise<boolean>>();
+  private readonly issuedPdfPickAuthorities = new Set<PdfPickAuthority>();
+  private abandonedCleanupRequired = false;
+  private privacyRecovery: Promise<boolean> | null = null;
   private pendingPdfPick: PendingPdfPick | null = null;
 
   readonly commands: AnalysisCommands = Object.freeze({
     beginPdfPick: (signal: AbortSignal) => this.beginPdfPick(signal),
+    failPdfPick: (
+      authority: PdfPickAuthority,
+      failure: 'abandoned_cleanup_required',
+    ) => this.failPdfPick(authority, failure),
     completePdfPick: (authority: PdfPickAuthority, source: PdfSource | null) =>
       this.completePdfPick(authority, source),
     selectSource: (source: ResumeSource) => {
@@ -538,6 +549,7 @@ export class AnalysisCoordinator {
       signal,
       onAbort,
     };
+    this.issuedPdfPickAuthorities.add(authority);
     this.pendingPdfPick = operation;
     signal.addEventListener('abort', onAbort, { once: true });
     if (signal.aborted) onAbort();
@@ -565,6 +577,7 @@ export class AnalysisCoordinator {
     authority: PdfPickAuthority,
     source: PdfSource | null,
   ): Promise<SourceSelectionReceipt> {
+    this.issuedPdfPickAuthorities.delete(authority);
     if (source === null) {
       if (this.pendingPdfPick?.authority === authority) this.releasePendingPdfPick();
       return { committed: false };
@@ -585,6 +598,20 @@ export class AnalysisCoordinator {
     return receipt;
   }
 
+  private async failPdfPick(
+    authority: PdfPickAuthority,
+    failure: 'abandoned_cleanup_required',
+  ): Promise<void> {
+    if (
+      !this.mounted ||
+      failure !== 'abandoned_cleanup_required' ||
+      !this.issuedPdfPickAuthorities.delete(authority)
+    ) return;
+    if (this.pendingPdfPick?.authority === authority) this.releasePendingPdfPick();
+    this.abandonedCleanupRequired = true;
+    this.blockPrivacy();
+  }
+
   private blockPrivacy(): void {
     if (!this.mounted) return;
     this.releasePendingPdfPick();
@@ -595,22 +622,50 @@ export class AnalysisCoordinator {
     this.dispatch({ type: 'privacyBlocked', generation: this.generation, error: privacyError() });
   }
 
-  private async recoverPrivacyCleanup(): Promise<boolean> {
+  private recoverPrivacyCleanup(): Promise<boolean> {
+    if (this.privacyRecovery !== null) return this.privacyRecovery;
+    const operation = this.performPrivacyCleanupRecovery();
+    this.privacyRecovery = operation;
+    void operation.finally(() => {
+      if (this.privacyRecovery === operation) this.privacyRecovery = null;
+    }).catch(() => undefined);
+    return operation;
+  }
+
+  private async performPrivacyCleanupRecovery(): Promise<boolean> {
     if (
       !this.mounted ||
       this.state.privacyReadiness !== 'blocked' ||
       !this.state.cleanupPending ||
-      this.pickerCleanupFailures.size === 0
+      (
+        !this.abandonedCleanupRequired &&
+        this.pickerCleanupFailures.size === 0 &&
+        this.cleanupFailures.size === 0
+      )
     ) return false;
     await this.mutationTail;
     if (!this.mounted || this.state.privacyReadiness !== 'blocked') return false;
-    const failedClaims = [...this.pickerCleanupFailures.values()];
-    if (failedClaims.length === 0) return false;
-    for (const claim of failedClaims) {
-      if (!(await this.cleanupClaim(claim))) return false;
+    const failedClaims = new Map<TempFileLease, PdfClaim>();
+    for (const claim of this.pickerCleanupFailures.values()) {
+      failedClaims.set(claim.lease, claim);
+    }
+    for (const claim of this.pdfClaims.values()) {
+      if (this.cleanupFailures.has(claim.lease)) failedClaims.set(claim.lease, claim);
+    }
+    for (const claim of failedClaims.values()) {
+      await this.cleanupClaim(claim);
+    }
+    if (this.abandonedCleanupRequired) {
+      try {
+        const receipt = await this.boundedCleanup(() => this.tempFiles.cleanupAbandoned());
+        if (isVerifiedCleanupReceipt(receipt)) this.abandonedCleanupRequired = false;
+      } catch {
+        // The opaque obligation remains until fenced cleanup returns exact proof.
+      }
     }
     if (
       !this.mounted ||
+      this.abandonedCleanupRequired ||
       this.pickerCleanupFailures.size > 0 ||
       this.cleanupFailures.size > 0
     ) return false;
@@ -1228,6 +1283,7 @@ export class AnalysisCoordinator {
   private async performDisposal(): Promise<void> {
     this.releasePendingPdfPick();
     const active = this.active;
+    const privacyRecovery = this.privacyRecovery;
     this.mounted = false;
     this.generation += 1;
     this.sourceRevision += 1;
@@ -1235,11 +1291,21 @@ export class AnalysisCoordinator {
     active?.controller.abort();
     await this.mutationTail;
     if (active !== null) await active.promise;
+    if (privacyRecovery !== null) await privacyRecovery;
     if (this.initialization !== null) await this.initialization;
     await this.cleanupAllOwned(true);
+    if (this.abandonedCleanupRequired) {
+      try {
+        const receipt = await this.boundedCleanup(() => this.tempFiles.cleanupAbandoned());
+        if (isVerifiedCleanupReceipt(receipt)) this.abandonedCleanupRequired = false;
+      } catch {
+        // Disposal remains bounded and cannot claim deletion without exact proof.
+      }
+    }
     this.active = null;
     this.listeners.clear();
     this.committedPdfClaim = null;
+    this.issuedPdfPickAuthorities.clear();
     this.state = {
       ...createInitialAnalysisState(),
       privacyReadiness: this.state.privacyReadiness,

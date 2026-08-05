@@ -13,7 +13,10 @@ import { useAnalysis } from '../analysis/AnalysisProvider';
 import type { AnalysisCommands } from '../analysis/analysisCoordinator';
 import type { AnalysisState } from '../analysis/analysisReducer';
 import type { AnalysisResponse } from '../domain/contracts';
-import type { PickedPdfForDisplay } from '../documents/documentSource';
+import {
+  DocumentSourceError,
+  type PickedPdfForDisplay,
+} from '../documents/documentSource';
 import type { AbandonedCleanupReceipt } from '../documents/tempFileRegistry';
 import { useReportData } from '../storage/DataProvider';
 import type { DeleteReceipt, ReportRecord } from '../storage/reportRepository';
@@ -204,7 +207,15 @@ export function AppControllerRoot({
       try {
         picked = await services.documents.pickPdfForDisplay();
       } catch (error) {
-        await analysis.commands.completePdfPick(authority, null);
+        if (
+          error instanceof DocumentSourceError &&
+          error.category === 'privacy' &&
+          error.code === 'cache_cleanup_failed'
+        ) {
+          await analysis.commands.failPdfPick(authority, 'abandoned_cleanup_required');
+        } else {
+          await analysis.commands.completePdfPick(authority, null);
+        }
         throw error;
       }
       const receipt = await analysis.commands.completePdfPick(authority, picked?.source ?? null);
