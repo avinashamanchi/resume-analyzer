@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import unicodedata
 from typing import Annotated, Literal
 from uuid import UUID
 
@@ -17,6 +18,18 @@ from .errors import ErrorCode
 
 ShortText = Annotated[str, StringConstraints(min_length=1, max_length=240)]
 FeedbackText = Annotated[str, StringConstraints(min_length=1, max_length=600)]
+SimulatedRecruiterComment = Annotated[
+    str,
+    StringConstraints(
+        min_length=1,
+        max_length=800,
+        pattern=r"^Simulated AI recruiter feedback:",
+    ),
+]
+
+
+def _normalized_keyword(value: str) -> str:
+    return unicodedata.normalize("NFKC", value).strip().casefold()
 
 
 class StrictContract(BaseModel):
@@ -65,9 +78,15 @@ class FeedbackV1(StrictContract):
     improvements: list[FeedbackText] = Field(min_length=1, max_length=12)
     powerBullets: list[FeedbackText] = Field(max_length=10)
     summary: Annotated[str, StringConstraints(min_length=1, max_length=500)]
-    simulatedRecruiterComment: Annotated[
-        str, StringConstraints(min_length=1, max_length=800)
-    ]
+    simulatedRecruiterComment: SimulatedRecruiterComment
+
+    @model_validator(mode="after")
+    def has_consistent_keyword_lists(self) -> FeedbackV1:
+        matched = {_normalized_keyword(value) for value in self.matchedKeywords}
+        missing = {_normalized_keyword(value) for value in self.missingKeywords}
+        if matched & missing:
+            raise ValueError("matchedKeywords and missingKeywords must not overlap")
+        return self
 
 
 class AnalysisResponseV1(StrictContract):

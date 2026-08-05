@@ -19,7 +19,7 @@ def test_analysis_fixture_is_strict():
     analysis = AnalysisResponseV1.model_validate(valid)
     assert analysis.schemaVersion == 1
     assert analysis.feedback.simulatedRecruiterComment.startswith(
-        "Simulated recruiter commentary:"
+        "Simulated AI recruiter feedback:"
     )
 
     invalid = fixture("analysis-invalid-extra-key.json")
@@ -32,6 +32,16 @@ def test_feedback_contract_rejects_legacy_verdict_field():
     feedback = payload["feedback"]
     assert isinstance(feedback, dict)
     feedback["verdict"] = feedback.pop("simulatedRecruiterComment")
+
+    with pytest.raises(ValidationError):
+        AnalysisResponseV1.model_validate(payload)
+
+
+def test_feedback_contract_rejects_unlabeled_simulated_recruiter_comment():
+    payload = fixture("analysis-valid.json")
+    feedback = payload["feedback"]
+    assert isinstance(feedback, dict)
+    feedback["simulatedRecruiterComment"] = "A recruiter may want more detail."
 
     with pytest.raises(ValidationError):
         AnalysisResponseV1.model_validate(payload)

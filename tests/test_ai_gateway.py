@@ -90,8 +90,9 @@ def test_prompt_delimits_untrusted_resume_and_ignores_embedded_instructions():
         "<job_description_data>\nNot provided.\n</job_description_data>"
     )
     assert feedback.simulatedRecruiterComment.startswith(
-        "Simulated recruiter commentary:"
+        "Simulated AI recruiter feedback:"
     )
+    assert "Simulated AI recruiter feedback:" in messages[0]["content"]
 
 
 def test_unknown_model_output_fails_closed():
@@ -101,6 +102,77 @@ def test_unknown_model_output_fails_closed():
         gateway(FakeGroqClient(payload)).analyze("resume", None, 10.0)
 
     assert caught.value.code is ErrorCode.INVALID_AI_RESPONSE
+
+
+@pytest.mark.parametrize(
+    ("matched_keyword", "missing_keyword"),
+    [
+        pytest.param("PyThOn", "  python  ", id="mixed-case-and-whitespace"),
+        pytest.param("Ｐｙｔｈｏｎ", "python", id="unicode-nfkc"),
+        pytest.param("Straße", "  STRASSE ", id="unicode-casefold"),
+    ],
+)
+def test_contradictory_keyword_lists_fail_closed_without_exposing_term(
+    matched_keyword: str,
+    missing_keyword: str,
+):
+    payload = feedback_fixture() | {
+        "matchedKeywords": [matched_keyword],
+        "missingKeywords": [missing_keyword],
+    }
+
+    with pytest.raises(PublicServiceError) as caught:
+        gateway(FakeGroqClient(payload)).analyze("resume", None, 10.0)
+
+    assert caught.value.code is ErrorCode.INVALID_AI_RESPONSE
+    assert caught.value.retryable is False
+    assert matched_keyword not in str(caught.value)
+    assert missing_keyword not in str(caught.value)
+    assert caught.value.__context__ is None
+
+
+def test_duplicate_required_json_member_fails_closed():
+    content = json.dumps(feedback_fixture()).replace(
+        '"summary":',
+        '"summary": "duplicate value", "summary":',
+        1,
+    )
+
+    with pytest.raises(PublicServiceError) as caught:
+        gateway(FakeGroqClient(content=content)).analyze("resume", None, 10.0)
+
+    assert caught.value.code is ErrorCode.INVALID_AI_RESPONSE
+    assert caught.value.retryable is False
+    assert "duplicate value" not in str(caught.value)
+    assert caught.value.__context__ is None
+
+
+def test_duplicate_unknown_json_member_fails_closed():
+    content = '{"unknown": "first", "unknown": "second",' + json.dumps(
+        feedback_fixture()
+    )[1:]
+
+    with pytest.raises(PublicServiceError) as caught:
+        gateway(FakeGroqClient(content=content)).analyze("resume", None, 10.0)
+
+    assert caught.value.code is ErrorCode.INVALID_AI_RESPONSE
+    assert caught.value.retryable is False
+    assert "first" not in str(caught.value)
+    assert "second" not in str(caught.value)
+    assert caught.value.__context__ is None
+
+
+def test_unlabeled_simulated_recruiter_comment_fails_closed():
+    payload = feedback_fixture() | {
+        "simulatedRecruiterComment": "A recruiter may want more outcome metrics."
+    }
+
+    with pytest.raises(PublicServiceError) as caught:
+        gateway(FakeGroqClient(payload)).analyze("resume", None, 10.0)
+
+    assert caught.value.code is ErrorCode.INVALID_AI_RESPONSE
+    assert caught.value.retryable is False
+    assert caught.value.__context__ is None
 
 
 def test_server_configured_model_and_deadline_are_used_for_provider_call():
@@ -171,6 +243,7 @@ def invalid_feedback_variants() -> list[object]:
         ),
         pytest.param(valid | {"score": 100}, id="score-field"),
         pytest.param("```json\n{}\n```", id="markdown"),
+        pytest.param("[]", id="top-level-array"),
         pytest.param("x" * 300_001, id="raw-response-size"),
         pytest.param(None, id="missing-content"),
     ]
