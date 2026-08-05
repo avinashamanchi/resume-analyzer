@@ -584,7 +584,7 @@ describe('review fixes: live single-use PDF ownership', () => {
     expect(api.analyze).not.toHaveBeenCalled();
   });
 
-  it('permanently rejects a stale PDF source after its cleanup completed', async () => {
+  it('rejects a stale PDF source through live inspection after its cleanup completed', async () => {
     const ownership = pdfOwnership();
     const cleanupRequest = jest.fn(async (requestId: string) => {
       ownership.markMissing(requestId);
@@ -605,6 +605,41 @@ describe('review fixes: live single-use PDF ownership', () => {
       status: 'ready',
       source: { kind: 'pdf', requestId: REQUEST_A },
     });
+    expect(api.analyze).not.toHaveBeenCalled();
+  });
+
+  it('releases each claim so live inspection, not accumulated tombstones, rejects stale PDFs', async () => {
+    const ownership = pdfOwnership();
+    const cleanupRequest = jest.fn(async (requestId: string) => {
+      ownership.markMissing(requestId);
+      return { attempted: 1, deleted: 1, failed: 0, refused: 0 };
+    });
+    const { api, coordinator } = harness({
+      pdfOwnership: ownership,
+      tempFiles: { cleanupAbandoned: jest.fn(async () => CLEAN), cleanupRequest },
+    });
+    await coordinator.initialize();
+
+    const requestCount = 32;
+    for (let index = 1; index <= requestCount; index += 1) {
+      const requestId = `${index.toString(16).padStart(8, '0')}-aaaa-4aaa-8aaa-${index
+        .toString(16)
+        .padStart(12, '0')}`;
+      const source = pdfSource(requestId);
+      await coordinator.commands.selectSource(source);
+      expect(coordinator.getState().source).toMatchObject({ kind: 'pdf', requestId });
+
+      await coordinator.commands.reset();
+      const inspectionsBeforeStaleReuse = ownership.inspectOwnedFileUri.mock.calls.length;
+      await coordinator.commands.selectSource(source);
+
+      expect(ownership.inspectOwnedFileUri).toHaveBeenCalledTimes(inspectionsBeforeStaleReuse + 1);
+      expect(coordinator.getState().source).toBeNull();
+    }
+
+    expect(ownership.inspectOwnedFileUri).toHaveBeenCalledTimes(requestCount * 2);
+    expect(cleanupRequest).toHaveBeenCalledTimes(requestCount * 2);
+    await coordinator.commands.analyze();
     expect(api.analyze).not.toHaveBeenCalled();
   });
 });
@@ -658,6 +693,101 @@ describe('analysis startup and consent barriers', () => {
     expect(cleanupRequest).toHaveBeenCalledWith(REQUEST_A);
     expect(coordinator.getState().source).toBeNull();
     expect(api.analyze).not.toHaveBeenCalled();
+  });
+
+  it.each(['initialization-first', 'rejection-first'] as const)(
+    'blocks privacy when early PDF cleanup fails in %s settlement order',
+    async settlementOrder => {
+      const recovery = deferred<CleanupReceipt>();
+      const rejection = deferred<CleanupReceipt>();
+      const { api, coordinator } = harness({
+        tempFiles: {
+          cleanupAbandoned: jest.fn(() => recovery.promise),
+          cleanupRequest: jest.fn(() => rejection.promise),
+        },
+        cleanupTimeoutMs: 1_000,
+      });
+      const observedReadiness: string[] = [];
+      const unsubscribe = coordinator.subscribe(() => {
+        observedReadiness.push(coordinator.getState().privacyReadiness);
+      });
+
+      const initialization = coordinator.initialize();
+      const selection = coordinator.commands.selectSource(pdfSource());
+      if (settlementOrder === 'initialization-first') {
+        recovery.resolve(CLEAN);
+        await flushPromises();
+        expect(coordinator.getState().privacyReadiness).toBe('checking');
+        rejection.resolve({ attempted: 1, deleted: 0, failed: 1, refused: 0 });
+      } else {
+        rejection.resolve({ attempted: 1, deleted: 0, failed: 1, refused: 0 });
+        await selection;
+        recovery.resolve(CLEAN);
+      }
+      await Promise.all([initialization, selection]);
+      await coordinator.commands.selectSource(pdfSource(REQUEST_B));
+      await coordinator.commands.analyze();
+
+      expect(observedReadiness).not.toContain('ready');
+      expect(coordinator.getState()).toMatchObject({
+        privacyReadiness: 'blocked',
+        status: 'failed',
+        source: null,
+        cleanupPending: true,
+        error: { category: 'privacy' },
+      });
+      expect(api.analyze).not.toHaveBeenCalled();
+      unsubscribe();
+    },
+  );
+
+  it('blocks privacy after early PDF cleanup times out and ignores its late settlement', async () => {
+    jest.useFakeTimers();
+    try {
+      const recovery = deferred<CleanupReceipt>();
+      const lateCleanup = deferred<CleanupReceipt>();
+      const cleanupRequest = jest.fn((requestId: string) => requestId === REQUEST_A
+        ? lateCleanup.promise
+        : Promise.resolve(CLEAN));
+      const { api, coordinator } = harness({
+        tempFiles: { cleanupAbandoned: jest.fn(() => recovery.promise), cleanupRequest },
+        cleanupTimeoutMs: 50,
+      });
+      const observedReadiness: string[] = [];
+      coordinator.subscribe(() => {
+        observedReadiness.push(coordinator.getState().privacyReadiness);
+      });
+
+      const initialization = coordinator.initialize();
+      const selection = coordinator.commands.selectSource(pdfSource());
+      recovery.resolve(CLEAN);
+      await flushPromises();
+      expect(coordinator.getState().privacyReadiness).toBe('checking');
+
+      jest.advanceTimersByTime(51);
+      await flushPromises(12);
+      await Promise.all([initialization, selection]);
+      expect(coordinator.getState()).toMatchObject({
+        privacyReadiness: 'blocked',
+        cleanupPending: true,
+        error: { category: 'privacy' },
+      });
+
+      lateCleanup.resolve(CLEAN);
+      await flushPromises();
+      await coordinator.commands.selectSource(pdfSource(REQUEST_B));
+      await coordinator.commands.analyze();
+
+      expect(observedReadiness).not.toContain('ready');
+      expect(coordinator.getState()).toMatchObject({
+        privacyReadiness: 'blocked',
+        source: null,
+        cleanupPending: true,
+      });
+      expect(api.analyze).not.toHaveBeenCalled();
+    } finally {
+      jest.useRealTimers();
+    }
   });
 
   it.each([

@@ -220,10 +220,10 @@ export class AnalysisCoordinator {
   private nextPdfClaimEpoch = 0;
   private committedPdfClaim: PdfClaim | null = null;
   private readonly pdfClaims = new Map<string, PdfClaim>();
-  private readonly retiredPdfRequestIds = new Set<string>();
   private readonly ownedPdfRequestIds = new Set<string>();
   private readonly cleanupFailures = new Set<string>();
   private readonly cleanupOperations = new Map<string, Promise<boolean>>();
+  private readonly preReadyPdfCleanupOperations = new Set<Promise<boolean>>();
 
   readonly commands: AnalysisCommands = Object.freeze({
     selectSource: (source: ResumeSource) => this.selectSource(source),
@@ -269,6 +269,11 @@ export class AnalysisCoordinator {
     } catch {
       ready = false;
     }
+    while (this.preReadyPdfCleanupOperations.size > 0) {
+      const results = await Promise.all([...this.preReadyPdfCleanupOperations]);
+      if (results.some(clean => !clean)) ready = false;
+    }
+    if (this.cleanupFailures.size > 0) ready = false;
     if (!this.mounted) return;
     this.dispatch(ready
       ? { type: 'initializationReady' }
@@ -354,7 +359,6 @@ export class AnalysisCoordinator {
     return current !== undefined &&
       current.epoch === claim.epoch &&
       current.uri === claim.uri &&
-      !this.retiredPdfRequestIds.has(claim.requestId) &&
       this.ownedPdfRequestIds.has(claim.requestId);
   }
 
@@ -377,7 +381,6 @@ export class AnalysisCoordinator {
         ) return { source: null, claimedRequestId: null, newlyClaimed: false, claim: null };
 
         if (
-          this.retiredPdfRequestIds.has(asserted.requestId) ||
           this.ownedPdfRequestIds.has(asserted.requestId) ||
           this.cleanupOperations.has(asserted.requestId)
         ) {
@@ -445,8 +448,13 @@ export class AnalysisCoordinator {
 
   private rejectPdfBeforePrivacyReady(prepared: PreparedSource): Promise<void> {
     if (prepared.claimedRequestId === null || !prepared.newlyClaimed) return Promise.resolve();
-    return this.cleanupRequest(prepared.claimedRequestId).then(clean => {
-      if (!clean && this.mounted && this.state.privacyReadiness === 'checking') {
+    const cleanup = this.cleanupRequest(prepared.claimedRequestId);
+    this.preReadyPdfCleanupOperations.add(cleanup);
+    void cleanup.finally(() => {
+      this.preReadyPdfCleanupOperations.delete(cleanup);
+    }).catch(() => undefined);
+    return cleanup.then(clean => {
+      if (!clean && this.mounted) {
         this.dispatch({ type: 'initializationFailed', error: privacyError() });
       }
     });
@@ -1049,7 +1057,6 @@ export class AnalysisCoordinator {
       }
       this.cleanupFailures.delete(requestId);
       this.ownedPdfRequestIds.delete(requestId);
-      this.retiredPdfRequestIds.add(requestId);
       return true;
     } catch {
       this.cleanupFailures.add(requestId);
