@@ -1211,7 +1211,7 @@ git commit -m "feat: build Resume.AI native analysis experience"
 
 ```ts
 it('escapes every AI-controlled value before Print receives HTML', async () => {
-  const report = fixtureReport({ feedback: { verdict: '<img src=x onerror=alert(1)>' } })
+  const report = fixtureReport({ feedback: { summary: '<img src=x onerror=alert(1)>' } })
   await exporter.export(report)
   const html = Print.printToFileAsync.mock.calls[0][0].html
   expect(html).toContain('&lt;img')
