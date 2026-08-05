@@ -1,0 +1,57 @@
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+import pytest
+from pydantic import ValidationError
+
+from server.contracts import AnalysisResponseV1, PublicErrorV1
+from server.errors import ErrorCode
+
+
+def fixture(name: str) -> dict[str, object]:
+    return json.loads(Path("contracts/fixtures", name).read_text())
+
+
+def test_analysis_fixture_is_strict():
+    valid = fixture("analysis-valid.json")
+    assert AnalysisResponseV1.model_validate(valid).schemaVersion == 1
+
+    invalid = fixture("analysis-invalid-extra-key.json")
+    with pytest.raises(ValidationError):
+        AnalysisResponseV1.model_validate(invalid)
+
+
+def test_analysis_contract_rejects_noncanonical_score_label():
+    payload = fixture("analysis-valid.json")
+    payload["score"] = {**payload["score"], "label": "Needs work"}
+
+    with pytest.raises(ValidationError, match="label must match readinessScore"):
+        AnalysisResponseV1.model_validate(payload)
+
+
+def test_public_error_uses_a_stable_code_and_no_unknown_fields():
+    error = PublicErrorV1(
+        schemaVersion=1,
+        code=ErrorCode.AI_TIMEOUT,
+        message="The feedback service timed out. Please try again.",
+        requestId="b3a8b258-4e63-4a7c-b9d4-b77a69d4da6a",
+        retryable=True,
+    )
+
+    assert error.code == "ai_timeout"
+    with pytest.raises(ValidationError):
+        PublicErrorV1.model_validate(error.model_dump() | {"providerMessage": "secret"})
+
+
+def test_public_error_validates_a_wire_format_error_code():
+    payload = {
+        "schemaVersion": 1,
+        "code": "ai_timeout",
+        "message": "The feedback service timed out. Please try again.",
+        "requestId": "b3a8b258-4e63-4a7c-b9d4-b77a69d4da6a",
+        "retryable": True,
+    }
+
+    assert PublicErrorV1.model_validate(payload).code is ErrorCode.AI_TIMEOUT

@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://resume.ai/contracts/error-v1.schema.json",
+  "title": "Resume.AI public error v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "code", "message", "requestId", "retryable"],
+  "properties": {
+    "schemaVersion": {"const": 1},
+    "code": {
+      "enum": [
+        "invalid_request",
+        "invalid_installation",
+        "rate_limited",
+        "request_in_progress",
+        "unsupported_file",
+        "file_too_large",
+        "pdf_too_many_pages",
+        "pdf_encrypted",
+        "pdf_invalid",
+        "pdf_timeout",
+        "scan_required",
+        "resume_too_long",
+        "ai_timeout",
+        "ai_unavailable",
+        "invalid_ai_response",
+        "service_misconfigured",
+        "service_unavailable"
+      ]
+    },
+    "message": {"type": "string", "minLength": 1, "maxLength": 240},
+    "requestId": {"type": "string", "format": "uuid"},
+    "retryable": {"type": "boolean"}
+  }
+}
