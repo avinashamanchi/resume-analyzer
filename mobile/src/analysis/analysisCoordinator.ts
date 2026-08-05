@@ -10,7 +10,7 @@ import {
   MAX_RESUME_CODE_POINTS,
   trimPythonWhitespace,
 } from '../domain/limits';
-import type { ResumeSource } from '../documents/documentSource';
+import type { PdfSource, ResumeSource } from '../documents/documentSource';
 import type { CleanupReceipt, TempFileLease } from '../documents/tempFileRegistry';
 import {
   analysisReducer,
@@ -59,6 +59,11 @@ export type AnalysisCoordinatorOptions = Readonly<{
 }>;
 
 export type AnalysisCommands = Readonly<{
+  beginPdfPick(signal: AbortSignal): PdfPickAuthority;
+  completePdfPick(
+    authority: PdfPickAuthority,
+    source: PdfSource | null,
+  ): Promise<SourceSelectionReceipt>;
   selectSource(source: ResumeSource): Promise<SourceSelectionReceipt>;
   setJobDescription(value: string): Promise<JobDescriptionCommitReceipt>;
   analyze(): Promise<void>;
@@ -66,7 +71,10 @@ export type AnalysisCommands = Readonly<{
   declineConsent(): Promise<void>;
   cancel(): Promise<void>;
   reset(): Promise<void>;
+  recoverPrivacyCleanup(): Promise<boolean>;
 }>;
+
+export type PdfPickAuthority = symbol;
 
 export type SourceSelectionReceipt =
   | Readonly<{ committed: false }>
@@ -112,6 +120,14 @@ type PreparedSource = Readonly<{
 type MutationContext = Readonly<{
   generation: number;
   previousActivation: Activation | null;
+}>;
+
+type PendingPdfPick = Readonly<{
+  authority: PdfPickAuthority;
+  lifecycleEpoch: number;
+  generation: number;
+  signal: AbortSignal;
+  onAbort: () => void;
 }>;
 
 class CoordinatorAbort extends Error {}
@@ -255,17 +271,47 @@ export class AnalysisCoordinator {
   private readonly pdfClaims = new Map<string, PdfClaim>();
   private readonly ownedPdfRequestIds = new Set<string>();
   private readonly cleanupFailures = new Set<TempFileLease>();
+  private readonly pickerCleanupFailures = new Map<TempFileLease, PdfClaim>();
   private readonly cleanupOperations = new Map<TempFileLease, Promise<boolean>>();
   private readonly preReadyPdfCleanupOperations = new Set<Promise<boolean>>();
+  private pendingPdfPick: PendingPdfPick | null = null;
 
   readonly commands: AnalysisCommands = Object.freeze({
-    selectSource: (source: ResumeSource) => this.selectSource(source),
-    setJobDescription: (value: string) => this.setJobDescription(value),
-    analyze: () => this.analyze(),
-    grantConsent: () => this.grantConsent(),
-    declineConsent: () => this.declineConsent(),
-    cancel: () => this.cancel(),
-    reset: () => this.reset(),
+    beginPdfPick: (signal: AbortSignal) => this.beginPdfPick(signal),
+    completePdfPick: (authority: PdfPickAuthority, source: PdfSource | null) =>
+      this.completePdfPick(authority, source),
+    selectSource: (source: ResumeSource) => {
+      this.releasePendingPdfPick();
+      return this.selectSource(source);
+    },
+    setJobDescription: (value: string) => {
+      this.releasePendingPdfPick();
+      return this.setJobDescription(value);
+    },
+    analyze: () => {
+      this.releasePendingPdfPick();
+      return this.analyze();
+    },
+    grantConsent: () => {
+      this.releasePendingPdfPick();
+      return this.grantConsent();
+    },
+    declineConsent: () => {
+      this.releasePendingPdfPick();
+      return this.declineConsent();
+    },
+    cancel: () => {
+      this.releasePendingPdfPick();
+      return this.cancel();
+    },
+    reset: () => {
+      this.releasePendingPdfPick();
+      return this.reset();
+    },
+    recoverPrivacyCleanup: () => {
+      this.releasePendingPdfPick();
+      return this.recoverPrivacyCleanup();
+    },
   });
 
   constructor(options: AnalysisCoordinatorOptions) {
@@ -396,7 +442,10 @@ export class AnalysisCoordinator {
       this.ownedPdfRequestIds.has(claim.requestId);
   }
 
-  private prepareIncomingSource(source: unknown): PreparedSource {
+  private prepareIncomingSource(
+    source: unknown,
+    purpose: 'adopt' | 'discard' = 'adopt',
+  ): PreparedSource {
     if (source !== null && typeof source === 'object' && !Array.isArray(source)) {
       const candidate = source as Record<string, unknown>;
       if (candidate.kind === 'pdf') {
@@ -418,17 +467,22 @@ export class AnalysisCoordinator {
           typeof asserted.uri !== 'string'
         ) return { source: null, claimedRequestId: null, newlyClaimed: false, claim: null };
 
-        if (this.ownedPdfRequestIds.has(asserted.requestId)) {
-          return { source: null, claimedRequestId: null, newlyClaimed: false, claim: null };
-        }
+        const existingClaim = this.pdfClaims.get(asserted.requestId);
+        const collidesWithOwnedRequest = this.ownedPdfRequestIds.has(asserted.requestId);
+        if (
+          collidesWithOwnedRequest &&
+          (purpose !== 'discard' || existingClaim?.lease === candidate.lease)
+        ) return { source: null, claimedRequestId: null, newlyClaimed: false, claim: null };
         const claim = Object.freeze({
           requestId: asserted.requestId,
           uri: asserted.uri,
           lease: candidate.lease,
           epoch: ++this.nextPdfClaimEpoch,
         });
-        this.ownedPdfRequestIds.add(asserted.requestId);
-        this.pdfClaims.set(asserted.requestId, claim);
+        if (!collidesWithOwnedRequest) {
+          this.ownedPdfRequestIds.add(asserted.requestId);
+          this.pdfClaims.set(asserted.requestId, claim);
+        }
         const sizeIsValid = typeof candidate.size === 'number' &&
           Number.isSafeInteger(candidate.size) &&
           candidate.size > 0 &&
@@ -465,6 +519,104 @@ export class AnalysisCoordinator {
       newlyClaimed: false,
       claim: null,
     };
+  }
+
+  private beginPdfPick(signal: AbortSignal): PdfPickAuthority {
+    this.releasePendingPdfPick();
+    if (this.state.mutation === 'selecting') void this.reset();
+    const authority = Symbol('pdf-pick-authority');
+    const onAbort = () => {
+      const operation = this.pendingPdfPick;
+      if (operation?.authority !== authority) return;
+      this.releasePendingPdfPick(operation);
+      if (this.state.mutation === 'selecting') void this.reset();
+    };
+    const operation: PendingPdfPick = {
+      authority,
+      lifecycleEpoch: this.lifecycleEpoch,
+      generation: this.generation,
+      signal,
+      onAbort,
+    };
+    this.pendingPdfPick = operation;
+    signal.addEventListener('abort', onAbort, { once: true });
+    if (signal.aborted) onAbort();
+    return authority;
+  }
+
+  private releasePendingPdfPick(operation = this.pendingPdfPick): void {
+    if (operation === null) return;
+    operation.signal.removeEventListener('abort', operation.onAbort);
+    if (this.pendingPdfPick === operation) this.pendingPdfPick = null;
+  }
+
+  private pdfPickIsCurrent(authority: PdfPickAuthority): boolean {
+    const operation = this.pendingPdfPick;
+    return this.mounted &&
+      operation !== null &&
+      operation.authority === authority &&
+      !operation.signal.aborted &&
+      operation.lifecycleEpoch === this.lifecycleEpoch &&
+      operation.generation === this.generation &&
+      this.state.privacyReadiness === 'ready';
+  }
+
+  private async completePdfPick(
+    authority: PdfPickAuthority,
+    source: PdfSource | null,
+  ): Promise<SourceSelectionReceipt> {
+    if (source === null) {
+      if (this.pendingPdfPick?.authority === authority) this.releasePendingPdfPick();
+      return { committed: false };
+    }
+    if (!this.pdfPickIsCurrent(authority)) {
+      const discarded = this.prepareIncomingSource(source, 'discard');
+      if (discarded.claim !== null && discarded.newlyClaimed) {
+        const cleaned = await this.cleanupClaim(discarded.claim);
+        if (!cleaned) {
+          this.pickerCleanupFailures.set(discarded.claim.lease, discarded.claim);
+          this.blockPrivacy();
+        }
+      }
+      return { committed: false };
+    }
+    const receipt = await this.selectSource(source);
+    if (this.pendingPdfPick?.authority === authority) this.releasePendingPdfPick();
+    return receipt;
+  }
+
+  private blockPrivacy(): void {
+    if (!this.mounted) return;
+    this.releasePendingPdfPick();
+    this.active?.controller.abort();
+    this.generation += 1;
+    this.sourceRevision += 1;
+    this.consentContinuation = null;
+    this.dispatch({ type: 'privacyBlocked', generation: this.generation, error: privacyError() });
+  }
+
+  private async recoverPrivacyCleanup(): Promise<boolean> {
+    if (
+      !this.mounted ||
+      this.state.privacyReadiness !== 'blocked' ||
+      !this.state.cleanupPending ||
+      this.pickerCleanupFailures.size === 0
+    ) return false;
+    await this.mutationTail;
+    if (!this.mounted || this.state.privacyReadiness !== 'blocked') return false;
+    const failedClaims = [...this.pickerCleanupFailures.values()];
+    if (failedClaims.length === 0) return false;
+    for (const claim of failedClaims) {
+      if (!(await this.cleanupClaim(claim))) return false;
+    }
+    if (
+      !this.mounted ||
+      this.pickerCleanupFailures.size > 0 ||
+      this.cleanupFailures.size > 0
+    ) return false;
+    this.dispatch({ type: 'privacyRecovered', generation: this.generation });
+    const recoveredState = this.getState();
+    return recoveredState.privacyReadiness === 'ready' && !recoveredState.cleanupPending;
   }
 
   private async verifyLivePdfClaim(source: ResumeSource, claim: PdfClaim | null): Promise<boolean> {
@@ -1041,6 +1193,7 @@ export class AnalysisCoordinator {
 
   async handleAppState(state: string): Promise<void> {
     if (state !== 'background' && state !== 'inactive') return;
+    this.releasePendingPdfPick();
     this.lifecycleEpoch += 1;
     this.dispatch({ type: 'lifecycleInvalidated', lifecycleEpoch: this.lifecycleEpoch });
     if (this.state.mutation === 'selecting' || this.state.mutation === 'editing') {
@@ -1073,6 +1226,7 @@ export class AnalysisCoordinator {
   }
 
   private async performDisposal(): Promise<void> {
+    this.releasePendingPdfPick();
     const active = this.active;
     this.mounted = false;
     this.generation += 1;
@@ -1082,7 +1236,7 @@ export class AnalysisCoordinator {
     await this.mutationTail;
     if (active !== null) await active.promise;
     if (this.initialization !== null) await this.initialization;
-    await this.cleanupAllOwned();
+    await this.cleanupAllOwned(true);
     this.active = null;
     this.listeners.clear();
     this.committedPdfClaim = null;
@@ -1121,9 +1275,16 @@ export class AnalysisCoordinator {
     return clean;
   }
 
-  private async cleanupAllOwned(): Promise<boolean> {
+  private async cleanupAllOwned(includePickerFailures = false): Promise<boolean> {
     let clean = true;
-    for (const claim of [...this.pdfClaims.values()]) {
+    const claims = [...this.pdfClaims.values()];
+    if (includePickerFailures) {
+      for (const claim of this.pickerCleanupFailures.values()) {
+        if (!claims.some(candidate => candidate.lease === claim.lease)) claims.push(claim);
+      }
+    }
+    for (const claim of claims) {
+      if (!includePickerFailures && this.pickerCleanupFailures.has(claim.lease)) continue;
       if (!(await this.cleanupClaim(claim))) clean = false;
     }
     return clean;
@@ -1155,6 +1316,7 @@ export class AnalysisCoordinator {
         return false;
       }
       this.cleanupFailures.delete(claim.lease);
+      this.pickerCleanupFailures.delete(claim.lease);
       const current = this.pdfClaims.get(claim.requestId);
       if (current?.lease === claim.lease && current.epoch === claim.epoch) {
         this.pdfClaims.delete(claim.requestId);

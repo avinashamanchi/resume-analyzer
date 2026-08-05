@@ -9,10 +9,12 @@ export function AnalysisStatus({
   state,
   onCancel,
   onRetry,
+  onRecoverPrivacy,
 }: Readonly<{
   state: AnalysisState;
   onCancel(): void;
   onRetry(): void;
+  onRecoverPrivacy(): void;
 }>) {
   if (state.privacyReadiness === 'checking') {
     return <Text accessibilityRole="alert" style={styles.message}>Checking private temporary storage…</Text>;
@@ -33,6 +35,11 @@ export function AnalysisStatus({
         <Text style={styles.copy}>{state.error.message}</Text>
         {state.error.retryable && state.source !== null && !state.cleanupPending ? (
           <AppButton label="Try analysis again" onPress={onRetry} tone="secondary" />
+        ) : null}
+        {state.privacyReadiness === 'blocked' &&
+        state.cleanupPending &&
+        state.privacyRecoveryAvailable ? (
+          <AppButton label="Retry private cleanup" onPress={onRecoverPrivacy} tone="secondary" />
         ) : null}
       </View>
     );

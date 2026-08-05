@@ -31,7 +31,7 @@ export type AppServices = Readonly<{
 }>;
 
 export type AppActions = Readonly<{
-  pickPdfForDisplay(): Promise<Readonly<{
+  pickPdfForDisplay(signal: AbortSignal): Promise<Readonly<{
     sourceIdentity: symbol;
     sourceGeneration: number;
     displayName: string;
@@ -198,11 +198,18 @@ export function AppControllerRoot({
   }), [deleteAll, deleteReport, error, get, load, reports, saveCurrent, status]);
 
   const actions = useMemo<AppActions>(() => ({
-    async pickPdfForDisplay() {
-      const picked = await services.documents.pickPdfForDisplay();
-      if (picked === null) return null;
-      const receipt = await analysis.commands.selectSource(picked.source);
+    async pickPdfForDisplay(signal) {
+      const authority = analysis.commands.beginPdfPick(signal);
+      let picked: PickedPdfForDisplay | null;
+      try {
+        picked = await services.documents.pickPdfForDisplay();
+      } catch (error) {
+        await analysis.commands.completePdfPick(authority, null);
+        throw error;
+      }
+      const receipt = await analysis.commands.completePdfPick(authority, picked?.source ?? null);
       if (
+        picked === null ||
         !receipt.committed ||
         receipt.sourceIdentity !== picked.source.lease
       ) return null;

@@ -41,6 +41,7 @@ export type AnalysisState = Readonly<{
   generation: number;
   activation: number | null;
   cleanupPending: boolean;
+  privacyRecoveryAvailable: boolean;
   mutation: AnalysisMutation;
   lifecycleEpoch: number;
 }>;
@@ -48,6 +49,8 @@ export type AnalysisState = Readonly<{
 export type AnalysisEvent =
   | Readonly<{ type: 'initializationReady' }>
   | Readonly<{ type: 'initializationFailed'; error: PublicAnalysisError }>
+  | Readonly<{ type: 'privacyBlocked'; generation: number; error: PublicAnalysisError }>
+  | Readonly<{ type: 'privacyRecovered'; generation: number }>
   | Readonly<{ type: 'lifecycleInvalidated'; lifecycleEpoch: number }>
   | Readonly<{ type: 'generationAdvanced'; generation: number }>
   | Readonly<{
@@ -103,6 +106,7 @@ export function createInitialAnalysisState(): AnalysisState {
     generation: 0,
     activation: null,
     cleanupPending: false,
+    privacyRecoveryAvailable: false,
     mutation: 'none',
     lifecycleEpoch: 0,
   };
@@ -130,6 +134,38 @@ export function analysisReducer(state: AnalysisState, event: AnalysisEvent): Ana
         privacyReadiness: 'blocked',
         error: event.error,
         cleanupPending: true,
+        privacyRecoveryAvailable: false,
+        mutation: 'none',
+      };
+    case 'privacyBlocked':
+      if (event.generation < state.generation) return state;
+      return {
+        ...state,
+        status: 'failed',
+        privacyReadiness: 'blocked',
+        result: null,
+        error: event.error,
+        generation: event.generation,
+        activation: null,
+        cleanupPending: true,
+        privacyRecoveryAvailable: true,
+        mutation: 'none',
+      };
+    case 'privacyRecovered':
+      if (
+        event.generation !== state.generation ||
+        state.privacyReadiness !== 'blocked' ||
+        !state.cleanupPending
+      ) return state;
+      return {
+        ...state,
+        status: state.source === null ? 'idle' : 'ready',
+        privacyReadiness: 'ready',
+        result: null,
+        error: null,
+        activation: null,
+        cleanupPending: false,
+        privacyRecoveryAvailable: false,
         mutation: 'none',
       };
     case 'lifecycleInvalidated':
@@ -148,6 +184,14 @@ export function analysisReducer(state: AnalysisState, event: AnalysisEvent): Ana
       };
     case 'mutationStarted':
       if (event.generation <= state.generation) return state;
+      if (state.privacyReadiness === 'blocked') {
+        return {
+          ...state,
+          generation: event.generation,
+          activation: null,
+          mutation: event.mutation,
+        };
+      }
       return {
         ...state,
         status: 'idle',
@@ -261,6 +305,18 @@ export function analysisReducer(state: AnalysisState, event: AnalysisEvent): Ana
       };
     case 'reset':
       if (event.generation !== state.generation || state.mutation !== 'resetting') return state;
+      if (state.privacyReadiness === 'blocked') {
+        return {
+          ...createInitialAnalysisState(),
+          status: 'failed',
+          privacyReadiness: 'blocked',
+          error: state.error,
+          generation: event.generation,
+          cleanupPending: true,
+          privacyRecoveryAvailable: state.privacyRecoveryAvailable,
+          lifecycleEpoch: state.lifecycleEpoch,
+        };
+      }
       return {
         ...createInitialAnalysisState(),
         privacyReadiness: state.privacyReadiness,

@@ -27,9 +27,11 @@ export default function AnalyzeScreen() {
   const [jobDescription, setJobDescription] = useState(state.jobDescription);
   const [localError, setLocalError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [pickerPending, setPickerPending] = useState(false);
   const priorGeneration = useRef(state.generation);
   const priorLifecycleEpoch = useRef(state.lifecycleEpoch);
   const operationEpoch = useRef(0);
+  const pickerController = useRef<AbortController | null>(null);
   const mounted = useRef(true);
 
   useEffect(() => {
@@ -37,12 +39,17 @@ export default function AnalyzeScreen() {
     return () => {
       mounted.current = false;
       operationEpoch.current += 1;
+      pickerController.current?.abort();
+      pickerController.current = null;
     };
   }, []);
 
   useEffect(() => {
     if (state.lifecycleEpoch !== priorLifecycleEpoch.current) {
       operationEpoch.current += 1;
+      pickerController.current?.abort();
+      pickerController.current = null;
+      setPickerPending(false);
       setBusy(false);
     }
     priorLifecycleEpoch.current = state.lifecycleEpoch;
@@ -50,6 +57,9 @@ export default function AnalyzeScreen() {
 
   const beginOperation = () => {
     operationEpoch.current += 1;
+    pickerController.current?.abort();
+    pickerController.current = null;
+    setPickerPending(false);
     return operationEpoch.current;
   };
 
@@ -89,7 +99,7 @@ export default function AnalyzeScreen() {
   }, [pdfDisplay, state.generation, state.mutation, state.source]);
 
   const changeMode = async (next: SourceMode) => {
-    if (next === mode || busy || state.status === 'analyzing') return;
+    if (next === mode || (busy && !pickerPending) || state.status === 'analyzing') return;
     const epoch = beginOperation();
     setBusy(true);
     setLocalError(null);
@@ -103,24 +113,31 @@ export default function AnalyzeScreen() {
   };
 
   const choosePdf = async () => {
-    if (busy) return;
+    if (state.privacyReadiness !== 'ready' || (busy && !pickerPending)) return;
     const epoch = beginOperation();
+    const controller = new AbortController();
+    pickerController.current = controller;
     setBusy(true);
+    setPickerPending(true);
     setLocalError(null);
     try {
-      const picked = await actions.pickPdfForDisplay();
+      const picked = await actions.pickPdfForDisplay(controller.signal);
       if (operationIsCurrent(epoch) && picked !== null) {
         setPdfDisplay(picked);
       }
     } catch {
       if (operationIsCurrent(epoch)) setLocalError('The PDF could not be selected safely.');
     } finally {
-      if (operationIsCurrent(epoch)) setBusy(false);
+      if (operationIsCurrent(epoch)) {
+        if (pickerController.current === controller) pickerController.current = null;
+        setPickerPending(false);
+        setBusy(false);
+      }
     }
   };
 
   const analyze = async () => {
-    if (busy || state.status === 'analyzing') return;
+    if ((busy && !pickerPending) || state.status === 'analyzing') return;
     const epoch = beginOperation();
     setBusy(true);
     setLocalError(null);
@@ -147,7 +164,7 @@ export default function AnalyzeScreen() {
     }
   };
 
-  const working = busy || state.mutation !== 'none';
+  const working = (busy && !pickerPending) || state.mutation !== 'none';
   const displayName = pdfDisplay !== null &&
     state.source?.kind === 'pdf' &&
     state.source.lease === pdfDisplay.sourceIdentity
@@ -167,7 +184,7 @@ export default function AnalyzeScreen() {
         <SourcePicker
           mode={mode}
           displayName={displayName}
-          busy={working || state.status === 'analyzing'}
+          busy={working || state.status === 'analyzing' || state.privacyReadiness !== 'ready'}
           onModeChange={next => { void changeMode(next); }}
           onChoosePdf={() => { void choosePdf(); }}
         />
@@ -215,7 +232,12 @@ export default function AnalyzeScreen() {
         </Card>
 
         {localError !== null ? <Text accessibilityRole="alert" style={styles.error}>{localError}</Text> : null}
-        <AnalysisStatus state={state} onCancel={() => { void commands.cancel(); }} onRetry={() => { void commands.analyze(); }} />
+        <AnalysisStatus
+          state={state}
+          onCancel={() => { void commands.cancel(); }}
+          onRetry={() => { void commands.analyze(); }}
+          onRecoverPrivacy={() => { void commands.recoverPrivacyCleanup(); }}
+        />
         {state.status !== 'analyzing' ? (
           <AppButton
             label="Analyze resume"

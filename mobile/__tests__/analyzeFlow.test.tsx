@@ -31,6 +31,7 @@ const readyState: AnalysisState = {
   generation: 1,
   activation: null,
   cleanupPending: false,
+  privacyRecoveryAvailable: false,
   mutation: 'none',
   lifecycleEpoch: 0,
 };
@@ -66,6 +67,7 @@ function harness(overrides: Record<string, unknown> = {}): any {
       declineConsent: jest.fn(async () => undefined),
       cancel: jest.fn(async () => undefined),
       reset: jest.fn(async () => undefined),
+      recoverPrivacyCleanup: jest.fn(async () => true),
     },
   };
   const actions = {
@@ -147,6 +149,100 @@ describe('native Analyze and Results flows', () => {
     await act(async () => { fireEvent.press(view.getByLabelText('Choose resume PDF')); });
     await waitFor(() => expect(view.getByText('My Resume.pdf')).toBeTruthy());
     expect(values.analysis.commands.selectSource).not.toHaveBeenCalled();
+  });
+
+  it('aborts the native picker authority when Analyze unmounts before selection resolves', async () => {
+    const pending = deferred<null>();
+    const values = harness();
+    values.actions.pickPdfForDisplay.mockReturnValueOnce(pending.promise);
+    const view = await render(<AppControllerProvider value={values}><AnalyzeScreen /></AppControllerProvider>);
+    await act(async () => { fireEvent.press(view.getByLabelText('Choose resume PDF')); });
+    await waitFor(() => expect(values.actions.pickPdfForDisplay).toHaveBeenCalledTimes(1));
+    const signal = values.actions.pickPdfForDisplay.mock.calls[0][0] as AbortSignal;
+
+    await view.unmount();
+
+    expect(signal).toBeInstanceOf(AbortSignal);
+    expect(signal.aborted).toBe(true);
+    pending.resolve(null);
+    await pending.promise;
+  });
+
+  it('aborts pending native picker authority from the provider lifecycle epoch', async () => {
+    const pending = deferred<null>();
+    const values = harness();
+    values.actions.pickPdfForDisplay.mockReturnValueOnce(pending.promise);
+    const view = await render(<AppControllerProvider value={values}><AnalyzeScreen /></AppControllerProvider>);
+    await act(async () => { fireEvent.press(view.getByLabelText('Choose resume PDF')); });
+    await waitFor(() => expect(values.actions.pickPdfForDisplay).toHaveBeenCalledTimes(1));
+    const signal = values.actions.pickPdfForDisplay.mock.calls[0][0] as AbortSignal;
+
+    await view.rerender(
+      <AppControllerProvider value={{
+        ...values,
+        analysis: {
+          ...values.analysis,
+          state: { ...readyState, status: 'idle', lifecycleEpoch: 1 },
+        },
+      }}><AnalyzeScreen /></AppControllerProvider>,
+    );
+
+    expect(signal.aborted).toBe(true);
+    pending.resolve(null);
+    await pending.promise;
+    expect(values.analysis.commands.analyze).not.toHaveBeenCalled();
+  });
+
+  it.each(['mode change', 'analyze intent'] as const)(
+    '%s revokes a pending native picker rather than leaving hidden staged work',
+    async intent => {
+      const pending = deferred<null>();
+      const values = harness();
+      values.actions.pickPdfForDisplay.mockReturnValueOnce(pending.promise);
+      const view = await render(<AppControllerProvider value={values}><AnalyzeScreen /></AppControllerProvider>);
+      await act(async () => { fireEvent.press(view.getByLabelText('Choose resume PDF')); });
+      await waitFor(() => expect(values.actions.pickPdfForDisplay).toHaveBeenCalledTimes(1));
+      const signal = values.actions.pickPdfForDisplay.mock.calls[0][0] as AbortSignal;
+
+      if (intent === 'mode change') {
+        await act(async () => { fireEvent.press(view.getByRole('tab', { name: 'Paste text' })); });
+        await waitFor(() => expect(values.analysis.commands.reset).toHaveBeenCalledTimes(1));
+      } else {
+        await act(async () => { fireEvent.press(view.getByRole('button', { name: 'Analyze resume' })); });
+        await waitFor(() => expect(view.getByText('Check the resume and job-description limits before analyzing.')).toBeTruthy());
+      }
+
+      expect(signal.aborted).toBe(true);
+      pending.resolve(null);
+      await pending.promise;
+      expect(values.analysis.commands.analyze).not.toHaveBeenCalled();
+    },
+  );
+
+  it('a replacement native pick aborts the older UI authority and remains current itself', async () => {
+    const pendingA = deferred<null>();
+    const pendingB = deferred<null>();
+    const values = harness();
+    values.actions.pickPdfForDisplay
+      .mockReturnValueOnce(pendingA.promise)
+      .mockReturnValueOnce(pendingB.promise);
+    const view = await render(<AppControllerProvider value={values}><AnalyzeScreen /></AppControllerProvider>);
+    await act(async () => { fireEvent.press(view.getByLabelText('Choose resume PDF')); });
+    await waitFor(() => expect(values.actions.pickPdfForDisplay).toHaveBeenCalledTimes(1));
+    const signalA = values.actions.pickPdfForDisplay.mock.calls[0][0] as AbortSignal;
+
+    await act(async () => { fireEvent.press(view.getByLabelText('Choose resume PDF')); });
+    await waitFor(() => expect(values.actions.pickPdfForDisplay).toHaveBeenCalledTimes(2));
+    const signalB = values.actions.pickPdfForDisplay.mock.calls[1][0] as AbortSignal;
+
+    expect(signalA.aborted).toBe(true);
+    expect(signalB.aborted).toBe(false);
+    await act(async () => {
+      pendingA.resolve(null);
+      pendingB.resolve(null);
+      await Promise.all([pendingA.promise, pendingB.promise]);
+      await Promise.resolve();
+    });
   });
 
   it.each([
@@ -257,7 +353,59 @@ describe('native Analyze and Results flows', () => {
     const values = harness({ analysis: { ...harness().analysis, state: { ...readyState, privacyReadiness: 'checking', status: 'idle' } } });
     const view = await render(<AppControllerProvider value={values}><AnalyzeScreen /></AppControllerProvider>);
     expect(view.getByText('Checking private temporary storage…')).toBeTruthy();
+    expect(view.getByLabelText('Choose resume PDF').props.accessibilityState.disabled).toBe(true);
     expect(view.getByRole('button', { name: 'Analyze resume' }).props.accessibilityState.disabled).toBe(true);
+  });
+
+  it('offers exact private-cleanup recovery without retrying analysis', async () => {
+    const values = harness({
+      analysis: {
+        ...harness().analysis,
+        state: {
+          ...readyState,
+          status: 'failed',
+          privacyReadiness: 'blocked',
+          cleanupPending: true,
+          privacyRecoveryAvailable: true,
+          error: {
+            category: 'privacy',
+            message: 'Temporary resume data could not be removed safely.',
+            retryable: false,
+          },
+        },
+      },
+    });
+    const view = await render(<AppControllerProvider value={values}><AnalyzeScreen /></AppControllerProvider>);
+
+    await act(async () => {
+      fireEvent.press(view.getByRole('button', { name: 'Retry private cleanup' }));
+    });
+
+    expect(values.analysis.commands.recoverPrivacyCleanup).toHaveBeenCalledTimes(1);
+    expect(values.analysis.commands.analyze).not.toHaveBeenCalled();
+  });
+
+  it('does not offer exact-file recovery when a blocked state has no retained picker claim', async () => {
+    const values = harness({
+      analysis: {
+        ...harness().analysis,
+        state: {
+          ...readyState,
+          status: 'failed',
+          privacyReadiness: 'blocked',
+          cleanupPending: true,
+          privacyRecoveryAvailable: false,
+          error: {
+            category: 'privacy',
+            message: 'Temporary resume data could not be removed safely.',
+            retryable: false,
+          },
+        },
+      },
+    });
+    const view = await render(<AppControllerProvider value={values}><AnalyzeScreen /></AppControllerProvider>);
+
+    expect(view.queryByRole('button', { name: 'Retry private cleanup' })).toBeNull();
   });
 
   it('rejects pasted NUL input before selecting or uploading', async () => {
