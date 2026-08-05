@@ -1,0 +1,22 @@
+{
+  "expo": {
+    "name": "Resume.AI",
+    "slug": "resume-ai",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "scheme": "resume-ai",
+    "userInterfaceStyle": "dark",
+    "ios": {
+      "supportsTablet": false
+    },
+    "plugins": [
+      "expo-router",
+      "expo-sqlite",
+      "expo-secure-store",
+      "expo-sharing"
+    ],
+    "experiments": {
+      "typedRoutes": true
+    }
+  }
+}
