@@ -3,9 +3,11 @@ from __future__ import annotations
 import hashlib
 import hmac
 import math
+import secrets
 import time
 from collections.abc import Callable, Sequence
 from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import Any, Iterator, Protocol
 from uuid import UUID
@@ -220,6 +222,10 @@ class RedisRequestLeaseStore:
         self._redis = redis_client
         self._key_secret = key_secret
         self._production = production
+        self._owned_leases: ContextVar[dict[str, bytes] | None] = ContextVar(
+            f"redis_request_lease_owners_{id(self)}",
+            default=None,
+        )
 
     def acquire(
         self,
@@ -234,26 +240,51 @@ class RedisRequestLeaseStore:
         if ttl_seconds <= 0:
             raise ValueError("ttl_seconds must be greater than zero")
         key = self._key(installation_id, request_id)
+        owner_nonce = secrets.token_hex(32).encode("ascii")
         acquired: bool | None = None
         try:
-            acquired = bool(self._redis.set(key, b"1", nx=True, ex=ttl_seconds))
+            acquired = bool(
+                self._redis.set(key, owner_nonce, nx=True, ex=ttl_seconds)
+            )
         except RedisError:
             pass
         if acquired is None:
             self._raise_unavailable()
+        if acquired:
+            self._remember_owner(key, owner_nonce)
         return acquired
 
     def release(self, installation_id: UUID, request_id: UUID) -> None:
         _validate_uuid(installation_id, "installation_id")
         _validate_uuid(request_id, "request_id")
-        released = False
+        key = self._key(installation_id, request_id)
+        owner_nonce = self._owner_for(key)
+        if owner_nonce is None:
+            return
+
+        compared = False
         try:
-            self._redis.delete(self._key(installation_id, request_id))
-            released = True
+            for _ in range(_MAX_TRANSACTION_RETRIES):
+                with self._redis.pipeline() as transaction:
+                    try:
+                        transaction.watch(key)
+                        stored_owner = transaction.get(key)
+                        if stored_owner != owner_nonce:
+                            transaction.unwatch()
+                            compared = True
+                            break
+                        transaction.multi()
+                        transaction.delete(key)
+                        transaction.execute()
+                        compared = True
+                        break
+                    except WatchError:
+                        continue
         except RedisError:
             pass
-        if not released:
+        if not compared:
             self._raise_unavailable()
+        self._forget_owner(key, owner_nonce)
 
     @contextmanager
     def lease(
@@ -276,6 +307,23 @@ class RedisRequestLeaseStore:
             hashlib.sha256,
         ).hexdigest()
         return f"rai:request-lease:v1:{digest}"
+
+    def _owner_for(self, key: str) -> bytes | None:
+        owners = self._owned_leases.get()
+        return None if owners is None else owners.get(key)
+
+    def _remember_owner(self, key: str, owner_nonce: bytes) -> None:
+        owners = dict(self._owned_leases.get() or {})
+        owners[key] = owner_nonce
+        self._owned_leases.set(owners)
+
+    def _forget_owner(self, key: str, owner_nonce: bytes) -> None:
+        owners = self._owned_leases.get()
+        if owners is None or owners.get(key) != owner_nonce:
+            return
+        remaining_owners = dict(owners)
+        del remaining_owners[key]
+        self._owned_leases.set(remaining_owners or None)
 
     def _raise_unavailable(self) -> None:
         if not self._production:

@@ -1,12 +1,16 @@
 from __future__ import annotations
 
+import time
 from concurrent.futures import ThreadPoolExecutor
+from contextvars import Context
 from uuid import UUID
 
 import fakeredis
 import pytest
 from redis.exceptions import ConnectionError as RedisConnectionError
+from redis.exceptions import WatchError
 
+import server.rate_limit as rate_limit_module
 from server.errors import ErrorCode, PublicServiceError
 from server.rate_limit import RateLimiter, RedisRequestLeaseStore
 
@@ -184,6 +188,26 @@ def test_duplicate_request_lease_does_not_store_response(
     assert str(REQUEST_ID).encode() not in stored
 
 
+def test_each_successful_lease_uses_a_fresh_content_free_owner_nonce(
+    redis_client: fakeredis.FakeRedis,
+):
+    store = RedisRequestLeaseStore(redis_client, key_secret=KEY_SECRET)
+    assert store.acquire(INSTALLATION_ID, REQUEST_ID, 45) is True
+    key = next(redis_client.scan_iter())
+    first_owner = redis_client.get(key)
+    store.release(INSTALLATION_ID, REQUEST_ID)
+
+    assert store.acquire(INSTALLATION_ID, REQUEST_ID, 45) is True
+    second_owner = redis_client.get(key)
+
+    assert isinstance(first_owner, bytes)
+    assert isinstance(second_owner, bytes)
+    assert len(first_owner) == 64
+    assert len(second_owner) == 64
+    assert set(first_owner + second_owner) <= set(b"0123456789abcdef")
+    assert first_owner != second_owner
+
+
 def test_request_lease_release_removes_only_in_flight_marker(
     redis_client: fakeredis.FakeRedis,
 ):
@@ -194,6 +218,150 @@ def test_request_lease_release_removes_only_in_flight_marker(
 
     assert list(redis_client.scan_iter()) == []
     assert store.acquire(INSTALLATION_ID, REQUEST_ID, 45)
+
+
+def test_stale_lease_owner_cannot_release_a_new_owner_after_ttl_expiry(
+    redis_client: fakeredis.FakeRedis,
+):
+    owner_a = RedisRequestLeaseStore(redis_client, key_secret=KEY_SECRET)
+    owner_b = RedisRequestLeaseStore(redis_client, key_secret=KEY_SECRET)
+    contender_c = RedisRequestLeaseStore(redis_client, key_secret=KEY_SECRET)
+
+    assert owner_a.acquire(INSTALLATION_ID, REQUEST_ID, 1) is True
+    time.sleep(1.05)
+    assert owner_b.acquire(INSTALLATION_ID, REQUEST_ID, 45) is True
+
+    owner_a.release(INSTALLATION_ID, REQUEST_ID)
+
+    assert contender_c.acquire(INSTALLATION_ID, REQUEST_ID, 45) is False
+    owner_b.release(INSTALLATION_ID, REQUEST_ID)
+    assert contender_c.acquire(INSTALLATION_ID, REQUEST_ID, 45) is True
+
+
+def test_release_from_non_owning_store_is_a_no_op(
+    redis_client: fakeredis.FakeRedis,
+):
+    owner = RedisRequestLeaseStore(redis_client, key_secret=KEY_SECRET)
+    non_owner = RedisRequestLeaseStore(redis_client, key_secret=KEY_SECRET)
+    contender = RedisRequestLeaseStore(redis_client, key_secret=KEY_SECRET)
+    assert owner.acquire(INSTALLATION_ID, REQUEST_ID, 45) is True
+
+    non_owner.release(INSTALLATION_ID, REQUEST_ID)
+
+    assert contender.acquire(INSTALLATION_ID, REQUEST_ID, 45) is False
+    owner.release(INSTALLATION_ID, REQUEST_ID)
+    assert contender.acquire(INSTALLATION_ID, REQUEST_ID, 45) is True
+
+
+def test_release_from_non_owning_execution_context_is_a_no_op(
+    redis_client: fakeredis.FakeRedis,
+):
+    shared_store = RedisRequestLeaseStore(redis_client, key_secret=KEY_SECRET)
+    contender = RedisRequestLeaseStore(redis_client, key_secret=KEY_SECRET)
+    owner_context = Context()
+    non_owner_context = Context()
+    assert owner_context.run(
+        shared_store.acquire,
+        INSTALLATION_ID,
+        REQUEST_ID,
+        45,
+    ) is True
+
+    non_owner_context.run(shared_store.release, INSTALLATION_ID, REQUEST_ID)
+
+    assert contender.acquire(INSTALLATION_ID, REQUEST_ID, 45) is False
+    owner_context.run(shared_store.release, INSTALLATION_ID, REQUEST_ID)
+    assert contender.acquire(INSTALLATION_ID, REQUEST_ID, 45) is True
+
+
+def test_release_redis_outage_fails_closed_and_preserves_the_owner():
+    fake_server = fakeredis.FakeServer()
+    redis_client = fakeredis.FakeRedis(server=fake_server, decode_responses=False)
+    owner = RedisRequestLeaseStore(redis_client, key_secret=KEY_SECRET)
+    contender = RedisRequestLeaseStore(redis_client, key_secret=KEY_SECRET)
+    assert owner.acquire(INSTALLATION_ID, REQUEST_ID, 45) is True
+    fake_server.connected = False
+
+    with pytest.raises(PublicServiceError) as caught:
+        owner.release(INSTALLATION_ID, REQUEST_ID)
+
+    assert caught.value.code is ErrorCode.SERVICE_UNAVAILABLE
+    assert caught.value.retryable is True
+    assert str(caught.value) == "service_unavailable"
+    assert caught.value.__context__ is None
+    assert caught.value.__cause__ is None
+    fake_server.connected = True
+    assert contender.acquire(INSTALLATION_ID, REQUEST_ID, 45) is False
+    owner.release(INSTALLATION_ID, REQUEST_ID)
+    assert contender.acquire(INSTALLATION_ID, REQUEST_ID, 45) is True
+
+
+class ConflictingPipeline:
+    def __init__(self, redis_client: fakeredis.FakeRedis) -> None:
+        self._pipeline = redis_client.pipeline()
+
+    def __enter__(self) -> ConflictingPipeline:
+        self._pipeline.__enter__()
+        return self
+
+    def __exit__(self, *args: object) -> None:
+        self._pipeline.__exit__(*args)
+
+    def watch(self, *keys: str) -> None:
+        self._pipeline.watch(*keys)
+
+    def get(self, key: str) -> bytes | None:
+        return self._pipeline.get(key)
+
+    def unwatch(self) -> None:
+        self._pipeline.unwatch()
+
+    def multi(self) -> None:
+        self._pipeline.multi()
+
+    def delete(self, key: str) -> None:
+        self._pipeline.delete(key)
+
+    def execute(self) -> None:
+        raise WatchError("private conflict details")
+
+
+class ConflictInjectingRedis:
+    def __init__(self, redis_client: fakeredis.FakeRedis) -> None:
+        self._redis = redis_client
+        self.conflicting = True
+
+    def set(self, *args: object, **kwargs: object) -> object:
+        return self._redis.set(*args, **kwargs)
+
+    def pipeline(self) -> object:
+        if self.conflicting:
+            return ConflictingPipeline(self._redis)
+        return self._redis.pipeline()
+
+
+def test_release_retry_exhaustion_fails_closed_without_deleting_owner(
+    redis_client: fakeredis.FakeRedis,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    conflicting_redis = ConflictInjectingRedis(redis_client)
+    owner = RedisRequestLeaseStore(conflicting_redis, key_secret=KEY_SECRET)
+    contender = RedisRequestLeaseStore(redis_client, key_secret=KEY_SECRET)
+    monkeypatch.setattr(rate_limit_module, "_MAX_TRANSACTION_RETRIES", 2)
+    assert owner.acquire(INSTALLATION_ID, REQUEST_ID, 45) is True
+
+    with pytest.raises(PublicServiceError) as caught:
+        owner.release(INSTALLATION_ID, REQUEST_ID)
+
+    assert caught.value.code is ErrorCode.SERVICE_UNAVAILABLE
+    assert caught.value.retryable is True
+    assert str(caught.value) == "service_unavailable"
+    assert caught.value.__context__ is None
+    assert "private conflict details" not in repr(caught.value)
+    assert contender.acquire(INSTALLATION_ID, REQUEST_ID, 45) is False
+    conflicting_redis.conflicting = False
+    owner.release(INSTALLATION_ID, REQUEST_ID)
+    assert contender.acquire(INSTALLATION_ID, REQUEST_ID, 45) is True
 
 
 @pytest.mark.parametrize(
