@@ -15,6 +15,18 @@ import type { CleanupReceipt } from '../src/documents/tempFileRegistry';
 
 const CLEAN: CleanupReceipt = { attempted: 0, deleted: 0, failed: 0, refused: 0 };
 const PDF_LEASE = Symbol();
+const LATE_PDF_LEASE = Symbol();
+const REQUEST_ID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+
+function pdfSource(lease = PDF_LEASE) {
+  return {
+    kind: 'pdf' as const,
+    requestId: REQUEST_ID,
+    uri: `file:///app/cache/resume-ai-v1/${REQUEST_ID}/11111111-1111-4111-8111-111111111111.pdf`,
+    size: 1_024,
+    lease,
+  };
+}
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -186,5 +198,125 @@ describe('AnalysisProvider in-memory lifecycle', () => {
 
     expect(privateUnhandled).toEqual([]);
     process.removeListener('unhandledRejection', unhandled);
+  });
+
+  it('awaits fenced cleanup when a genuine picker fails after provider disposal has resolved', async () => {
+    const lateCleanup = deferred<CleanupReceipt>();
+    const privateUnhandled: unknown[] = [];
+    const unhandled = (reason: unknown) => privateUnhandled.push(reason);
+    process.on('unhandledRejection', unhandled);
+    try {
+      const { coordinator, tempFiles } = providerHarness();
+      await coordinator.initialize();
+      const authority = coordinator.commands.beginPdfPick(new AbortController().signal);
+      tempFiles.cleanupAbandoned.mockImplementationOnce(() => lateCleanup.promise);
+      const notifications: string[] = [];
+      coordinator.subscribe(() => notifications.push(coordinator.getState().privacyReadiness));
+      const view = await render(
+        <AnalysisProvider coordinator={coordinator}>
+          <Probe route="Analyze" />
+        </AnalysisProvider>,
+      );
+      await view.unmount();
+      await coordinator.dispose();
+      const notificationsBeforeFailure = notifications.length;
+
+      let settled = false;
+      const failure = coordinator.commands.failPdfPick(
+        authority,
+        'abandoned_cleanup_required',
+      ).finally(() => { settled = true; });
+      await Promise.resolve();
+      expect(settled).toBe(false);
+      expect(tempFiles.cleanupAbandoned).toHaveBeenCalledTimes(2);
+
+      lateCleanup.resolve({ attempted: 1, deleted: 1, failed: 0, refused: 0 });
+      await failure;
+      await coordinator.commands.failPdfPick(authority, 'abandoned_cleanup_required');
+      await coordinator.commands.failPdfPick(Symbol('fabricated'), 'abandoned_cleanup_required');
+
+      expect(tempFiles.cleanupAbandoned).toHaveBeenCalledTimes(2);
+      expect(notifications).toHaveLength(notificationsBeforeFailure);
+      expect(privateUnhandled).toEqual([]);
+    } finally {
+      process.removeListener('unhandledRejection', unhandled);
+    }
+  });
+
+  it('drains a late issued failure that arrives while provider disposal is already cleaning', async () => {
+    const exactCleanup = deferred<CleanupReceipt>();
+    const lateCleanup = deferred<CleanupReceipt>();
+    const { coordinator, tempFiles } = providerHarness();
+    await coordinator.initialize();
+    await coordinator.commands.selectSource(pdfSource());
+    const authority = coordinator.commands.beginPdfPick(new AbortController().signal);
+    tempFiles.cleanupRequest.mockImplementationOnce(() => exactCleanup.promise);
+    tempFiles.cleanupAbandoned.mockImplementationOnce(() => lateCleanup.promise);
+    const notifications: string[] = [];
+    coordinator.subscribe(() => notifications.push(coordinator.getState().privacyReadiness));
+    const view = await render(
+      <AnalysisProvider coordinator={coordinator}>
+        <Probe route="Analyze" />
+      </AnalysisProvider>,
+    );
+
+    await view.unmount();
+    const disposal = coordinator.dispose();
+    await waitFor(() => expect(tempFiles.cleanupRequest).toHaveBeenCalledWith(
+      REQUEST_ID,
+      PDF_LEASE,
+    ));
+    const notificationsBeforeFailure = notifications.length;
+    let failureSettled = false;
+    const failure = coordinator.commands.failPdfPick(
+      authority,
+      'abandoned_cleanup_required',
+    ).finally(() => { failureSettled = true; });
+    await Promise.resolve();
+
+    expect(failureSettled).toBe(false);
+    expect(tempFiles.cleanupAbandoned).toHaveBeenCalledTimes(2);
+    lateCleanup.resolve({ attempted: 1, deleted: 1, failed: 0, refused: 0 });
+    await failure;
+    exactCleanup.resolve({ attempted: 1, deleted: 1, failed: 0, refused: 0 });
+    await disposal;
+
+    expect(notifications).toHaveLength(notificationsBeforeFailure);
+  });
+
+  it('exact-lease discards one late issued PDF and ignores duplicate or fabricated terminals', async () => {
+    const { coordinator, tempFiles } = providerHarness();
+    await coordinator.initialize();
+    const authority = coordinator.commands.beginPdfPick(new AbortController().signal);
+    const view = await render(
+      <AnalysisProvider coordinator={coordinator}>
+        <Probe route="Analyze" />
+      </AnalysisProvider>,
+    );
+    await view.unmount();
+    await coordinator.dispose();
+
+    await expect(coordinator.commands.completePdfPick(
+      authority,
+      pdfSource(LATE_PDF_LEASE),
+    )).resolves.toEqual({ committed: false });
+    await expect(coordinator.commands.completePdfPick(
+      authority,
+      pdfSource(LATE_PDF_LEASE),
+    )).resolves.toEqual({ committed: false });
+    await expect(coordinator.commands.completePdfPick(
+      Symbol('fabricated'),
+      pdfSource(Symbol('fabricated-lease')),
+    )).resolves.toEqual({ committed: false });
+    const postDisposalAuthority = coordinator.commands.beginPdfPick(
+      new AbortController().signal,
+    );
+    await expect(coordinator.commands.completePdfPick(
+      postDisposalAuthority,
+      pdfSource(Symbol('post-disposal-lease')),
+    )).resolves.toEqual({ committed: false });
+
+    expect(tempFiles.cleanupRequest).toHaveBeenCalledTimes(1);
+    expect(tempFiles.cleanupRequest).toHaveBeenCalledWith(REQUEST_ID, LATE_PDF_LEASE);
   });
 });

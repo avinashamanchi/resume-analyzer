@@ -10,8 +10,14 @@ import {
 } from '../src/controllers/AppController';
 import {
   DocumentSourceError,
+  DocumentSourceService,
   type PickedPdfForDisplay,
 } from '../src/documents/documentSource';
+import {
+  type FileInspection,
+  TempFileRegistry,
+  type TempFileSystem,
+} from '../src/documents/tempFileRegistry';
 
 let mockAnalysisValue: AppControllerValue['analysis'];
 
@@ -27,6 +33,48 @@ const REQUEST_B = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
 const LEASE_A = Symbol('lease-a');
 const LEASE_B = Symbol('lease-b');
 const CLEAN = { attempted: 1, deleted: 1, failed: 0, refused: 0 } as const;
+const PROVIDER_URI = 'file:///provider/private-resume.pdf';
+const FILE_ID = '11111111-1111-4111-8111-111111111111';
+const NAMESPACE_URI = 'file:///app/cache/resume-ai-v1';
+
+class ControllerSourceFileSystem implements TempFileSystem {
+  readonly cacheDirectoryUri = 'file:///app/cache/';
+  readonly directories = new Set<string>();
+  readonly copied: Array<{ source: string; destination: string }> = [];
+  deleteFailure = true;
+
+  async createDirectory(uri: string): Promise<void> {
+    this.directories.add(uri);
+  }
+
+  async directoryExists(uri: string): Promise<boolean> {
+    return this.directories.has(uri);
+  }
+
+  async listDirectory(uri: string) {
+    if (uri === NAMESPACE_URI) {
+      return [...this.directories]
+        .filter(candidate => candidate.startsWith(`${NAMESPACE_URI}/`))
+        .map(candidate => ({ uri: candidate, kind: 'directory' as const }));
+    }
+    return this.copied
+      .filter(entry => entry.destination.startsWith(`${uri}/`))
+      .map(entry => ({ uri: entry.destination, kind: 'file' as const }));
+  }
+
+  async copyFile(source: string, destination: string): Promise<void> {
+    this.copied.push({ source, destination });
+  }
+
+  async inspectFile(): Promise<FileInspection> {
+    throw new Error('private inspection cause');
+  }
+
+  async deleteDirectory(uri: string): Promise<void> {
+    if (this.deleteFailure) throw new Error('private cache path');
+    this.directories.delete(uri);
+  }
+}
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -630,6 +678,86 @@ describe('native picker operation authority', () => {
       privacyReadiness: 'ready',
       cleanupPending: false,
       source: { requestId: REQUEST_A, lease: LEASE_A },
+    });
+    await harness.close();
+  });
+
+  it('carries the real compound service cleanup failure into fenced controller recovery', async () => {
+    const fileSystem = new ControllerSourceFileSystem();
+    const registry = new TempFileRegistry({ fileSystem });
+    const picker = {
+      pick: jest.fn(async () => ({
+        canceled: false as const,
+        assets: [{
+          name: 'Private Resume.pdf',
+          mimeType: 'application/pdf',
+          size: 128,
+          uri: PROVIDER_URI,
+        }],
+      })),
+      release: jest.fn(async () => {
+        throw new Error('private provider release cause');
+      }),
+    };
+    const service = new DocumentSourceService({
+      picker,
+      registry,
+      requestId: () => REQUEST_A,
+      fileId: () => FILE_ID,
+    });
+    const cleanupAbandoned = jest.fn(() => registry.cleanupAbandoned());
+    const cleanupRequest = jest.fn((requestId: string, lease: symbol) =>
+      registry.cleanupRequest(requestId, lease),
+    );
+    const harness = await controllerHarness({
+      pickPdfForDisplay: jest.fn(() => service.pickPdfForDisplay()),
+      cleanupAbandoned,
+      cleanupRequest,
+    });
+
+    const error = await harness.value.actions.pickPdfForDisplay(
+      new AbortController().signal,
+    ).catch(value => value);
+
+    expect(error).toBeInstanceOf(DocumentSourceError);
+    expect(error).toMatchObject({ category: 'privacy', code: 'cache_cleanup_failed' });
+    expect(picker.release).toHaveBeenCalledTimes(1);
+    expect(harness.coordinator.getState()).toMatchObject({
+      status: 'failed',
+      privacyReadiness: 'blocked',
+      source: null,
+      cleanupPending: true,
+      error: {
+        category: 'privacy',
+        message: 'Temporary resume data could not be removed safely.',
+        retryable: false,
+      },
+    });
+    await expect(harness.value.analysis.commands.selectSource({
+      kind: 'text',
+      text: 'later private resume',
+    })).resolves.toEqual({ committed: false });
+    expect(cleanupAbandoned).toHaveBeenCalledTimes(1);
+
+    const publicBoundary = JSON.stringify({ error, state: harness.coordinator.getState() });
+    for (const privateValue of [
+      'Private Resume.pdf',
+      PROVIDER_URI,
+      REQUEST_A,
+      FILE_ID,
+      'later private resume',
+      'private inspection cause',
+      'private provider release cause',
+    ]) expect(publicBoundary).not.toContain(privateValue);
+
+    fileSystem.deleteFailure = false;
+    await expect(harness.value.analysis.commands.recoverPrivacyCleanup()).resolves.toBe(true);
+    expect(cleanupAbandoned).toHaveBeenCalledTimes(2);
+    expect(harness.coordinator.getState()).toMatchObject({
+      privacyReadiness: 'ready',
+      cleanupPending: false,
+      source: null,
+      error: null,
     });
     await harness.close();
   });

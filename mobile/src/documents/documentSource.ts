@@ -232,6 +232,7 @@ export class DocumentSourceService {
     const providerUris = selectedUris(result);
     let requestId: string | null = null;
     let requestLease: TempFileLease | null = null;
+    let cacheCleanupUnverified = false;
     try {
       if (result?.canceled !== false || !Array.isArray(result.assets) || result.assets.length !== 1) {
         throw asValidationError('invalid_picker_result');
@@ -279,14 +280,17 @@ export class DocumentSourceService {
           const receipt = await this.registry.cleanupRequest(requestId, requestLease);
           requestLease = null;
           if (!cleanupWasVerified(receipt)) {
+            cacheCleanupUnverified = true;
             throw new DocumentSourceError('privacy', 'cache_cleanup_failed');
           }
         }
         if (error instanceof PdfStagingError) {
+          if (error.code === 'cache_cleanup_failed') cacheCleanupUnverified = true;
           if (error.code === 'pdf_staging_failed') throw asValidationError(error.code);
           throw new DocumentSourceError('privacy', error.code);
         }
         if (error instanceof DocumentPrivacyError) {
+          if (error.code === 'cache_cleanup_failed') cacheCleanupUnverified = true;
           throw new DocumentSourceError('privacy', error.code);
         }
         throw asValidationError('pdf_staging_failed');
@@ -305,8 +309,11 @@ export class DocumentSourceService {
           const receipt = await this.registry.cleanupRequest(requestId, requestLease);
           requestLease = null;
           if (!cleanupWasVerified(receipt)) {
-            throw new DocumentSourceError('privacy', 'cache_cleanup_failed');
+            cacheCleanupUnverified = true;
           }
+        }
+        if (cacheCleanupUnverified) {
+          throw new DocumentSourceError('privacy', 'cache_cleanup_failed');
         }
         throw new DocumentSourceError('privacy', 'provider_cleanup_failed');
       }

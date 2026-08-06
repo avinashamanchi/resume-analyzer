@@ -268,6 +268,36 @@ describe('DocumentSourceService', () => {
     expect(error.message).not.toContain('/provider');
   });
 
+  it('keeps cache cleanup failure dominant while still attempting failed provider release once', async () => {
+    const { failProviderRelease, fileSystem, picker, registry, service } = sourceHarness();
+    fileSystem.inspectFailure = true;
+    fileSystem.deleteFailure = true;
+    failProviderRelease();
+
+    const error = await service.pickPdfForDisplay().catch(value => value);
+
+    expect(error).toBeInstanceOf(DocumentSourceError);
+    expect(error).toMatchObject({ category: 'privacy', code: 'cache_cleanup_failed' });
+    expect(picker.release).toHaveBeenCalledTimes(1);
+    expect(picker.release).toHaveBeenCalledWith(PROVIDER_URI);
+    const publicError = JSON.stringify(error);
+    for (const privateValue of [
+      'resume.pdf',
+      PROVIDER_URI,
+      REQUEST_ID,
+      FILE_ID,
+      'private provider cache details',
+    ]) expect(publicError).not.toContain(privateValue);
+
+    fileSystem.deleteFailure = false;
+    await expect(registry.cleanupAbandoned()).resolves.toEqual({
+      attempted: 1,
+      deleted: 1,
+      failed: 0,
+      refused: 0,
+    });
+  });
+
   it('allows later abandoned recovery after inspection and immediate cleanup both fail', async () => {
     const { fileSystem, service } = sourceHarness();
     const cleaner = new TempFileRegistry({ fileSystem });

@@ -279,8 +279,12 @@ export class AnalysisCoordinator {
   private readonly cleanupOperations = new Map<TempFileLease, Promise<boolean>>();
   private readonly preReadyPdfCleanupOperations = new Set<Promise<boolean>>();
   private readonly issuedPdfPickAuthorities = new Set<PdfPickAuthority>();
-  private abandonedCleanupRequired = false;
-  private privacyRecovery: Promise<boolean> | null = null;
+  private nextAbandonedCleanupEpoch = 0;
+  private currentAbandonedCleanupEpoch: number | null = null;
+  private readonly abandonedCleanupOperations = new Map<number, Promise<boolean>>();
+  private abandonedCleanupTail: Promise<void> = Promise.resolve();
+  private readonly privacyRecoveries = new Map<number, Promise<boolean>>();
+  private disposalPrivacyReadiness: AnalysisState['privacyReadiness'] | null = null;
   private pendingPdfPick: PendingPdfPick | null = null;
 
   readonly commands: AnalysisCommands = Object.freeze({
@@ -540,6 +544,7 @@ export class AnalysisCoordinator {
   }
 
   private beginPdfPick(signal: AbortSignal): PdfPickAuthority {
+    if (!this.mounted) return Symbol('unissued-pdf-pick-authority');
     this.releasePendingPdfPick();
     if (this.state.mutation === 'selecting') void this.reset();
     const authority = Symbol('pdf-pick-authority');
@@ -584,13 +589,14 @@ export class AnalysisCoordinator {
     authority: PdfPickAuthority,
     source: PdfSource | null,
   ): Promise<SourceSelectionReceipt> {
-    this.issuedPdfPickAuthorities.delete(authority);
+    if (!this.issuedPdfPickAuthorities.delete(authority)) return { committed: false };
     if (source === null) {
       if (this.pendingPdfPick?.authority === authority) this.releasePendingPdfPick();
       return { committed: false };
     }
     if (!this.pdfPickIsCurrent(authority)) {
       await this.discardPdfPickSource(source);
+      this.refreshDisposedState();
       return { committed: false };
     }
     const prepared = this.prepareIncomingSource(source);
@@ -604,8 +610,13 @@ export class AnalysisCoordinator {
   private async discardPdfPickSource(source: PdfSource): Promise<void> {
     const discarded = this.prepareIncomingSource(source, 'discard');
     if (discarded.claim === null || !discarded.newlyClaimed) {
-      this.abandonedCleanupRequired = true;
+      const epoch = this.markAbandonedCleanupRequired();
       this.blockPrivacy();
+      if (!this.mounted) {
+        this.refreshDisposedState();
+        await this.cleanupAbandonedEpoch(epoch);
+        this.refreshDisposedState();
+      }
       return;
     }
     const cleaned = await this.cleanupClaim(discarded.claim);
@@ -620,13 +631,18 @@ export class AnalysisCoordinator {
     failure: 'abandoned_cleanup_required',
   ): Promise<void> {
     if (
-      !this.mounted ||
       failure !== 'abandoned_cleanup_required' ||
       !this.issuedPdfPickAuthorities.delete(authority)
     ) return;
     if (this.pendingPdfPick?.authority === authority) this.releasePendingPdfPick();
-    this.abandonedCleanupRequired = true;
-    this.blockPrivacy();
+    const epoch = this.markAbandonedCleanupRequired();
+    if (this.mounted) {
+      this.blockPrivacy();
+      return;
+    }
+    this.refreshDisposedState();
+    await this.cleanupAbandonedEpoch(epoch);
+    this.refreshDisposedState();
   }
 
   private blockPrivacy(): void {
@@ -639,23 +655,82 @@ export class AnalysisCoordinator {
     this.dispatch({ type: 'privacyBlocked', generation: this.generation, error: privacyError() });
   }
 
-  private recoverPrivacyCleanup(): Promise<boolean> {
-    if (this.privacyRecovery !== null) return this.privacyRecovery;
-    const operation = this.performPrivacyCleanupRecovery();
-    this.privacyRecovery = operation;
+  private refreshDisposedState(): void {
+    if (this.mounted) return;
+    const baseline = this.disposalPrivacyReadiness ?? this.state.privacyReadiness;
+    const cleanupPending = this.currentAbandonedCleanupEpoch !== null ||
+      this.pickerCleanupFailures.size > 0 ||
+      this.cleanupFailures.size > 0;
+    const privacyReadiness = cleanupPending ? 'blocked' : baseline;
+    const blocked = privacyReadiness === 'blocked';
+    this.state = {
+      ...createInitialAnalysisState(),
+      status: blocked ? 'failed' : 'idle',
+      privacyReadiness,
+      error: blocked ? privacyError() : null,
+      generation: this.generation,
+      cleanupPending: blocked,
+      privacyRecoveryAvailable: false,
+      lifecycleEpoch: this.lifecycleEpoch,
+    };
+  }
+
+  private markAbandonedCleanupRequired(): number {
+    this.nextAbandonedCleanupEpoch += 1;
+    this.currentAbandonedCleanupEpoch = this.nextAbandonedCleanupEpoch;
+    return this.nextAbandonedCleanupEpoch;
+  }
+
+  private cleanupAbandonedEpoch(epoch: number): Promise<boolean> {
+    const current = this.abandonedCleanupOperations.get(epoch);
+    if (current !== undefined) return current;
+    const prior = this.abandonedCleanupTail;
+    const operation = (async () => {
+      await prior;
+      let verified = false;
+      try {
+        const receipt = await this.boundedCleanup(() => this.tempFiles.cleanupAbandoned());
+        verified = isVerifiedCleanupReceipt(receipt);
+      } catch {
+        verified = false;
+      }
+      if (!verified || this.currentAbandonedCleanupEpoch !== epoch) return false;
+      this.currentAbandonedCleanupEpoch = null;
+      return true;
+    })();
+    this.abandonedCleanupOperations.set(epoch, operation);
+    const safeOperation = operation.then(() => undefined, () => undefined);
+    this.abandonedCleanupTail = safeOperation;
     void operation.finally(() => {
-      if (this.privacyRecovery === operation) this.privacyRecovery = null;
+      if (this.abandonedCleanupOperations.get(epoch) === operation) {
+        this.abandonedCleanupOperations.delete(epoch);
+      }
     }).catch(() => undefined);
     return operation;
   }
 
-  private async performPrivacyCleanupRecovery(): Promise<boolean> {
+  private recoverPrivacyCleanup(): Promise<boolean> {
+    const capturedEpoch = this.currentAbandonedCleanupEpoch;
+    const recoveryKey = capturedEpoch ?? 0;
+    const current = this.privacyRecoveries.get(recoveryKey);
+    if (current !== undefined) return current;
+    const operation = this.performPrivacyCleanupRecovery(capturedEpoch);
+    this.privacyRecoveries.set(recoveryKey, operation);
+    void operation.finally(() => {
+      if (this.privacyRecoveries.get(recoveryKey) === operation) {
+        this.privacyRecoveries.delete(recoveryKey);
+      }
+    }).catch(() => undefined);
+    return operation;
+  }
+
+  private async performPrivacyCleanupRecovery(capturedEpoch: number | null): Promise<boolean> {
     if (
       !this.mounted ||
       this.state.privacyReadiness !== 'blocked' ||
       !this.state.cleanupPending ||
       (
-        !this.abandonedCleanupRequired &&
+        this.currentAbandonedCleanupEpoch === null &&
         this.pickerCleanupFailures.size === 0 &&
         this.cleanupFailures.size === 0
       )
@@ -672,17 +747,10 @@ export class AnalysisCoordinator {
     for (const claim of failedClaims.values()) {
       await this.cleanupClaim(claim);
     }
-    if (this.abandonedCleanupRequired) {
-      try {
-        const receipt = await this.boundedCleanup(() => this.tempFiles.cleanupAbandoned());
-        if (isVerifiedCleanupReceipt(receipt)) this.abandonedCleanupRequired = false;
-      } catch {
-        // The opaque obligation remains until fenced cleanup returns exact proof.
-      }
-    }
+    if (capturedEpoch !== null) await this.cleanupAbandonedEpoch(capturedEpoch);
     if (
       !this.mounted ||
-      this.abandonedCleanupRequired ||
+      this.currentAbandonedCleanupEpoch !== null ||
       this.pickerCleanupFailures.size > 0 ||
       this.cleanupFailures.size > 0
     ) return false;
@@ -1307,7 +1375,8 @@ export class AnalysisCoordinator {
   private async performDisposal(): Promise<void> {
     this.releasePendingPdfPick();
     const active = this.active;
-    const privacyRecovery = this.privacyRecovery;
+    const privacyRecoveries = [...this.privacyRecoveries.values()];
+    this.disposalPrivacyReadiness = this.state.privacyReadiness;
     this.mounted = false;
     this.generation += 1;
     this.sourceRevision += 1;
@@ -1315,27 +1384,15 @@ export class AnalysisCoordinator {
     active?.controller.abort();
     await this.mutationTail;
     if (active !== null) await active.promise;
-    if (privacyRecovery !== null) await privacyRecovery;
+    if (privacyRecoveries.length > 0) await Promise.all(privacyRecoveries);
     if (this.initialization !== null) await this.initialization;
     await this.cleanupAllOwned(true);
-    if (this.abandonedCleanupRequired) {
-      try {
-        const receipt = await this.boundedCleanup(() => this.tempFiles.cleanupAbandoned());
-        if (isVerifiedCleanupReceipt(receipt)) this.abandonedCleanupRequired = false;
-      } catch {
-        // Disposal remains bounded and cannot claim deletion without exact proof.
-      }
-    }
+    const abandonedEpoch = this.currentAbandonedCleanupEpoch;
+    if (abandonedEpoch !== null) await this.cleanupAbandonedEpoch(abandonedEpoch);
     this.active = null;
     this.listeners.clear();
     this.committedPdfClaim = null;
-    this.issuedPdfPickAuthorities.clear();
-    this.state = {
-      ...createInitialAnalysisState(),
-      privacyReadiness: this.state.privacyReadiness,
-      generation: this.generation,
-      lifecycleEpoch: this.lifecycleEpoch,
-    };
+    this.refreshDisposedState();
   }
 
   private dispatchPrivacyFailure(generation: number, consumeSource: boolean): void {

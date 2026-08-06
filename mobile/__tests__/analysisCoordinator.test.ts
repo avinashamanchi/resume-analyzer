@@ -1391,6 +1391,175 @@ describe('quarantined native-picker cleanup recovery', () => {
     expect(cleanupAbandoned).toHaveBeenCalledTimes(2);
   });
 
+  it('does not let a verified A receipt clear a newer B abandoned obligation', async () => {
+    const cleanupA = deferred<CleanupReceipt>();
+    const cleanupAbandoned = jest.fn()
+      .mockResolvedValueOnce(CLEAN)
+      .mockImplementationOnce(() => cleanupA.promise)
+      .mockResolvedValueOnce(CLEAN);
+    const { coordinator } = harness({
+      tempFiles: {
+        cleanupAbandoned,
+        cleanupRequest: jest.fn(async () => CLEAN),
+      },
+      cleanupTimeoutMs: 1_000,
+    });
+    await coordinator.initialize();
+    const observedReadiness: string[] = [];
+    coordinator.subscribe(() => observedReadiness.push(coordinator.getState().privacyReadiness));
+    const authorityA = coordinator.commands.beginPdfPick(new AbortController().signal);
+    await failAbandonedPick(coordinator, authorityA);
+    const recoveryA = coordinator.commands.recoverPrivacyCleanup();
+    await flushPromises();
+    expect(cleanupAbandoned).toHaveBeenCalledTimes(2);
+
+    const authorityB = coordinator.commands.beginPdfPick(new AbortController().signal);
+    await failAbandonedPick(coordinator, authorityB);
+    cleanupA.resolve({ attempted: 1, deleted: 1, failed: 0, refused: 0 });
+
+    await expect(recoveryA).resolves.toBe(false);
+    expect(cleanupAbandoned).toHaveBeenCalledTimes(2);
+    expect(observedReadiness).not.toContain('ready');
+    expect(coordinator.getState()).toMatchObject({
+      privacyReadiness: 'blocked',
+      cleanupPending: true,
+      error: { category: 'privacy' },
+    });
+
+    await expect(coordinator.commands.recoverPrivacyCleanup()).resolves.toBe(true);
+    expect(cleanupAbandoned).toHaveBeenCalledTimes(3);
+  });
+
+  it('coalesces callers for B without swallowing B into an in-flight A recovery', async () => {
+    const cleanupA = deferred<CleanupReceipt>();
+    const cleanupB = deferred<CleanupReceipt>();
+    const cleanupAbandoned = jest.fn()
+      .mockResolvedValueOnce(CLEAN)
+      .mockImplementationOnce(() => cleanupA.promise)
+      .mockImplementationOnce(() => cleanupB.promise);
+    const { coordinator } = harness({
+      tempFiles: {
+        cleanupAbandoned,
+        cleanupRequest: jest.fn(async () => CLEAN),
+      },
+      cleanupTimeoutMs: 1_000,
+    });
+    await coordinator.initialize();
+    const authorityA = coordinator.commands.beginPdfPick(new AbortController().signal);
+    await failAbandonedPick(coordinator, authorityA);
+    const recoveryA = coordinator.commands.recoverPrivacyCleanup();
+    await flushPromises();
+    const authorityB = coordinator.commands.beginPdfPick(new AbortController().signal);
+    await failAbandonedPick(coordinator, authorityB);
+
+    const recoveryB = coordinator.commands.recoverPrivacyCleanup();
+    const duplicateB = coordinator.commands.recoverPrivacyCleanup();
+    const wasSwallowed = recoveryB === recoveryA;
+    cleanupA.resolve({ attempted: 1, deleted: 1, failed: 0, refused: 0 });
+    const resultA = await recoveryA;
+    let resultB: boolean;
+    if (wasSwallowed) {
+      resultB = await recoveryB;
+    } else {
+      await flushPromises();
+      expect(cleanupAbandoned).toHaveBeenCalledTimes(3);
+      cleanupB.resolve({ attempted: 1, deleted: 1, failed: 0, refused: 0 });
+      resultB = await recoveryB;
+    }
+
+    expect(recoveryB).not.toBe(recoveryA);
+    expect(duplicateB).toBe(recoveryB);
+    expect(resultA).toBe(false);
+    expect(resultB).toBe(true);
+    expect(coordinator.getState()).toMatchObject({
+      privacyReadiness: 'ready',
+      cleanupPending: false,
+    });
+  });
+
+  it.each(['failed', 'thrown'] as const)(
+    'keeps B blocked without a transient ready state or automatic retry when A cleanup is %s',
+    async outcome => {
+      const cleanupA = deferred<CleanupReceipt>();
+      const cleanupAbandoned = jest.fn()
+        .mockResolvedValueOnce(CLEAN)
+        .mockImplementationOnce(() => cleanupA.promise)
+        .mockResolvedValueOnce(CLEAN);
+      const { coordinator } = harness({
+        tempFiles: {
+          cleanupAbandoned,
+          cleanupRequest: jest.fn(async () => CLEAN),
+        },
+        cleanupTimeoutMs: 1_000,
+      });
+      await coordinator.initialize();
+      const observedReadiness: string[] = [];
+      coordinator.subscribe(() => observedReadiness.push(coordinator.getState().privacyReadiness));
+      const authorityA = coordinator.commands.beginPdfPick(new AbortController().signal);
+      await failAbandonedPick(coordinator, authorityA);
+      const recoveryA = coordinator.commands.recoverPrivacyCleanup();
+      await flushPromises();
+      const authorityB = coordinator.commands.beginPdfPick(new AbortController().signal);
+      await failAbandonedPick(coordinator, authorityB);
+
+      if (outcome === 'failed') {
+        cleanupA.resolve({ attempted: 1, deleted: 0, failed: 1, refused: 0 });
+      } else {
+        cleanupA.reject(new Error('private abandoned cleanup cause'));
+      }
+
+      await expect(recoveryA).resolves.toBe(false);
+      await flushPromises();
+      expect(cleanupAbandoned).toHaveBeenCalledTimes(2);
+      expect(observedReadiness).not.toContain('ready');
+      expect(coordinator.getState()).toMatchObject({
+        privacyReadiness: 'blocked',
+        cleanupPending: true,
+        error: { category: 'privacy' },
+      });
+
+      await expect(coordinator.commands.recoverPrivacyCleanup()).resolves.toBe(true);
+      expect(cleanupAbandoned).toHaveBeenCalledTimes(3);
+    },
+  );
+
+  it('keeps B blocked without a transient ready state or automatic retry when A cleanup times out', async () => {
+    jest.useFakeTimers();
+    try {
+      const cleanupAbandoned = jest.fn()
+        .mockResolvedValueOnce(CLEAN)
+        .mockImplementationOnce(() => new Promise<CleanupReceipt>(() => undefined))
+        .mockResolvedValueOnce(CLEAN);
+      const { coordinator } = harness({
+        tempFiles: {
+          cleanupAbandoned,
+          cleanupRequest: jest.fn(async () => CLEAN),
+        },
+        cleanupTimeoutMs: 25,
+      });
+      await coordinator.initialize();
+      const observedReadiness: string[] = [];
+      coordinator.subscribe(() => observedReadiness.push(coordinator.getState().privacyReadiness));
+      const authorityA = coordinator.commands.beginPdfPick(new AbortController().signal);
+      await failAbandonedPick(coordinator, authorityA);
+      const recoveryA = coordinator.commands.recoverPrivacyCleanup();
+      await flushPromises();
+      const authorityB = coordinator.commands.beginPdfPick(new AbortController().signal);
+      await failAbandonedPick(coordinator, authorityB);
+
+      await jest.advanceTimersByTimeAsync(25);
+      await expect(recoveryA).resolves.toBe(false);
+      expect(cleanupAbandoned).toHaveBeenCalledTimes(2);
+      expect(observedReadiness).not.toContain('ready');
+      expect(coordinator.getState().privacyReadiness).toBe('blocked');
+
+      await expect(coordinator.commands.recoverPrivacyCleanup()).resolves.toBe(true);
+      expect(cleanupAbandoned).toHaveBeenCalledTimes(3);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
   it('serializes abandoned recovery behind an in-flight exact cleanup mutation', async () => {
     const exactCleanup = deferred<CleanupReceipt>();
     const cleanupAbandoned = jest.fn(async () => CLEAN);
@@ -2162,6 +2331,105 @@ describe('disposal and sensitive-data boundary', () => {
     await flushPromises();
 
     expect(coordinator.getState()).toMatchObject({ source: null, jobDescription: '', result: null });
+  });
+
+  it.each([
+    ['failed', { attempted: 1, deleted: 0, failed: 1, refused: 0 }],
+    ['refused', { attempted: 0, deleted: 0, failed: 0, refused: 1 }],
+    [
+      'malformed',
+      { attempted: 1, deleted: 1, failed: 0, refused: 0, path: '/private/cache/resume.pdf' },
+    ],
+  ] as const)('retains a content-free late disposal obligation after %s cleanup', async (_label, receipt) => {
+    const cleanupAbandoned = jest.fn()
+      .mockResolvedValueOnce(CLEAN)
+      .mockResolvedValueOnce(receipt);
+    const { coordinator } = harness({
+      tempFiles: {
+        cleanupAbandoned: cleanupAbandoned as unknown as AnalysisCoordinatorOptions['tempFiles']['cleanupAbandoned'],
+        cleanupRequest: jest.fn(async () => CLEAN),
+      },
+    });
+    await coordinator.initialize();
+    const authority = coordinator.commands.beginPdfPick(new AbortController().signal);
+    const notifications: string[] = [];
+    coordinator.subscribe(() => notifications.push(coordinator.getState().privacyReadiness));
+    await coordinator.dispose();
+    const notificationsBeforeFailure = notifications.length;
+
+    await failAbandonedPick(coordinator, authority);
+
+    expect(cleanupAbandoned).toHaveBeenCalledTimes(2);
+    expect(notifications).toHaveLength(notificationsBeforeFailure);
+    expect(coordinator.getState()).toMatchObject({
+      status: 'failed',
+      privacyReadiness: 'blocked',
+      source: null,
+      cleanupPending: true,
+      error: { category: 'privacy', retryable: false },
+    });
+    expect(JSON.stringify(coordinator.getState())).not.toContain('/private/cache/resume.pdf');
+  });
+
+  it('retains a content-free late disposal obligation when cleanup throws', async () => {
+    const privateCause = 'file:///private/provider/late-resume.pdf';
+    const cleanupAbandoned = jest.fn()
+      .mockResolvedValueOnce(CLEAN)
+      .mockRejectedValueOnce(new Error(privateCause));
+    const { coordinator } = harness({
+      tempFiles: {
+        cleanupAbandoned,
+        cleanupRequest: jest.fn(async () => CLEAN),
+      },
+    });
+    await coordinator.initialize();
+    const authority = coordinator.commands.beginPdfPick(new AbortController().signal);
+    await coordinator.dispose();
+
+    await failAbandonedPick(coordinator, authority);
+
+    expect(cleanupAbandoned).toHaveBeenCalledTimes(2);
+    expect(coordinator.getState()).toMatchObject({
+      status: 'failed',
+      privacyReadiness: 'blocked',
+      cleanupPending: true,
+      error: { category: 'privacy' },
+    });
+    expect(JSON.stringify(coordinator.getState())).not.toContain(privateCause);
+  });
+
+  it('bounds a late disposal cleanup timeout and retains the obligation', async () => {
+    jest.useFakeTimers();
+    try {
+      const cleanupAbandoned = jest.fn()
+        .mockResolvedValueOnce(CLEAN)
+        .mockImplementationOnce(() => new Promise<CleanupReceipt>(() => undefined));
+      const { coordinator } = harness({
+        tempFiles: {
+          cleanupAbandoned,
+          cleanupRequest: jest.fn(async () => CLEAN),
+        },
+        cleanupTimeoutMs: 25,
+      });
+      await coordinator.initialize();
+      const authority = coordinator.commands.beginPdfPick(new AbortController().signal);
+      await coordinator.dispose();
+
+      const failure = failAbandonedPick(coordinator, authority);
+      await flushPromises();
+      expect(cleanupAbandoned).toHaveBeenCalledTimes(2);
+      await jest.advanceTimersByTimeAsync(25);
+      await failure;
+
+      expect(coordinator.getState()).toMatchObject({
+        status: 'failed',
+        privacyReadiness: 'blocked',
+        cleanupPending: true,
+        error: { category: 'privacy' },
+      });
+    } finally {
+      jest.useRealTimers();
+    }
   });
 
   it('does not persist, log, or leak raw private causes while coordinating', async () => {
