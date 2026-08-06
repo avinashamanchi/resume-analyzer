@@ -348,9 +348,11 @@ export class AnalysisCoordinator {
   private mounted = true;
   private nextPdfClaimEpoch = 0;
   private committedPdfClaim: PdfClaim | null = null;
+  private retainedVisionPdfClaim: PdfClaim | null = null;
   private readonly pdfClaims = new Map<string, PdfClaim>();
   private readonly ownedPdfRequestIds = new Set<string>();
   private readonly cleanupOperations = new Map<TempFileLease, Promise<boolean>>();
+  private readonly inFlightCleanupClaimFences = new Set<Promise<void>>();
   private readonly inFlightExactCleanupFences = new Set<Promise<void>>();
   private readonly preReadyPdfCleanupOperations = new Set<Promise<boolean>>();
   private readonly issuedPdfPickAuthorities = new Set<PdfPickAuthority>();
@@ -360,6 +362,7 @@ export class AnalysisCoordinator {
   private readonly abandonedCleanupFences = new Map<number, Promise<void>>();
   private abandonedCleanupFenceTail: Promise<void> = Promise.resolve();
   private abandonedCleanupTail: Promise<void> = Promise.resolve();
+  private cleanupPortTail: Promise<void> = Promise.resolve();
   private readonly privacyRecoveries = new Map<number, Promise<boolean>>();
   private disposalPrivacyReadiness: AnalysisState['privacyReadiness'] | null = null;
   private pendingPdfPick: PendingPdfPick | null = null;
@@ -446,7 +449,8 @@ export class AnalysisCoordinator {
   private async performInitialization(): Promise<void> {
     let ready = false;
     try {
-      const receipt = await this.boundedCleanup(() => this.tempFiles.cleanupAbandoned());
+      const receipt = await this.boundedCleanup(() =>
+        this.enqueueCleanupPort(() => this.tempFiles.cleanupAbandoned()));
       ready = isVerifiedCleanupReceipt(receipt);
     } catch {
       ready = false;
@@ -556,6 +560,17 @@ export class AnalysisCoordinator {
     return current !== undefined &&
       current.lease !== claim.lease &&
       this.isPdfClaimCurrent(current);
+  }
+
+  private retainedVisionPdfIsCurrent(): boolean {
+    const claim = this.retainedVisionPdfClaim;
+    const source = this.state.source;
+    return claim !== null &&
+      source?.kind === 'pdf' &&
+      source.requestId === claim.requestId &&
+      source.uri === claim.uri &&
+      source.lease === claim.lease &&
+      this.isPdfClaimCurrent(claim);
   }
 
   private prepareIncomingSource(
@@ -779,13 +794,6 @@ export class AnalysisCoordinator {
   private markAbandonedCleanupRequired(
     exactCleanupFence?: Promise<void>,
   ): number {
-    const supersededEpoch = this.currentAbandonedCleanupEpoch;
-    if (
-      supersededEpoch !== null &&
-      !this.abandonedCleanupOperations.has(supersededEpoch)
-    ) {
-      this.abandonedCleanupFences.delete(supersededEpoch);
-    }
     this.nextAbandonedCleanupEpoch += 1;
     this.currentAbandonedCleanupEpoch = this.nextAbandonedCleanupEpoch;
     const exactCleanupFences = [...this.inFlightExactCleanupFences];
@@ -812,6 +820,7 @@ export class AnalysisCoordinator {
     const prior = this.abandonedCleanupTail;
     const operation = (async () => {
       await prior;
+      if (this.currentAbandonedCleanupEpoch !== epoch) return false;
       const exactCleanupFence = this.abandonedCleanupFences.get(epoch);
       if (exactCleanupFence !== undefined) {
         try {
@@ -820,9 +829,11 @@ export class AnalysisCoordinator {
           return false;
         }
       }
+      if (this.currentAbandonedCleanupEpoch !== epoch) return false;
       let verified = false;
       try {
-        const receipt = await this.boundedCleanup(() => this.tempFiles.cleanupAbandoned());
+        const receipt = await this.boundedCleanup(() =>
+          this.enqueueCleanupPort(() => this.tempFiles.cleanupAbandoned()));
         verified = isVerifiedCleanupReceipt(receipt);
       } catch {
         verified = false;
@@ -870,8 +881,18 @@ export class AnalysisCoordinator {
       this.currentAbandonedCleanupEpoch === null
     ) return false;
     await this.mutationTail;
-    if (!this.mounted || this.state.privacyReadiness !== 'blocked') return false;
-    if (capturedEpoch !== null) await this.cleanupAbandonedEpoch(capturedEpoch);
+    if (
+      !this.mounted ||
+      this.state.privacyReadiness !== 'blocked' ||
+      capturedEpoch === null ||
+      this.currentAbandonedCleanupEpoch !== capturedEpoch
+    ) return false;
+    const swept = await this.cleanupAbandonedEpoch(capturedEpoch);
+    if (!swept) return false;
+    while (this.inFlightCleanupClaimFences.size > 0) {
+      await Promise.all([...this.inFlightCleanupClaimFences]);
+      if (!this.mounted || this.state.privacyReadiness !== 'blocked') return false;
+    }
     if (
       !this.mounted ||
       this.currentAbandonedCleanupEpoch !== null
@@ -1376,9 +1397,7 @@ export class AnalysisCoordinator {
     if (
       this.mounted &&
       this.state.mutation === 'none' &&
-      this.state.status === 'failed' &&
-      this.state.error?.code === 'scan_required' &&
-      this.state.source?.kind === 'pdf'
+      this.retainedVisionPdfIsCurrent()
     ) return this.reset();
     return Promise.resolve();
   }
@@ -1536,7 +1555,13 @@ export class AnalysisCoordinator {
       failure.category === 'service' &&
       failure.code === 'scan_required' &&
       !activation.controller.signal.aborted;
-    const retainsPdfForVision = scanRequired && this.isVisionAvailable();
+    const retainedVisionClaim = scanRequired &&
+      this.isVisionAvailable() &&
+      activation.claim !== null &&
+      this.isPdfClaimCurrent(activation.claim)
+      ? activation.claim
+      : null;
+    const retainsPdfForVision = retainedVisionClaim !== null;
     const unavailableVisionCleanup = scanRequired && !retainsPdfForVision;
     let consumed = false;
     if (activation.source.kind === 'pdf' && !retainsPdfForVision) {
@@ -1563,6 +1588,7 @@ export class AnalysisCoordinator {
 
     if (!this.activationIsCurrent(activation)) return;
     if (activation.controller.signal.aborted) failure = new CoordinatorAbort();
+    if (retainsPdfForVision) this.retainedVisionPdfClaim = retainedVisionClaim;
     if (failure === null && response !== null) {
       this.dispatch({
         type: 'analysisSucceeded',
@@ -1673,9 +1699,7 @@ export class AnalysisCoordinator {
     this.dispatch({ type: 'lifecycleInvalidated', lifecycleEpoch: this.lifecycleEpoch });
     const retainedScanRequiredPdf =
       this.state.mutation === 'none' &&
-      this.state.status === 'failed' &&
-      this.state.error?.code === 'scan_required' &&
-      this.state.source?.kind === 'pdf';
+      this.retainedVisionPdfIsCurrent();
     if (
       this.state.mutation === 'selecting' ||
       this.state.mutation === 'editing' ||
@@ -1700,6 +1724,7 @@ export class AnalysisCoordinator {
         return;
       }
       this.committedPdfClaim = null;
+      this.retainedVisionPdfClaim = null;
       this.dispatch({ type: 'reset', generation });
     });
   }
@@ -1735,6 +1760,7 @@ export class AnalysisCoordinator {
     this.visionExtraction = null;
     this.listeners.clear();
     this.committedPdfClaim = null;
+    this.retainedVisionPdfClaim = null;
     this.refreshDisposedState();
   }
 
@@ -1779,6 +1805,14 @@ export class AnalysisCoordinator {
     if (current !== undefined) return current;
     const operation = this.performCleanupClaim(claim);
     this.cleanupOperations.set(claim.lease, operation);
+    const completionFence = operation.then(
+      () => undefined,
+      () => undefined,
+    );
+    this.inFlightCleanupClaimFences.add(completionFence);
+    void completionFence.finally(() => {
+      this.inFlightCleanupClaimFences.delete(completionFence);
+    });
     void operation.finally(() => {
       if (this.cleanupOperations.get(claim.lease) === operation) {
         this.cleanupOperations.delete(claim.lease);
@@ -1788,7 +1822,7 @@ export class AnalysisCoordinator {
   }
 
   private async performCleanupClaim(claim: PdfClaim): Promise<boolean> {
-    const exactCleanup = Promise.resolve().then(() =>
+    const exactCleanup = this.enqueueCleanupPort(() =>
       this.tempFiles.cleanupRequest(claim.requestId, claim.lease));
     const exactCleanupFence = exactCleanup.then(
       () => undefined,
@@ -1819,6 +1853,7 @@ export class AnalysisCoordinator {
       this.pdfClaims.delete(claim.requestId);
       this.ownedPdfRequestIds.delete(claim.requestId);
       if (this.committedPdfClaim === current) this.committedPdfClaim = null;
+      if (this.retainedVisionPdfClaim === current) this.retainedVisionPdfClaim = null;
     }
   }
 
@@ -1843,6 +1878,15 @@ export class AnalysisCoordinator {
 
   private boundedCleanup(operation: () => Promise<CleanupReceipt>): Promise<CleanupReceipt> {
     return this.boundedOperation(operation);
+  }
+
+  private enqueueCleanupPort<T>(operation: () => Promise<T>): Promise<T> {
+    const result = this.cleanupPortTail.then(operation);
+    this.cleanupPortTail = result.then(
+      () => undefined,
+      () => undefined,
+    );
+    return result;
   }
 
   private boundedOperation<T>(operation: () => Promise<T>): Promise<T> {

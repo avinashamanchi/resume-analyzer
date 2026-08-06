@@ -1276,7 +1276,7 @@ describe('quarantined native-picker cleanup recovery', () => {
     });
   });
 
-  it('blocks a delayed B cleanup refusal after the different A claim has released', async () => {
+  it('serializes a delayed B refusal before releasing the authoritative A claim', async () => {
     const cleanupB = deferred<CleanupReceipt>();
     const cleanupRequest = jest.fn((_requestId: string, lease: symbol) =>
       lease === LEASE_B ? cleanupB.promise : Promise.resolve(CLEAN),
@@ -1299,16 +1299,23 @@ describe('quarantined native-picker cleanup recovery', () => {
     await flushPromises();
     expect(cleanupRequest).toHaveBeenCalledWith(REQUEST_A, LEASE_B);
 
-    await coordinator.commands.reset();
-    expect(cleanupRequest).toHaveBeenCalledWith(REQUEST_A, LEASE_A);
+    const reset = coordinator.commands.reset();
+    await flushPromises();
+    expect(cleanupRequest).not.toHaveBeenCalledWith(REQUEST_A, LEASE_A);
     cleanupB.resolve({ attempted: 0, deleted: 0, failed: 0, refused: 1 });
     await expect(collision).resolves.toEqual({ committed: false });
+    await reset;
 
+    expect(cleanupRequest.mock.calls).toEqual([
+      [REQUEST_A, LEASE_B],
+      [REQUEST_A, LEASE_A],
+    ]);
     expect(coordinator.getState()).toMatchObject({
-      privacyReadiness: 'blocked',
-      cleanupPending: true,
+      status: 'idle',
+      privacyReadiness: 'ready',
+      cleanupPending: false,
       source: null,
-      error: { category: 'privacy' },
+      error: null,
     });
   });
 
@@ -1427,7 +1434,7 @@ describe('quarantined native-picker cleanup recovery', () => {
       const disposal = coordinator.dispose();
       await jest.advanceTimersByTimeAsync(25);
       await disposal;
-      expect(cleanupAbandoned).toHaveBeenCalledTimes(3);
+      expect(cleanupAbandoned).toHaveBeenCalledTimes(2);
       expect(coordinator.getState().privacyReadiness).toBe('blocked');
     } finally {
       jest.useRealTimers();
@@ -1648,11 +1655,111 @@ describe('quarantined native-picker cleanup recovery', () => {
       expect(observedReadiness).not.toContain('ready');
       expect(coordinator.getState().privacyReadiness).toBe('blocked');
 
-      await expect(coordinator.commands.recoverPrivacyCleanup()).resolves.toBe(true);
-      expect(cleanupAbandoned).toHaveBeenCalledTimes(3);
+      const recoveryB = coordinator.commands.recoverPrivacyCleanup();
+      await jest.advanceTimersByTimeAsync(25);
+      await expect(recoveryB).resolves.toBe(false);
+      expect(cleanupAbandoned).toHaveBeenCalledTimes(2);
+      expect(coordinator.getState().privacyReadiness).toBe('blocked');
     } finally {
       jest.useRealTimers();
     }
+  });
+
+  it('does not let a superseding epoch drop the unresolved exact fence of a yielded recovery', async () => {
+    jest.useFakeTimers();
+    try {
+      const lateExactCleanup = deferred<CleanupReceipt>();
+      const cleanupRequest = jest.fn(() => lateExactCleanup.promise);
+      const cleanupAbandoned = jest.fn(async () => CLEAN);
+      const { coordinator } = harness({
+        tempFiles: { cleanupAbandoned, cleanupRequest },
+        cleanupTimeoutMs: 25,
+      });
+      await coordinator.initialize();
+      await coordinator.commands.selectSource(pdfSource());
+
+      const reset = coordinator.commands.reset();
+      await jest.advanceTimersByTimeAsync(25);
+      await reset;
+      expect(coordinator.getState().privacyReadiness).toBe('blocked');
+
+      const laterAuthority = coordinator.commands.beginPdfPick(new AbortController().signal);
+      const staleRecovery = coordinator.commands.recoverPrivacyCleanup();
+      const newerFailure = coordinator.commands.failPdfPick(
+        laterAuthority,
+        'abandoned_cleanup_required',
+      );
+      await flushPromises(12);
+
+      expect(cleanupAbandoned).toHaveBeenCalledTimes(1);
+      await expect(staleRecovery).resolves.toBe(false);
+      await newerFailure;
+      expect(coordinator.getState()).toMatchObject({
+        privacyReadiness: 'blocked',
+        cleanupPending: true,
+      });
+
+      lateExactCleanup.resolve({ attempted: 1, deleted: 0, failed: 1, refused: 0 });
+      await flushPromises();
+      await expect(coordinator.commands.recoverPrivacyCleanup()).resolves.toBe(true);
+      expect(cleanupRequest).toHaveBeenCalledTimes(1);
+      expect(cleanupAbandoned).toHaveBeenCalledTimes(2);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('does not publish ready while a late exact discard started during recovery is unresolved', async () => {
+    const recoverySweep = deferred<CleanupReceipt>();
+    const lateExactCleanup = deferred<CleanupReceipt>();
+    const cleanupAbandoned = jest.fn()
+      .mockResolvedValueOnce(CLEAN)
+      .mockImplementationOnce(() => recoverySweep.promise)
+      .mockResolvedValueOnce(CLEAN);
+    const cleanupRequest = jest.fn(() => lateExactCleanup.promise);
+    const { coordinator } = harness({
+      tempFiles: { cleanupAbandoned, cleanupRequest },
+      cleanupTimeoutMs: 1_000,
+    });
+    await coordinator.initialize();
+    const initialAuthority = coordinator.commands.beginPdfPick(new AbortController().signal);
+    await failAbandonedPick(coordinator, initialAuthority);
+    const lateAuthority = coordinator.commands.beginPdfPick(new AbortController().signal);
+    const observedReadiness: string[] = [];
+    coordinator.subscribe(() => observedReadiness.push(coordinator.getState().privacyReadiness));
+
+    let recoverySettled = false;
+    const recovery = coordinator.commands.recoverPrivacyCleanup()
+      .finally(() => { recoverySettled = true; });
+    await flushPromises();
+    expect(cleanupAbandoned).toHaveBeenCalledTimes(2);
+
+    const lateDiscard = coordinator.commands.completePdfPick(
+      lateAuthority,
+      pdfSource(REQUEST_B),
+    );
+    await flushPromises();
+    expect(cleanupRequest).not.toHaveBeenCalled();
+
+    recoverySweep.resolve(CLEAN);
+    await flushPromises(12);
+    expect(cleanupRequest).toHaveBeenCalledWith(REQUEST_B, LEASE_B);
+    expect(recoverySettled).toBe(false);
+    expect(coordinator.getState().privacyReadiness).toBe('blocked');
+    expect(observedReadiness).not.toContain('ready');
+
+    lateExactCleanup.resolve({ attempted: 1, deleted: 0, failed: 1, refused: 0 });
+    await lateDiscard;
+    await expect(recovery).resolves.toBe(false);
+    expect(observedReadiness).not.toContain('ready');
+    expect(coordinator.getState()).toMatchObject({
+      privacyReadiness: 'blocked',
+      cleanupPending: true,
+    });
+
+    await expect(coordinator.commands.recoverPrivacyCleanup()).resolves.toBe(true);
+    expect(cleanupRequest).toHaveBeenCalledTimes(1);
+    expect(cleanupAbandoned).toHaveBeenCalledTimes(3);
   });
 
   it('serializes abandoned recovery behind an in-flight exact cleanup mutation', async () => {
@@ -1999,6 +2106,32 @@ describe('analysis generations and cancellation', () => {
     expect(coordinator.getState()).toMatchObject({ source: null, status: 'idle' });
   });
 
+  it('exact-cleans durable retained OCR authority on route leave after a job edit', async () => {
+    const { api, coordinator, tempFiles } = harness({
+      vision: { isAvailable: () => true, extractReviewedText: jest.fn() },
+    } as never);
+    const source = pdfSource();
+    await coordinator.initialize();
+    await coordinator.commands.selectSource(source);
+    api.analyze.mockRejectedValueOnce(new ResumeApiError('service', {
+      code: 'scan_required',
+      retryable: false,
+    }));
+    await coordinator.commands.analyze();
+    await coordinator.commands.setJobDescription('updated private job draft');
+
+    await coordinator.commands.cancelVisionExtraction();
+
+    expect(tempFiles.cleanupRequest).toHaveBeenCalledTimes(1);
+    expect(tempFiles.cleanupRequest).toHaveBeenCalledWith(REQUEST_A, source.lease);
+    expect(coordinator.getState()).toMatchObject({
+      status: 'idle',
+      privacyReadiness: 'ready',
+      source: null,
+      cleanupPending: false,
+    });
+  });
+
   it.each(['inactive', 'background'] as const)(
     '%s exact-cleans a retained scan-required PDF before OCR starts and foreground cannot revive it',
     async lifecycle => {
@@ -2013,6 +2146,53 @@ describe('analysis generations and cancellation', () => {
         retryable: false,
       }));
       await coordinator.commands.analyze();
+
+      await coordinator.handleAppState(lifecycle);
+
+      expect(tempFiles.cleanupRequest).toHaveBeenCalledTimes(1);
+      expect(tempFiles.cleanupRequest).toHaveBeenCalledWith(REQUEST_A, source.lease);
+      expect(coordinator.getState()).toMatchObject({
+        status: 'idle',
+        privacyReadiness: 'ready',
+        source: null,
+        cleanupPending: false,
+        lifecycleEpoch: 1,
+      });
+      await coordinator.handleAppState('active');
+      expect(coordinator.getState()).toMatchObject({
+        status: 'idle',
+        source: null,
+        lifecycleEpoch: 1,
+      });
+      expect(api.analyze).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it.each(['inactive', 'background'] as const)(
+    '%s exact-cleans retained OCR authority after a job edit clears the scan-required error',
+    async lifecycle => {
+      const { api, coordinator, tempFiles } = harness({
+        vision: { isAvailable: () => true, extractReviewedText: jest.fn() },
+      } as never);
+      const source = pdfSource();
+      await coordinator.initialize();
+      await coordinator.commands.selectSource(source);
+      api.analyze.mockRejectedValueOnce(new ResumeApiError('service', {
+        code: 'scan_required',
+        retryable: false,
+      }));
+      await coordinator.commands.analyze();
+
+      await expect(coordinator.commands.setJobDescription('updated private job draft'))
+        .resolves.toEqual({
+          committed: true,
+          generation: coordinator.getState().generation,
+        });
+      expect(coordinator.getState()).toMatchObject({
+        status: 'ready',
+        source,
+        error: null,
+      });
 
       await coordinator.handleAppState(lifecycle);
 
@@ -2057,6 +2237,8 @@ describe('analysis generations and cancellation', () => {
         retryable: false,
       }));
       await coordinator.commands.analyze();
+      await expect(coordinator.commands.setJobDescription('updated private job draft'))
+        .resolves.toMatchObject({ committed: true });
 
       await coordinator.handleAppState(lifecycle);
 
