@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
+"""Fail-closed retention architecture checks using the CPython 3.12 AST schema."""
+
 from __future__ import annotations
 
 import argparse
 import ast
+from collections import Counter
 from dataclasses import dataclass
 import hashlib
 import re
@@ -72,8 +75,14 @@ RULES = (
     ),
 )
 
+CANONICAL_AST_PYTHON = (3, 12)
+CAPABILITY_RULES = {
+    "durable": "durable-storage-capability",
+    "logging": "logging-sink",
+    "dynamic": "dynamic-capability-synthesis",
+}
 DURABLE_MODULE_ROOTS = frozenset(
-    {"redis", "shelve", "sqlalchemy", "sqlite3"}
+    {"psycopg", "psycopg2", "redis", "shelve", "sqlalchemy", "sqlite3"}
 )
 DURABLE_CONSTRUCTORS = frozenset(
     {
@@ -89,10 +98,12 @@ DURABLE_METHODS = frozenset(
     {
         "bulk_save_objects",
         "commit",
+        "connect",
         "delete",
         "execute",
         "executemany",
         "expire",
+        "from_url",
         "hset",
         "incr",
         "insert",
@@ -117,23 +128,68 @@ DURABLE_METHODS = frozenset(
         "zadd",
     }
 )
-FILE_METHODS = frozenset({"open", "touch", "write", "writelines"})
-FILE_OPEN_CAPABILITIES = frozenset(
+FILE_METHODS = frozenset(
+    {
+        "ftruncate",
+        "open",
+        "pwrite",
+        "pwritev",
+        "touch",
+        "truncate",
+        "write",
+        "writev",
+        "writelines",
+    }
+)
+READABLE_OPEN_CAPABILITIES = frozenset(
     {
         "aiofiles.open",
         "builtins.open",
-        "io.FileIO",
         "io.open",
         "os.fdopen",
         "os.open",
         "pathlib.Path.open",
+    }
+)
+ALWAYS_DURABLE_FILE_CAPABILITIES = frozenset(
+    {
+        "io.FileIO",
         "tempfile.NamedTemporaryFile",
+        "tempfile.SpooledTemporaryFile",
         "tempfile.TemporaryFile",
+        "tempfile.mkdtemp",
+        "tempfile.mkstemp",
+    }
+)
+LOW_LEVEL_WRITE_CAPABILITIES = frozenset(
+    {
+        "os.ftruncate",
+        "os.pwrite",
+        "os.pwritev",
+        "os.truncate",
+        "os.write",
+        "os.writev",
+    }
+)
+DYNAMIC_BUILTINS = frozenset(
+    {"__import__", "compile", "eval", "exec", "globals", "locals"}
+)
+DYNAMIC_CANONICAL_CAPABILITIES = frozenset(
+    {
+        "builtins.__import__",
+        "builtins.compile",
+        "builtins.eval",
+        "builtins.exec",
+        "builtins.globals",
+        "builtins.locals",
+        "operator.attrgetter",
+        "operator.methodcaller",
     }
 )
 LOG_METHODS = frozenset(
     {"critical", "debug", "error", "exception", "info", "log", "warning"}
 )
+READ_ONLY_OPEN_MODES = frozenset({"br", "r", "rb", "rt", "tr"})
 DURABLE_RECEIVER_PATTERN = re.compile(
     r"(?:^|_)(?:cache|connection|cursor|database|db|redis|shelf|shelve|sql|sqlite|store|transaction)(?:_|$)",
     re.IGNORECASE,
@@ -144,28 +200,152 @@ LOG_RECEIVER_PATTERN = re.compile(
 
 
 @dataclass(frozen=True)
-class TrustedBoundary:
-    fingerprint: str
+class CapabilityAttestation:
     policy: str
+    fingerprint: str
+    count: int
 
 
-TRUSTED_BOUNDARIES: dict[str, tuple[TrustedBoundary, ...]] = {
-    "server/rate_limit.py": (
-        TrustedBoundary(
-            "64fae6082862abdd80a0e31492fd30c6ee7982b42c4da30e1e00d08ba7c1151a",
-            "durable",
+@dataclass(frozen=True)
+class TrustedBoundary:
+    module_fingerprint: str
+    approved_capabilities: tuple[CapabilityAttestation, ...]
+
+
+TRUSTED_BOUNDARIES: dict[str, TrustedBoundary] = {
+    "server/rate_limit.py": TrustedBoundary(
+        module_fingerprint=(
+            "eb7c5fa4887dd809b0c12a8b48c1de1d7259d5b4b5de2cbedd1a4106540667e4"
+        ),
+        approved_capabilities=(
+            # transaction.delete
+            CapabilityAttestation(
+                "durable",
+                "1861e3e1c73738f11ff460f711980eb0e94b5a62ef809044ef9e6ba3347a1356",
+                1,
+            ),
+            # transaction.expire
+            CapabilityAttestation(
+                "durable",
+                "2e5525fe367c3b1721f39433fac92a6ee4fa9abfb95486bbe117d081f5184a79",
+                1,
+            ),
+            # transaction.execute (two call sites)
+            CapabilityAttestation(
+                "durable",
+                "30ac02c88c7e8249dfba976649f2b0402089570462a0ef9287863cc38f6f1d60",
+                2,
+            ),
+            # redis.exceptions import
+            CapabilityAttestation(
+                "durable",
+                "41bb6862b9e67384b3b5bf4c6d2abfca15c92a15e6476ae98f0c5b06e4e655ad",
+                1,
+            ),
+            # self._redis.pipeline (two call sites)
+            CapabilityAttestation(
+                "durable",
+                "4e7660224a10225d5d36de126bf8627b22ab45310bfb9ce4879c7b7f849d84bb",
+                2,
+            ),
+            # Redis.from_url
+            CapabilityAttestation(
+                "durable",
+                "5f3f802995ef5259c58a81da281b7957a5c9887213d8dfe0497270a11be81547",
+                1,
+            ),
+            # transaction.unwatch (two call sites)
+            CapabilityAttestation(
+                "durable",
+                "76403351d874cdd6adb95ef4cc213f99efb22a059fa23ba660c3fb08dc07ead0",
+                2,
+            ),
+            # transaction.watch (two call sites)
+            CapabilityAttestation(
+                "durable",
+                "9abd1a816ca44db2c96795248c1e10e7cdf422661b767435104d06e9415b547f",
+                2,
+            ),
+            # transaction.incr
+            CapabilityAttestation(
+                "durable",
+                "acc838fa929cc76572c7de20fb6d720d8f05a52d1b53b4cd6a3f5c53d74e5cbe",
+                1,
+            ),
+            # self._redis.set
+            CapabilityAttestation(
+                "durable",
+                "b6909f6bcf1012f4b5402a529fa794d5315d14ffbe28566ce5ac9f6821d725dd",
+                1,
+            ),
+            # Redis import
+            CapabilityAttestation(
+                "durable",
+                "c994cd1971cad9038c734ff7a351099fe3b8ecba98d658febd8ef3ada5bf6249",
+                1,
+            ),
+            # transaction.multi (two call sites)
+            CapabilityAttestation(
+                "durable",
+                "f46bb03ba971150f6d0803a588a2024647577fe191eeab40b2d31bc80f22cf85",
+                2,
+            ),
+            # ContextVar.set (two conservative set-capability matches)
+            CapabilityAttestation(
+                "durable",
+                "f693074f0d94f9a6b9c70823f6edbacf88061ce0ca1f7698f716781fe571d065",
+                2,
+            ),
         ),
     ),
-    "server/app.py": (
-        TrustedBoundary(
-            "6b591616b49d3a8de8f26d320a0af1efb027171264a733f9982d5c055a50038a",
-            "logging",
+    "server/app.py": TrustedBoundary(
+        module_fingerprint=(
+            "a9381228e20769fafd51680ce9f29040be89c36a3d134800e2852e4b416e00f2"
+        ),
+        approved_capabilities=(
+            # sys.stderr (write receiver and explicit flush receiver)
+            CapabilityAttestation(
+                "logging",
+                "2c37fe503c4be9ad195b19655760a05c7ee9ff98e50100b31f2adb399baed6cb",
+                2,
+            ),
+            # sys.stderr.write
+            CapabilityAttestation(
+                "logging",
+                "f48fb992d4d732200eb68eb4ece8779628415e407dfeae7b6d69c2698a82fa1a",
+                1,
+            ),
         ),
     ),
-    "server/gunicorn_logger.py": (
-        TrustedBoundary(
-            "dd302863aa4e623d1eb82523452d499f73384157af26ab1b6b750a85637ff227",
-            "logging",
+    "server/gunicorn_logger.py": TrustedBoundary(
+        module_fingerprint=(
+            "b7aca9195ba3e7ae399aab1f398ee1e18adcb4510bb6095e9e31d5dd9d2bfd24"
+        ),
+        approved_capabilities=(
+            # gunicorn.glogging.Logger import
+            CapabilityAttestation(
+                "logging",
+                "2cf24e7c4e0991fd9cae84a578776e60e41b058e9a67a7be352976ed3f3b61c5",
+                1,
+            ),
+            # super().exception
+            CapabilityAttestation(
+                "logging",
+                "5fbd124d754fd2ef249e5c9ff21c8015633bb4b2d2ce936b9f4c9930ab62af6a",
+                1,
+            ),
+            # super().error
+            CapabilityAttestation(
+                "logging",
+                "7bfbb1e79a1d3053185a4dfe2504ea7db08b5bd1391b7a00e053577f2d0a2998",
+                1,
+            ),
+            # super().warning (two call sites)
+            CapabilityAttestation(
+                "logging",
+                "94c6bc7efaf9ed9ff637b8f520dae3c28d07d97fec9e8e5659cf4aaedcfda5c1",
+                2,
+            ),
         ),
     ),
 }
@@ -207,6 +387,8 @@ def _path_prefix_in(paths: set[AccessPath], path: AccessPath | None) -> bool:
 
 
 def _node_fingerprint(node: ast.AST) -> str:
+    # This intentionally includes every CPython 3.12 AST field, including
+    # type_params. Changing interpreter schemas requires an explicit re-attestation.
     def normalize(value: object) -> object:
         if isinstance(value, ast.AST):
             return (
@@ -214,7 +396,6 @@ def _node_fingerprint(node: ast.AST) -> str:
                 tuple(
                     (field, normalize(child))
                     for field, child in ast.iter_fields(value)
-                    if field != "type_params"
                 ),
             )
         if isinstance(value, list):
@@ -225,68 +406,138 @@ def _node_fingerprint(node: ast.AST) -> str:
 
 
 def _attested_node_ids(
-    relative_path: str, tree: ast.Module
-) -> tuple[set[int], set[int], set[str]]:
-    allowed_durable: set[int] = set()
-    allowed_logging: set[int] = set()
+    relative_path: str,
+    tree: ast.Module,
+    capability_nodes: dict[str, dict[int, ast.AST]],
+) -> tuple[dict[str, set[int]], set[str]]:
+    allowed = {policy: set() for policy in CAPABILITY_RULES}
     findings: set[str] = set()
-    for boundary in TRUSTED_BOUNDARIES.get(relative_path, ()):
-        if _node_fingerprint(tree) != boundary.fingerprint:
-            findings.add("trusted-retention-boundary-modified")
-            continue
-        target = allowed_durable if boundary.policy == "durable" else allowed_logging
-        target.update(id(node) for node in ast.walk(tree))
-    return allowed_durable, allowed_logging, findings
+    boundary = TRUSTED_BOUNDARIES.get(relative_path)
+    if boundary is None:
+        return allowed, findings
+
+    expected = Counter(
+        (approved.policy, approved.fingerprint)
+        for approved in boundary.approved_capabilities
+        for _ in range(approved.count)
+    )
+    observed = Counter(
+        (policy, _node_fingerprint(node))
+        for policy, nodes in capability_nodes.items()
+        for node in nodes.values()
+    )
+    if (
+        _node_fingerprint(tree) != boundary.module_fingerprint
+        or observed != expected
+    ):
+        findings.add("trusted-retention-boundary-modified")
+        return allowed, findings
+
+    for policy, nodes in capability_nodes.items():
+        allowed[policy].update(nodes)
+    return allowed, findings
 
 
 def _assigned_names(node: ast.AST) -> set[str]:
     if isinstance(node, ast.Name):
         return {node.id}
+    if isinstance(node, ast.Starred):
+        return _assigned_names(node.value)
     if isinstance(node, (ast.List, ast.Tuple)):
         return set().union(*(_assigned_names(item) for item in node.elts))
     return set()
 
 
-def _open_call_writes(node: ast.Call) -> bool:
-    mode: str | None = None
-    if len(node.args) >= 2 and isinstance(node.args[1], ast.Constant):
-        mode = node.args[1].value if isinstance(node.args[1].value, str) else None
-    for keyword in node.keywords:
-        if keyword.arg == "mode" and isinstance(keyword.value, ast.Constant):
-            mode = keyword.value.value if isinstance(keyword.value.value, str) else None
-    return isinstance(mode, str) and any(marker in mode for marker in "awx+")
+def _assignment_pairs(
+    target: ast.AST, value: ast.AST
+) -> list[tuple[str, ast.AST]]:
+    if (
+        isinstance(target, (ast.List, ast.Tuple))
+        and isinstance(value, (ast.List, ast.Tuple))
+        and len(target.elts) == len(value.elts)
+    ):
+        return [
+            pair
+            for target_item, value_item in zip(target.elts, value.elts, strict=True)
+            for pair in _assignment_pairs(target_item, value_item)
+        ]
+    return [(name, value) for name in _assigned_names(target)]
 
 
-def _path_open_call_writes(node: ast.Call) -> bool:
-    mode: str | None = None
-    if node.args and isinstance(node.args[0], ast.Constant):
-        mode = node.args[0].value if isinstance(node.args[0].value, str) else None
-    for keyword in node.keywords:
-        if keyword.arg == "mode" and isinstance(keyword.value, ast.Constant):
-            mode = keyword.value.value if isinstance(keyword.value.value, str) else None
-    return isinstance(mode, str) and any(marker in mode for marker in "awx+")
+def _open_call_is_unsafe(node: ast.Call, mode_position: int) -> bool:
+    if any(isinstance(argument, ast.Starred) for argument in node.args):
+        return True
+    if any(keyword.arg is None for keyword in node.keywords):
+        return True
+    mode: ast.AST | None = None
+    if len(node.args) > mode_position:
+        mode = node.args[mode_position]
+    keyword_modes = [
+        keyword.value for keyword in node.keywords if keyword.arg == "mode"
+    ]
+    if mode is not None and keyword_modes:
+        return True
+    if len(keyword_modes) > 1:
+        return True
+    if keyword_modes:
+        mode = keyword_modes[0]
+    if mode is None:
+        return False
+    if not isinstance(mode, ast.Constant) or not isinstance(mode.value, str):
+        return True
+    return mode.value not in READ_ONLY_OPEN_MODES
+
+
+def _os_open_call_is_unsafe(
+    node: ast.Call, read_only_flag_names: set[str]
+) -> bool:
+    if any(isinstance(argument, ast.Starred) for argument in node.args):
+        return True
+    if any(keyword.arg is None for keyword in node.keywords):
+        return True
+    flags: ast.AST | None = node.args[1] if len(node.args) >= 2 else None
+    keyword_flags = [
+        keyword.value for keyword in node.keywords if keyword.arg == "flags"
+    ]
+    if flags is not None and keyword_flags:
+        return True
+    if len(keyword_flags) > 1:
+        return True
+    if keyword_flags:
+        flags = keyword_flags[0]
+    if flags is None:
+        return True
+    if isinstance(flags, ast.Constant) and flags.value == 0:
+        return False
+    return _dotted_name(flags) not in read_only_flag_names
 
 
 class ArchitecturalSinkVisitor(ast.NodeVisitor):
-    """Reject retention and logging capabilities outside pinned AST boundaries."""
+    """Discover exact storage, logging, and dynamic capability AST nodes."""
 
-    def __init__(
-        self,
-        *,
-        allowed_durable: set[int],
-        allowed_logging: set[int],
-    ) -> None:
-        self.findings: set[str] = set()
-        self._allowed_durable = allowed_durable
-        self._allowed_logging = allowed_logging
+    def __init__(self) -> None:
+        self.capability_nodes: dict[str, dict[int, ast.AST]] = {
+            policy: {} for policy in CAPABILITY_RULES
+        }
         self._module_aliases: dict[str, str] = {}
+        self._alias_kinds: dict[str, str] = {
+            "__import__": "dynamic",
+            "compile": "dynamic",
+            "eval": "dynamic",
+            "exec": "dynamic",
+            "globals": "dynamic",
+            "getattr": "getattr",
+            "open": "open",
+            "print": "print",
+            "locals": "dynamic",
+            "vars": "vars",
+        }
         self._durable_receivers: set[AccessPath] = set()
         self._path_values: set[AccessPath] = set()
         self._memory_values: set[AccessPath] = set()
+        self._reflection_maps: set[AccessPath] = set()
         self._path_constructors: set[str] = {"Path"}
-        self._open_aliases: set[str] = {"open"}
         self._logging_receivers: set[AccessPath] = set()
-        self._print_aliases: set[str] = {"print"}
         self._parents: dict[int, ast.AST] = {}
 
     def visit(self, node: ast.AST) -> None:
@@ -294,13 +545,17 @@ class ArchitecturalSinkVisitor(ast.NodeVisitor):
             self._parents[id(child)] = node
         super().visit(node)
 
+    def _add(self, policy: str, node: ast.AST) -> None:
+        self.capability_nodes[policy].setdefault(id(node), node)
+
     def _add_durable(self, node: ast.AST) -> None:
-        if id(node) not in self._allowed_durable:
-            self.findings.add("durable-storage-capability")
+        self._add("durable", node)
 
     def _add_logging(self, node: ast.AST) -> None:
-        if id(node) not in self._allowed_logging:
-            self.findings.add("logging-sink")
+        self._add("logging", node)
+
+    def _add_dynamic(self, node: ast.AST) -> None:
+        self._add("dynamic", node)
 
     def _canonical_name(self, node: ast.AST | None) -> str | None:
         dotted = _dotted_name(node)
@@ -311,6 +566,24 @@ class ArchitecturalSinkVisitor(ast.NodeVisitor):
         if module is None:
             return dotted
         return module if not separator else f"{module}.{suffix}"
+
+    def _callable_kind(self, node: ast.AST | None) -> str | None:
+        if isinstance(node, ast.Name) and node.id in self._alias_kinds:
+            return self._alias_kinds[node.id]
+        canonical = self._canonical_name(node)
+        if canonical in {"open", "builtins.open"} | READABLE_OPEN_CAPABILITIES:
+            return "open"
+        if canonical in {"print", "builtins.print"}:
+            return "print"
+        if canonical in {"getattr", "builtins.getattr"}:
+            return "getattr"
+        if canonical in {"vars", "builtins.vars"}:
+            return "vars"
+        if canonical in DYNAMIC_BUILTINS | DYNAMIC_CANONICAL_CAPABILITIES:
+            return "dynamic"
+        if canonical is not None and canonical.startswith("importlib."):
+            return "dynamic"
+        return None
 
     def _identifier_is_durable(self, identifier: str) -> bool:
         return bool(DURABLE_RECEIVER_PATTERN.search(identifier))
@@ -327,7 +600,9 @@ class ArchitecturalSinkVisitor(ast.NodeVisitor):
         ):
             return True
         canonical = self._canonical_name(node)
-        return canonical is not None and canonical.split(".", 1)[0] in DURABLE_MODULE_ROOTS
+        return canonical is not None and (
+            canonical.split(".", 1)[0] in DURABLE_MODULE_ROOTS
+        )
 
     def _is_path_value(self, node: ast.AST | None) -> bool:
         path = _access_path(node)
@@ -335,7 +610,9 @@ class ArchitecturalSinkVisitor(ast.NodeVisitor):
             return True
         if isinstance(node, ast.Call):
             canonical = self._canonical_name(node.func)
-            return canonical is not None and canonical.rsplit(".", 1)[-1] in self._path_constructors
+            return canonical is not None and (
+                canonical.rsplit(".", 1)[-1] in self._path_constructors
+            )
         return isinstance(node, ast.Name) and node.id in self._path_constructors
 
     def _is_logging_receiver(self, node: ast.AST | None) -> bool:
@@ -360,9 +637,19 @@ class ArchitecturalSinkVisitor(ast.NodeVisitor):
             return canonical in {"bytearray", "io.BytesIO", "io.StringIO"}
         return False
 
+    def _is_reflection_map(self, node: ast.AST | None) -> bool:
+        if isinstance(node, ast.Name) and node.id == "__builtins__":
+            return True
+        path = _access_path(node)
+        if _path_prefix_in(self._reflection_maps, path):
+            return True
+        return isinstance(node, ast.Attribute) and node.attr == "__dict__"
+
     def _is_output_receiver(self, node: ast.AST | None) -> bool:
         canonical = self._canonical_name(node)
-        return canonical in {"sys.stderr", "sys.stdout"} or self._is_logging_receiver(node)
+        return canonical in {"sys.stderr", "sys.stdout"} or (
+            self._is_logging_receiver(node)
+        )
 
     def _value_kind(self, node: ast.AST) -> str | None:
         if self._is_durable_receiver(node):
@@ -373,6 +660,8 @@ class ArchitecturalSinkVisitor(ast.NodeVisitor):
             return "logging"
         if self._is_memory_value(node):
             return "memory"
+        if self._is_reflection_map(node):
+            return "reflection"
         if isinstance(node, ast.Call):
             canonical = self._canonical_name(node.func)
             final = canonical.rsplit(".", 1)[-1] if canonical else None
@@ -384,13 +673,16 @@ class ArchitecturalSinkVisitor(ast.NodeVisitor):
         for alias in node.names:
             bound = alias.asname or alias.name.split(".", 1)[0]
             module = alias.name if alias.asname else alias.name.split(".", 1)[0]
+            root = alias.name.split(".", 1)[0]
             self._module_aliases[bound] = module
-            if alias.name.split(".", 1)[0] in DURABLE_MODULE_ROOTS:
+            if root in DURABLE_MODULE_ROOTS:
                 self._durable_receivers.add((bound,))
                 self._add_durable(node)
             if alias.name == "logging":
                 self._logging_receivers.add((bound,))
                 self._add_logging(node)
+            if root == "importlib":
+                self._add_dynamic(node)
 
     def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
         module = node.module or ""
@@ -399,65 +691,113 @@ class ArchitecturalSinkVisitor(ast.NodeVisitor):
             bound = alias.asname or alias.name
             canonical = f"{module}.{alias.name}" if module else alias.name
             self._module_aliases[bound] = canonical
+            kind = self._callable_kind(ast.Name(id=bound))
+            if kind is not None:
+                self._alias_kinds[bound] = kind
             if root in DURABLE_MODULE_ROOTS:
                 self._durable_receivers.add((bound,))
                 self._add_durable(node)
             if module == "pathlib" and alias.name == "Path":
                 self._path_constructors.add(bound)
-            if module == "builtins" and alias.name == "open":
-                self._open_aliases.add(bound)
+            if canonical in READABLE_OPEN_CAPABILITIES:
                 self._add_durable(node)
-            if canonical in FILE_OPEN_CAPABILITIES:
-                self._open_aliases.add(bound)
+            if canonical in ALWAYS_DURABLE_FILE_CAPABILITIES:
                 self._add_durable(node)
-            if module == "builtins" and alias.name == "print":
-                self._print_aliases.add(bound)
+            if canonical in LOW_LEVEL_WRITE_CAPABILITIES:
+                self._add_durable(node)
+            if kind == "print":
                 self._add_logging(node)
+            if kind in {"getattr", "vars", "dynamic"}:
+                self._add_dynamic(node)
             if root == "logging" or module == "gunicorn.glogging":
                 self._logging_receivers.add((bound,))
                 self._add_logging(node)
+            if root == "importlib":
+                self._add_dynamic(node)
 
-    def _record_assignment(self, target: ast.AST, value: ast.AST) -> None:
-        kind = self._value_kind(value)
-        for name in _assigned_names(target):
-            path = (name,)
-            self._durable_receivers.discard(path)
-            self._path_values.discard(path)
-            self._memory_values.discard(path)
-            self._logging_receivers.discard(path)
-            self._open_aliases.discard(name)
-            self._print_aliases.discard(name)
-            if kind == "durable":
-                self._durable_receivers.add(path)
-            elif kind == "path":
-                self._path_values.add(path)
-            elif kind == "logging":
-                self._logging_receivers.add(path)
-            elif kind == "memory":
-                self._memory_values.add(path)
-            if isinstance(value, ast.Name) and value.id in self._open_aliases:
-                self._open_aliases.add(name)
-                self._add_durable(value)
-            if isinstance(value, ast.Name) and value.id in self._print_aliases:
-                self._print_aliases.add(name)
-                self._add_logging(value)
+    def _record_assignment(self, name: str, value: ast.AST) -> None:
+        path = (name,)
+        self._durable_receivers.discard(path)
+        self._path_values.discard(path)
+        self._memory_values.discard(path)
+        self._reflection_maps.discard(path)
+        self._logging_receivers.discard(path)
+        self._alias_kinds.pop(name, None)
+
+        value_kind = self._value_kind(value)
+        if value_kind == "durable":
+            self._durable_receivers.add(path)
+        elif value_kind == "path":
+            self._path_values.add(path)
+        elif value_kind == "logging":
+            self._logging_receivers.add(path)
+        elif value_kind == "memory":
+            self._memory_values.add(path)
+        elif value_kind == "reflection":
+            self._reflection_maps.add(path)
+
+        callable_kind = self._callable_kind(value)
+        if callable_kind is not None:
+            self._alias_kinds[name] = callable_kind
 
     def visit_Assign(self, node: ast.Assign) -> None:
         self.visit(node.value)
         for target in node.targets:
-            self._record_assignment(target, node.value)
+            for name, value in _assignment_pairs(target, node.value):
+                self._record_assignment(name, value)
 
     def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
         if node.value is not None:
             self.visit(node.value)
-            self._record_assignment(node.target, node.value)
+            for name, value in _assignment_pairs(node.target, node.value):
+                self._record_assignment(name, value)
+
+    def visit_NamedExpr(self, node: ast.NamedExpr) -> None:
+        self.visit(node.value)
+        for name, value in _assignment_pairs(node.target, node.value):
+            self._record_assignment(name, value)
+
+    def visit_Name(self, node: ast.Name) -> None:
+        if not isinstance(node.ctx, ast.Load):
+            return
+        kind = self._callable_kind(node)
+        if kind is None:
+            return
+        parent = self._parents.get(id(node))
+        if isinstance(parent, ast.Call) and parent.func is node:
+            return
+        if kind == "open":
+            self._add_durable(node)
+        elif kind == "print":
+            self._add_logging(node)
+        else:
+            self._add_dynamic(node)
 
     def visit_Attribute(self, node: ast.Attribute) -> None:
         parent = self._parents.get(id(node))
         called = isinstance(parent, ast.Call) and parent.func is node
-        if node.attr in LOG_METHODS and (called or self._is_logging_receiver(node.value)):
+        canonical = self._canonical_name(node)
+        final = canonical.rsplit(".", 1)[-1] if canonical else None
+
+        if node.attr in {"__dict__", "__getattribute__"}:
+            self._add_dynamic(node)
+        if canonical in DYNAMIC_CANONICAL_CAPABILITIES or (
+            canonical is not None and canonical.startswith("importlib.")
+        ):
+            self._add_dynamic(node)
+        if canonical in {"builtins.print"}:
             self._add_logging(node)
-        if self._canonical_name(node) in {"sys.stderr", "sys.stdout"}:
+        if canonical in READABLE_OPEN_CAPABILITIES and not called:
+            self._add_durable(node)
+        if canonical in ALWAYS_DURABLE_FILE_CAPABILITIES:
+            self._add_durable(node)
+        if canonical in LOW_LEVEL_WRITE_CAPABILITIES:
+            self._add_durable(node)
+        if node.attr in LOG_METHODS and (
+            called or self._is_logging_receiver(node.value)
+        ):
+            self._add_logging(node)
+        if canonical in {"sys.stderr", "sys.stdout"}:
             self._add_logging(node)
         if node.attr in DURABLE_METHODS:
             self._add_durable(node)
@@ -466,119 +806,135 @@ class ArchitecturalSinkVisitor(ast.NodeVisitor):
                 self._add_logging(node)
             elif self._is_memory_value(node.value):
                 pass
+            elif node.attr == "open" and called and self._is_path_value(node.value):
+                pass
             elif self._is_path_value(node.value) or node.attr != "open":
                 self._add_durable(node)
-        canonical = self._canonical_name(node)
-        final = canonical.rsplit(".", 1)[-1] if canonical else None
-        if canonical in FILE_OPEN_CAPABILITIES:
-            self._add_durable(node)
         if final in DURABLE_CONSTRUCTORS:
             self._add_durable(node)
         self.generic_visit(node)
 
     def visit_Subscript(self, node: ast.Subscript) -> None:
-        if isinstance(node.value, ast.Attribute) and node.value.attr == "__dict__":
-            owner = node.value.value
-            dynamic_method = not (
-                isinstance(node.slice, ast.Constant)
-                and isinstance(node.slice.value, str)
-            )
-            if dynamic_method:
-                self._add_durable(node)
-                self._add_logging(node)
-            if self._is_durable_receiver(owner) or self._is_path_value(owner):
-                self._add_durable(node)
-            if self._is_logging_receiver(owner):
-                self._add_logging(node)
-            if isinstance(node.slice, ast.Constant) and isinstance(
-                node.slice.value, str
-            ):
-                if node.slice.value in DURABLE_METHODS | FILE_METHODS:
-                    self._add_durable(node)
-                if node.slice.value in LOG_METHODS:
-                    self._add_logging(node)
-        if (
+        method = (
+            node.slice.value
+            if isinstance(node.slice, ast.Constant)
+            and isinstance(node.slice.value, str)
+            else None
+        )
+        reflective = self._is_reflection_map(node.value) or (
             isinstance(node.value, ast.Call)
-            and self._canonical_name(node.value.func) == "vars"
-            and node.value.args
-        ):
-            owner = node.value.args[0]
-            method = (
-                node.slice.value
-                if isinstance(node.slice, ast.Constant)
-                and isinstance(node.slice.value, str)
-                else None
-            )
-            if method is None:
+            and self._callable_kind(node.value.func) == "vars"
+        )
+        if reflective:
+            self._add_dynamic(node)
+            if method in DURABLE_METHODS | FILE_METHODS | {"open"}:
                 self._add_durable(node)
-                self._add_logging(node)
-            if (
-                self._is_durable_receiver(owner)
-                or self._is_path_value(owner)
-                or method in DURABLE_METHODS | FILE_METHODS
-            ):
-                self._add_durable(node)
-            if self._is_logging_receiver(owner) or method in LOG_METHODS:
+            if method in LOG_METHODS | {"print"}:
                 self._add_logging(node)
         self.generic_visit(node)
 
     def visit_Call(self, node: ast.Call) -> None:
         canonical = self._canonical_name(node.func)
         final = canonical.rsplit(".", 1)[-1] if canonical else None
-        if isinstance(node.func, ast.Name) and node.func.id in self._print_aliases:
+        kind = self._callable_kind(node.func)
+
+        if kind == "print":
             self._add_logging(node)
+        elif kind in {"vars", "dynamic"}:
+            self._add_dynamic(node)
+        elif kind == "getattr" and node.args:
+            receiver = node.args[0]
+            method = (
+                node.args[1].value
+                if len(node.args) >= 2
+                and isinstance(node.args[1], ast.Constant)
+                and isinstance(node.args[1].value, str)
+                else None
+            )
+            if method is None or method in (
+                {"__dict__", "__getattribute__", "attrgetter", "import_module"}
+                | DYNAMIC_BUILTINS
+            ):
+                self._add_dynamic(node)
+            if (
+                self._is_durable_receiver(receiver)
+                or self._is_path_value(receiver)
+                or method in DURABLE_METHODS | FILE_METHODS | {"open"}
+            ):
+                self._add_durable(node)
+            if self._is_logging_receiver(receiver) or method in LOG_METHODS | {
+                "print"
+            }:
+                self._add_logging(node)
+
+        if kind == "open":
+            if canonical == "os.open":
+                read_only_flags = {"os.O_RDONLY"} | {
+                    f"{alias}.O_RDONLY"
+                    for alias, module in self._module_aliases.items()
+                    if module == "os"
+                } | {
+                    alias
+                    for alias, module in self._module_aliases.items()
+                    if module == "os.O_RDONLY"
+                }
+                unsafe_open = _os_open_call_is_unsafe(node, read_only_flags)
+            elif canonical == "pathlib.Path.open":
+                unsafe_open = _open_call_is_unsafe(
+                    node,
+                    1
+                    if isinstance(node.func, ast.Attribute)
+                    and not isinstance(node.func.value, ast.Call)
+                    else 0,
+                )
+            else:
+                unsafe_open = _open_call_is_unsafe(node, 1)
+            if unsafe_open:
+                self._add_durable(node)
+        elif (
+            isinstance(node.func, ast.Attribute)
+            and node.func.attr == "open"
+            and self._is_path_value(node.func.value)
+            and _open_call_is_unsafe(node, 0)
+        ):
+            self._add_durable(node)
+
+        if final in DURABLE_CONSTRUCTORS:
+            self._add_durable(node)
+        if canonical in ALWAYS_DURABLE_FILE_CAPABILITIES:
+            self._add_durable(node)
+        if canonical in LOW_LEVEL_WRITE_CAPABILITIES:
+            self._add_durable(node)
         if isinstance(node.func, ast.Name) and self._identifier_is_logging(
             node.func.id
         ):
             self._add_logging(node)
-        if final in DURABLE_CONSTRUCTORS:
-            self._add_durable(node)
-        if canonical in FILE_OPEN_CAPABILITIES:
-            self._add_durable(node)
-        if isinstance(node.func, ast.Name) and node.func.id in self._open_aliases:
-            if _open_call_writes(node):
-                self._add_durable(node)
-        if isinstance(node.func, ast.Attribute) and node.func.attr == "open":
-            if self._is_path_value(node.func.value) and _path_open_call_writes(node):
-                self._add_durable(node)
-        if final in {"getattr", "vars"} and node.args:
-            receiver = node.args[0]
-            method: str | None = None
-            if len(node.args) >= 2 and isinstance(node.args[1], ast.Constant):
-                method = node.args[1].value if isinstance(node.args[1].value, str) else None
-            dynamic_method = final == "vars" or method is None
-            if dynamic_method:
-                self._add_durable(node)
-                self._add_logging(node)
-            if (
-                self._is_durable_receiver(receiver)
-                or self._is_path_value(receiver)
-                or method in DURABLE_METHODS | FILE_METHODS
-            ):
-                self._add_durable(node)
-            if self._is_logging_receiver(receiver) or method in LOG_METHODS:
-                self._add_logging(node)
         self.generic_visit(node)
 
 
 def python_project_findings(contents: dict[str, str]) -> dict[str, set[str]]:
     findings = {relative_path: set() for relative_path in contents}
+    if sys.version_info[:2] != CANONICAL_AST_PYTHON:
+        for path_findings in findings.values():
+            path_findings.add("unsupported-retention-verifier-python")
+        return findings
     for relative_path, content in contents.items():
         try:
             tree = ast.parse(content)
         except (SyntaxError, ValueError):
             findings[relative_path].add("unparseable-production-python")
             continue
-        allowed_durable, allowed_logging, attestation_findings = _attested_node_ids(
-            relative_path, tree
+        visitor = ArchitecturalSinkVisitor()
+        visitor.visit(tree)
+        allowed, attestation_findings = _attested_node_ids(
+            relative_path,
+            tree,
+            visitor.capability_nodes,
         )
         findings[relative_path].update(attestation_findings)
-        visitor = ArchitecturalSinkVisitor(
-            allowed_durable=allowed_durable,
-            allowed_logging=allowed_logging,
-        )
-        visitor.visit(tree)
-        findings[relative_path].update(visitor.findings)
+        for policy, nodes in visitor.capability_nodes.items():
+            if any(node_id not in allowed[policy] for node_id in nodes):
+                findings[relative_path].add(CAPABILITY_RULES[policy])
     return findings
 
 
@@ -609,6 +965,13 @@ def is_production_path(relative_path: str) -> bool:
 
 
 def verify(root: Path) -> int:
+    if sys.version_info[:2] != CANONICAL_AST_PYTHON:
+        print(
+            "Sensitive-retention verification failed: CPython 3.12 is required "
+            "for canonical AST attestation.",
+            file=sys.stderr,
+        )
+        return 2
     try:
         files = tracked_files(root)
     except RuntimeError:

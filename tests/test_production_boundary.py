@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import ast
+from collections import Counter
+from dataclasses import replace
 import json
 import os
 import re
@@ -14,6 +17,7 @@ from pathlib import Path
 import pytest
 import yaml
 
+from scripts import verify_no_sensitive_retention as retention
 from server.app import create_app
 from server.config import ConfigurationError, Settings
 
@@ -769,6 +773,24 @@ def test_architectural_retention_policy_accepts_only_current_trusted_boundaries(
     assert result.stdout == "Sensitive-retention verification passed.\n"
 
 
+def test_architectural_retention_policy_pins_python_and_capability_counts():
+    assert retention.CANONICAL_AST_PYTHON == (3, 12)
+    assert {
+        path: dict(
+            Counter(
+                item.policy
+                for item in boundary.approved_capabilities
+                for _ in range(item.count)
+            )
+        )
+        for path, boundary in retention.TRUSTED_BOUNDARIES.items()
+    } == {
+        "server/rate_limit.py": {"durable": 19},
+        "server/app.py": {"logging": 3},
+        "server/gunicorn_logger.py": {"logging": 5},
+    }
+
+
 @pytest.mark.parametrize(
     ("relative_path", "old", "new"),
     [
@@ -797,6 +819,11 @@ def test_architectural_retention_policy_accepts_only_current_trusted_boundaries(
                 "    def access(\n"
             ),
         ),
+        (
+            "server/rate_limit.py",
+            "class RateLimiter:\n",
+            "class RateLimiter[T: Redis.from_url('type-boundary')]:\n",
+        ),
     ],
 )
 def test_architectural_retention_policy_rejects_trusted_boundary_mutations(
@@ -815,6 +842,57 @@ def test_architectural_retention_policy_rejects_trusted_boundary_mutations(
     assert result.returncode == 1
     assert "trusted-retention-boundary-modified" in result.stderr
     assert "extra" not in result.stderr
+
+
+def test_architectural_retention_policy_requires_module_and_node_attestations(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    content = _trusted_retention_files()["server/rate_limit.py"]
+    mutated = content.replace(
+        "class RateLimiter:\n",
+        "class RateLimiter[T: Redis.from_url('node-attestation')]:\n",
+        1,
+    )
+    tree = ast.parse(mutated)
+    current = retention.TRUSTED_BOUNDARIES["server/rate_limit.py"]
+    monkeypatch.setitem(
+        retention.TRUSTED_BOUNDARIES,
+        "server/rate_limit.py",
+        replace(current, module_fingerprint=retention._node_fingerprint(tree)),
+    )
+
+    findings = retention.python_project_findings(
+        {"server/rate_limit.py": mutated}
+    )["server/rate_limit.py"]
+
+    assert "trusted-retention-boundary-modified" in findings
+    assert "durable-storage-capability" in findings
+
+
+def test_architectural_retention_policy_rejects_expected_node_count_drift(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    content = _trusted_retention_files()["server/rate_limit.py"]
+    current = retention.TRUSTED_BOUNDARIES["server/rate_limit.py"]
+    first, *remaining = current.approved_capabilities
+    monkeypatch.setitem(
+        retention.TRUSTED_BOUNDARIES,
+        "server/rate_limit.py",
+        replace(
+            current,
+            approved_capabilities=(
+                replace(first, count=first.count + 1),
+                *remaining,
+            ),
+        ),
+    )
+
+    findings = retention.python_project_findings(
+        {"server/rate_limit.py": content}
+    )["server/rate_limit.py"]
+
+    assert "trusted-retention-boundary-modified" in findings
+    assert "durable-storage-capability" in findings
 
 
 @pytest.mark.parametrize(
@@ -855,6 +933,76 @@ def test_architectural_retention_policy_rejects_trusted_boundary_mutations(
         "def select(receiver, method):\n    return getattr(receiver, method)\n",
         "def select(receiver, method):\n    return receiver.__dict__[method]\n",
         "def select(receiver, method):\n    return vars(receiver)[method]\n",
+        (
+            "def select(receiver, method):\n"
+            "    first = getattr\n"
+            "    second = first\n"
+            "    return second(receiver, method)\n"
+        ),
+        (
+            "def select(receiver):\n"
+            "    reflect, catalog = getattr, vars\n"
+            "    return reflect(receiver, 'safe'), catalog(receiver)\n"
+        ),
+        "emit, writer = print, open\n",
+        (
+            "def select(receiver, method):\n"
+            "    catalog = receiver.__dict__\n"
+            "    alias = catalog\n"
+            "    return alias[method]\n"
+        ),
+        (
+            "def select(receiver, method):\n"
+            "    return receiver.__getattribute__(method)\n"
+        ),
+        (
+            "import operator\n"
+            "selector = operator.attrgetter\n"
+            "def select(receiver, method):\n"
+            "    return selector(method)(receiver)\n"
+        ),
+        "from operator import attrgetter as selector\n",
+        "from operator import methodcaller as selector\n",
+        "import builtins\nemit = builtins.__dict__['print']\n",
+        "result = eval('40 + 2')\n",
+        "exec('result = 42')\n",
+        "code = compile('40 + 2', '<value>', 'eval')\n",
+        "module = __import__('sqlite3')\n",
+        "import importlib\n",
+        "from importlib import import_module as load_module\n",
+        "namespace = globals()\n",
+        "namespace = locals()\n",
+        "emit = __builtins__['print']\n",
+        "import builtins\nloader = getattr(builtins, 'eval')\n",
+        "def persist(mode):\n    return open('state.txt', mode)\n",
+        "def persist():\n    return open('state.txt', 'w')\n",
+        "def persist():\n    return open('state.txt', 'not-a-valid-mode')\n",
+        "def persist(parts):\n    return open(*parts)\n",
+        "def persist(options):\n    return open('state.txt', **options)\n",
+        (
+            "from pathlib import Path\n"
+            "def persist(mode):\n"
+            "    return Path('state.txt').open(mode)\n"
+        ),
+        (
+            "from pathlib import Path\n"
+            "def persist(options):\n"
+            "    return Path('state.txt').open(**options)\n"
+        ),
+        "import io\ndef persist(mode):\n    return io.open('state.txt', mode)\n",
+        "import io\ndef persist():\n    return io.open('state.txt', 'a')\n",
+        "import psycopg\n",
+        "import psycopg2\n",
+        "from psycopg import connect as database_connect\n",
+        "import tempfile\nhandle = tempfile.mkstemp\n",
+        "import tempfile\nhandle = tempfile.mkstemp()\n",
+        "from tempfile import NamedTemporaryFile as temporary_file\n",
+        "from tempfile import TemporaryFile as temporary_file\n",
+        "import os\nwriter = os.pwrite\n",
+        "import os\nwriter = os.writev\n",
+        "import os\nwriter = os.ftruncate\n",
+        "def persist(handle):\n    handle.truncate(0)\n",
+        "import os\ndef persist():\n    return os.open('state.txt', os.O_WRONLY)\n",
     ],
 )
 def test_architectural_retention_policy_rejects_untrusted_sink_capabilities(
@@ -868,6 +1016,56 @@ def test_architectural_retention_policy_rejects_untrusted_sink_capabilities(
     assert result.returncode == 1
     assert "capability" in result.stderr or "logging-sink" in result.stderr
     assert "health" not in result.stderr
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        "def read():\n    return open('state.txt')\n",
+        "def read():\n    return open('state.txt', 'r')\n",
+        "def read():\n    return open('state.txt', mode='rb')\n",
+        "def read():\n    return open('state.txt', encoding='utf-8')\n",
+        (
+            "from pathlib import Path\n"
+            "def read():\n"
+            "    return Path('state.txt').open('rt')\n"
+        ),
+        "import io\ndef read():\n    return io.open('state.txt', 'r')\n",
+        "import os\ndef read():\n    return os.open('state.txt', os.O_RDONLY)\n",
+        (
+            "import os as operating\n"
+            "def read():\n"
+            "    return operating.open('state.txt', operating.O_RDONLY)\n"
+        ),
+        (
+            "from os import O_RDONLY as READ_ONLY\n"
+            "import os\n"
+            "def read():\n"
+            "    return os.open('state.txt', READ_ONLY)\n"
+        ),
+        (
+            "from pathlib import Path\n"
+            "def read():\n"
+            "    return Path.open(Path('state.txt'), 'r')\n"
+        ),
+        (
+            "import io\n"
+            "def parse(payload):\n"
+            "    stream = io.BytesIO()\n"
+            "    stream.write(payload)\n"
+            "    return stream.getvalue()\n"
+        ),
+    ],
+)
+def test_architectural_retention_policy_allows_read_only_and_memory_io(
+    tmp_path: Path,
+    content: str,
+):
+    repository = _tracked_repo(tmp_path, {"server/feature.py": content})
+
+    result = _retention_verifier(repository)
+
+    assert result.returncode == 0, result.stderr
 
 
 def test_architectural_retention_policy_rejects_new_operation_in_trusted_file(
