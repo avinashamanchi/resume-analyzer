@@ -24,6 +24,11 @@ private final class RecognitionFailedException: Exception {
   override var reason: String { "On-device text recognition could not finish." }
 }
 
+private final class RecognitionCancelledException: Exception {
+  override var code: String { "RESUME_VISION_CANCELLED" }
+  override var reason: String { "On-device text recognition was cancelled." }
+}
+
 private final class RecognitionLimitException: Exception {
   override var code: String { "RESUME_VISION_TEXT_LIMIT" }
   override var reason: String { "Recognized text exceeds the supported limit." }
@@ -34,22 +39,132 @@ private final class RecognitionTimeoutException: Exception {
   override var reason: String { "On-device text recognition timed out." }
 }
 
+private struct ResumeVisionExtractionResult: Sendable {
+  let text: String
+  let pageCount: Int
+}
+
+private final class ResumeVisionOperation: @unchecked Sendable {
+  private let lock = NSLock()
+  private var cancelled = false
+  private var timedOut = false
+  private weak var activeRequest: VNRequest?
+
+  func cancel() {
+    let request: VNRequest?
+    lock.lock()
+    cancelled = true
+    request = activeRequest
+    lock.unlock()
+    request?.cancel()
+  }
+
+  func cancelForDeadline() {
+    let request: VNRequest?
+    lock.lock()
+    timedOut = true
+    request = activeRequest
+    lock.unlock()
+    request?.cancel()
+  }
+
+  func register(_ request: VNRequest) -> Bool {
+    lock.lock()
+    let permitted = !cancelled && !timedOut
+    if permitted { activeRequest = request }
+    lock.unlock()
+    if !permitted { request.cancel() }
+    return permitted
+  }
+
+  func clear(_ request: VNRequest) {
+    lock.lock()
+    if activeRequest === request { activeRequest = nil }
+    lock.unlock()
+  }
+
+  var wasCancelled: Bool {
+    lock.lock()
+    defer { lock.unlock() }
+    return cancelled
+  }
+
+  var didTimeOut: Bool {
+    lock.lock()
+    defer { lock.unlock() }
+    return timedOut
+  }
+}
+
+private final class ResumeVisionOperationRegistry: @unchecked Sendable {
+  private let lock = NSLock()
+  private var operations: [String: ResumeVisionOperation] = [:]
+  private var pendingCancellations: [String] = []
+  private let maximumPendingCancellations = 32
+
+  func begin(_ operationId: String) throws -> ResumeVisionOperation {
+    lock.lock()
+    defer { lock.unlock() }
+    guard operations[operationId] == nil else { throw RecognitionFailedException() }
+    if let pendingIndex = pendingCancellations.firstIndex(of: operationId) {
+      pendingCancellations.remove(at: pendingIndex)
+      throw RecognitionCancelledException()
+    }
+    let operation = ResumeVisionOperation()
+    operations[operationId] = operation
+    return operation
+  }
+
+  func cancel(_ operationId: String) {
+    lock.lock()
+    let operation = operations[operationId]
+    if operation == nil && !pendingCancellations.contains(operationId) {
+      if pendingCancellations.count == maximumPendingCancellations {
+        pendingCancellations.removeFirst()
+      }
+      pendingCancellations.append(operationId)
+    }
+    lock.unlock()
+    operation?.cancel()
+  }
+
+  func finish(_ operationId: String, operation: ResumeVisionOperation) {
+    lock.lock()
+    if operations[operationId] === operation { operations.removeValue(forKey: operationId) }
+    lock.unlock()
+  }
+}
+
 public final class ResumeVisionModule: Module {
   private static let maximumPdfBytes = 10 * 1024 * 1024
   private static let maximumPages = 10
   private static let maximumTextScalars = 30_000
   private static let maximumImageDimension: CGFloat = 1_800
-  private static let operationDeadline: TimeInterval = 30
-  private static let sameLineTolerance: CGFloat = 0.018
+  private static let operationDeadlineNanoseconds: UInt64 = 30_000_000_000
+  private let operations = ResumeVisionOperationRegistry()
 
   public func definition() -> ModuleDefinition {
     Name("ResumeVision")
 
-    AsyncFunction("extractTextFromPdf") { (uri: String) async throws -> [String: Any] in
-      let url = try Self.validatedLocalPdfUrl(uri)
-      let document = try Self.validatedDocument(url)
-      let text = try Self.recognize(document)
-      return ["text": text, "pageCount": document.pageCount]
+    AsyncFunction("extractTextFromPdf") {
+      (uri: String, operationId: String) async throws -> [String: Any] in
+      let deadline = ResumeVisionSoftDeadline(
+        startedAtNanoseconds: DispatchTime.now().uptimeNanoseconds,
+        durationNanoseconds: Self.operationDeadlineNanoseconds
+      )
+      guard Self.canonicalUuid(operationId) else { throw RecognitionFailedException() }
+      let operation = try self.operations.begin(operationId)
+      defer { self.operations.finish(operationId, operation: operation) }
+
+      let result = try await Task.detached(priority: .userInitiated) {
+        try Self.extract(uri: uri, operation: operation, deadline: deadline)
+      }.value
+      return ["text": result.text, "pageCount": result.pageCount]
+    }
+
+    AsyncFunction("cancelExtraction") { (operationId: String) in
+      guard Self.canonicalUuid(operationId) else { return }
+      self.operations.cancel(operationId)
     }
   }
 
@@ -60,6 +175,38 @@ public final class ResumeVisionModule: Module {
         of: #"^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"#,
         options: .regularExpression
       ) != nil
+  }
+
+  private static func extract(
+    uri: String,
+    operation: ResumeVisionOperation,
+    deadline: ResumeVisionSoftDeadline
+  ) throws -> ResumeVisionExtractionResult {
+    try check(operation, deadline)
+    let url = try validatedLocalPdfUrl(uri)
+    try check(operation, deadline)
+    let validated = try validatedDocument(url, operation: operation, deadline: deadline)
+    try check(operation, deadline)
+    let text = try recognize(
+      validated.document,
+      pageCount: validated.pageCount,
+      operation: operation,
+      deadline: deadline
+    )
+    try check(operation, deadline)
+    return ResumeVisionExtractionResult(text: text, pageCount: validated.pageCount)
+  }
+
+  private static func check(
+    _ operation: ResumeVisionOperation,
+    _ deadline: ResumeVisionSoftDeadline
+  ) throws {
+    if deadline.hasExpired(atNanoseconds: DispatchTime.now().uptimeNanoseconds) {
+      operation.cancelForDeadline()
+      throw RecognitionTimeoutException()
+    }
+    if operation.didTimeOut { throw RecognitionTimeoutException() }
+    if operation.wasCancelled || Task.isCancelled { throw RecognitionCancelledException() }
   }
 
   private static func validatedLocalPdfUrl(_ uri: String) throws -> URL {
@@ -115,39 +262,49 @@ public final class ResumeVisionModule: Module {
     return resolved
   }
 
-  private static func validatedDocument(_ url: URL) throws -> PDFDocument {
+  private static func validatedDocument(
+    _ url: URL,
+    operation: ResumeVisionOperation,
+    deadline: ResumeVisionSoftDeadline
+  ) throws -> (document: PDFDocument, pageCount: Int) {
+    try check(operation, deadline)
     guard let document = PDFDocument(url: url) else {
       throw InvalidLocalPdfException()
     }
-    if document.isEncrypted || document.isLocked {
-      throw EncryptedPdfException()
-    }
-    guard document.pageCount > 0 else {
-      throw InvalidLocalPdfException()
-    }
-    guard document.pageCount <= maximumPages else {
-      throw PdfPageLimitException()
-    }
-    return document
+    try check(operation, deadline)
+    let isEncrypted = document.isEncrypted
+    try check(operation, deadline)
+    let isLocked = document.isLocked
+    try check(operation, deadline)
+    if isEncrypted || isLocked { throw EncryptedPdfException() }
+    let pageCount = document.pageCount
+    try check(operation, deadline)
+    guard pageCount > 0 else { throw InvalidLocalPdfException() }
+    guard pageCount <= maximumPages else { throw PdfPageLimitException() }
+    return (document, pageCount)
   }
 
-  private static func recognize(_ document: PDFDocument) throws -> String {
-    let deadline = Date().addingTimeInterval(operationDeadline)
+  private static func recognize(
+    _ document: PDFDocument,
+    pageCount: Int,
+    operation: ResumeVisionOperation,
+    deadline: ResumeVisionSoftDeadline
+  ) throws -> String {
     var pages: [String] = []
     var scalarCount = 0
-    pages.reserveCapacity(document.pageCount)
+    pages.reserveCapacity(pageCount)
 
-    for pageIndex in 0..<document.pageCount {
-      if Task.isCancelled { throw RecognitionFailedException() }
-      if Date() >= deadline { throw RecognitionTimeoutException() }
+    for pageIndex in 0..<pageCount {
+      try check(operation, deadline)
       guard let page = document.page(at: pageIndex) else {
         throw InvalidLocalPdfException()
       }
+      try check(operation, deadline)
 
       let pageText = try autoreleasepool {
-        try recognizePage(page, deadline: deadline)
+        try recognizePage(page, operation: operation, deadline: deadline)
       }
-      if Date() >= deadline { throw RecognitionTimeoutException() }
+      try check(operation, deadline)
 
       let addition = pageText.unicodeScalars.count + (pages.isEmpty ? 0 : 1)
       guard scalarCount + addition <= maximumTextScalars else {
@@ -165,8 +322,14 @@ public final class ResumeVisionModule: Module {
     return text
   }
 
-  private static func recognizePage(_ page: PDFPage, deadline: Date) throws -> String {
+  private static func recognizePage(
+    _ page: PDFPage,
+    operation: ResumeVisionOperation,
+    deadline: ResumeVisionSoftDeadline
+  ) throws -> String {
+    try check(operation, deadline)
     let bounds = page.bounds(for: .mediaBox)
+    try check(operation, deadline)
     guard bounds.width.isFinite,
           bounds.height.isFinite,
           bounds.width > 0,
@@ -182,55 +345,71 @@ public final class ResumeVisionModule: Module {
       width: max(1, floor(bounds.width * scale)),
       height: max(1, floor(bounds.height * scale))
     )
+    try check(operation, deadline)
     let image = page.thumbnail(of: target, for: .mediaBox)
-    guard let cgImage = image.cgImage else {
-      throw RecognitionFailedException()
-    }
+    try check(operation, deadline)
+    guard let cgImage = image.cgImage else { throw RecognitionFailedException() }
 
     let request = VNRecognizeTextRequest()
     request.recognitionLevel = .accurate
     request.usesLanguageCorrection = true
-    let remaining = deadline.timeIntervalSinceNow
+    guard operation.register(request) else {
+      try check(operation, deadline)
+      throw RecognitionCancelledException()
+    }
+    let remaining = deadline.remainingNanoseconds(
+      atNanoseconds: DispatchTime.now().uptimeNanoseconds
+    )
     guard remaining > 0 else {
+      operation.cancelForDeadline()
       throw RecognitionTimeoutException()
     }
-    let cancellation = DispatchWorkItem {
-      request.cancel()
-    }
+    let cancellation = DispatchWorkItem { operation.cancelForDeadline() }
     DispatchQueue.global(qos: .userInitiated).asyncAfter(
-      deadline: .now() + remaining,
+      deadline: .now() + .nanoseconds(Int(remaining)),
       execute: cancellation
     )
-    defer { cancellation.cancel() }
+    defer {
+      cancellation.cancel()
+      operation.clear(request)
+    }
+
     do {
+      try check(operation, deadline)
       try VNImageRequestHandler(cgImage: cgImage, orientation: .up).perform([request])
+      try check(operation, deadline)
+    } catch is RecognitionTimeoutException {
+      throw RecognitionTimeoutException()
+    } catch is RecognitionCancelledException {
+      throw RecognitionCancelledException()
     } catch {
-      if Date() >= deadline {
+      if operation.didTimeOut || deadline.hasExpired(
+        atNanoseconds: DispatchTime.now().uptimeNanoseconds
+      ) {
         throw RecognitionTimeoutException()
+      }
+      if operation.wasCancelled || Task.isCancelled {
+        throw RecognitionCancelledException()
       }
       throw RecognitionFailedException()
     }
-    if Date() >= deadline {
-      throw RecognitionTimeoutException()
-    }
 
-    return (request.results ?? [])
-      .sorted(by: readingOrder)
-      .compactMap { $0.topCandidates(1).first?.string }
-      .joined(separator: "\n")
-  }
-
-  private static func readingOrder(
-    _ left: VNRecognizedTextObservation,
-    _ right: VNRecognizedTextObservation
-  ) -> Bool {
-    let verticalDelta = left.boundingBox.midY - right.boundingBox.midY
-    if abs(verticalDelta) > sameLineTolerance {
-      return verticalDelta > 0
+    let results = request.results ?? []
+    let geometries = results.enumerated().map { index, observation in
+      ResumeVisionObservationGeometry(
+        originalIndex: index,
+        minX: Double(observation.boundingBox.minX),
+        minY: Double(observation.boundingBox.minY),
+        maxX: Double(observation.boundingBox.maxX),
+        maxY: Double(observation.boundingBox.maxY)
+      )
     }
-    if left.boundingBox.minX != right.boundingBox.minX {
-      return left.boundingBox.minX < right.boundingBox.minX
+    let ordered = ResumeVisionReadingOrder.ordered(geometries)
+    try check(operation, deadline)
+    let lines = ordered.compactMap { geometry in
+      results[geometry.originalIndex].topCandidates(1).first?.string
     }
-    return left.uuid.uuidString < right.uuid.uuidString
+    try check(operation, deadline)
+    return lines.joined(separator: "\n")
   }
 }

@@ -52,12 +52,20 @@ export type PdfOwnershipPort = Readonly<{
 
 export type VisionExtractionPort = Readonly<{
   isAvailable(): boolean;
-  extractReviewedText(source: PdfSource): Promise<VisionTextSource>;
+  extractReviewedText(source: PdfSource, operation: symbol): Promise<VisionTextSource>;
+  cancelExtraction(operation: symbol): Promise<void>;
 }>;
 
 export type VisionDraftReceipt =
   | Readonly<{ completed: false }>
-  | Readonly<{ completed: true; draft: VisionTextSource; generation: number }>;
+  | Readonly<{
+      completed: true;
+      draft: VisionTextSource;
+      generation: number;
+      authority: VisionDraftAuthority;
+    }>;
+
+export type VisionDraftAuthority = symbol;
 
 export type AnalysisCoordinatorOptions = Readonly<{
   api: AnalysisApiPort;
@@ -82,6 +90,10 @@ export type AnalysisCommands = Readonly<{
   setJobDescription(value: string): Promise<JobDescriptionCommitReceipt>;
   isVisionAvailable(): boolean;
   extractVisionDraft(): Promise<VisionDraftReceipt>;
+  completeVisionReview(
+    authority: VisionDraftAuthority,
+    reviewedText: string,
+  ): Promise<SourceSelectionReceipt>;
   cancelVisionExtraction(): Promise<void>;
   analyze(): Promise<void>;
   grantConsent(): Promise<void>;
@@ -155,8 +167,18 @@ type VisionExtraction = {
   readonly source: PdfSource;
   readonly claim: PdfClaim;
   readonly controller: AbortController;
+  readonly authority: symbol;
+  nativeStarted: boolean;
+  cancellation: Promise<void> | null;
   promise: Promise<VisionDraftReceipt>;
 };
+
+type VisionDraftGrant = Readonly<{
+  generation: number;
+  sourceRevision: number;
+  lifecycleEpoch: number;
+  pageCount: number;
+}>;
 
 class CoordinatorAbort extends Error {}
 class CleanupTimeout extends Error {}
@@ -196,6 +218,7 @@ const NO_VISION: VisionExtractionPort = Object.freeze({
   async extractReviewedText(): Promise<never> {
     throw new Error('unsupported');
   },
+  async cancelExtraction(): Promise<void> {},
 });
 
 function publicApiError(error: unknown): PublicAnalysisError {
@@ -253,23 +276,17 @@ function snapshotNonPdfSource(source: unknown): ResumeSource | null {
   if (candidate.kind === 'text' && validText(candidate.text)) {
     return Object.freeze({ kind: 'text', text: candidate.text });
   }
-  if (
-    candidate.kind === 'vision_text' &&
-    candidate.reviewed === true &&
-    validText(candidate.text) &&
-    (candidate.pageCount === undefined ||
-      (Number.isSafeInteger(candidate.pageCount) &&
-        (candidate.pageCount as number) > 0 &&
-        (candidate.pageCount as number) <= 10))
-  ) {
-    return Object.freeze({
-      kind: 'vision_text',
-      text: candidate.text,
-      reviewed: true,
-      ...(candidate.pageCount === undefined ? {} : { pageCount: candidate.pageCount as number }),
-    });
-  }
   return null;
+}
+
+function reviewedVisionSource(text: unknown, pageCount: number): VisionTextSource | null {
+  if (
+    !validText(text) ||
+    !Number.isSafeInteger(pageCount) ||
+    pageCount <= 0 ||
+    pageCount > 10
+  ) return null;
+  return Object.freeze({ kind: 'vision_text', text, reviewed: true, pageCount });
 }
 
 function snapshotVisionDraft(value: unknown): VisionTextSource | null {
@@ -345,6 +362,7 @@ export class AnalysisCoordinator {
   private readonly privacyRecoveries = new Map<number, Promise<boolean>>();
   private disposalPrivacyReadiness: AnalysisState['privacyReadiness'] | null = null;
   private pendingPdfPick: PendingPdfPick | null = null;
+  private readonly visionDraftAuthorities = new Map<VisionDraftAuthority, VisionDraftGrant>();
 
   readonly commands: AnalysisCommands = Object.freeze({
     beginPdfPick: (signal: AbortSignal) => this.beginPdfPick(signal),
@@ -356,6 +374,7 @@ export class AnalysisCoordinator {
       this.completePdfPick(authority, source),
     selectSource: (source: ResumeSource) => {
       this.releasePendingPdfPick();
+      this.revokeVisionDraftAuthorities();
       return this.selectSource(source);
     },
     setJobDescription: (value: string) => {
@@ -367,6 +386,8 @@ export class AnalysisCoordinator {
       this.releasePendingPdfPick();
       return this.extractVisionDraft();
     },
+    completeVisionReview: (authority: VisionDraftAuthority, reviewedText: string) =>
+      this.completeVisionReview(authority, reviewedText),
     cancelVisionExtraction: () => this.cancelVisionExtraction(),
     analyze: () => {
       this.releasePendingPdfPick();
@@ -467,6 +488,7 @@ export class AnalysisCoordinator {
     work: (context: MutationContext) => Promise<void>,
   ): Promise<void> {
     if (!this.mounted) return Promise.resolve();
+    this.revokeVisionDraftAuthorities();
     const priorMutation = this.mutationTail;
     const previousActivation = this.active;
     const previousVisionExtraction = this.visionExtraction;
@@ -474,7 +496,9 @@ export class AnalysisCoordinator {
     this.sourceRevision += 1;
     this.consentContinuation = null;
     previousActivation?.controller.abort();
-    previousVisionExtraction?.controller.abort();
+    if (previousVisionExtraction !== null) {
+      this.requestVisionCancellation(previousVisionExtraction);
+    }
 
     const changed = this.apply({ type: 'mutationStarted', generation, mutation });
     const operation = (async () => {
@@ -614,6 +638,7 @@ export class AnalysisCoordinator {
 
   private beginPdfPick(signal: AbortSignal): PdfPickAuthority {
     if (!this.mounted) return Symbol('unissued-pdf-pick-authority');
+    this.revokeVisionDraftAuthorities();
     this.releasePendingPdfPick();
     if (this.state.mutation === 'selecting') void this.reset();
     const authority = Symbol('pdf-pick-authority');
@@ -717,7 +742,11 @@ export class AnalysisCoordinator {
   private blockPrivacy(consumeSource = false): void {
     if (!this.mounted) return;
     this.releasePendingPdfPick();
+    this.revokeVisionDraftAuthorities();
     this.active?.controller.abort();
+    if (this.visionExtraction !== null) {
+      this.requestVisionCancellation(this.visionExtraction);
+    }
     this.generation += 1;
     this.sourceRevision += 1;
     this.consentContinuation = null;
@@ -1134,6 +1163,7 @@ export class AnalysisCoordinator {
   private extractVisionDraft(): Promise<VisionDraftReceipt> {
     const current = this.visionExtraction;
     if (current !== null && this.visionExtractionIsCurrent(current)) return current.promise;
+    this.revokeVisionDraftAuthorities();
     const source = this.state.source;
     const claim = this.committedPdfClaim;
     if (
@@ -1162,6 +1192,9 @@ export class AnalysisCoordinator {
       source,
       claim,
       controller: new AbortController(),
+      authority: Symbol('vision-native-operation'),
+      nativeStarted: false,
+      cancellation: null,
       promise: Promise.resolve(Object.freeze({ completed: false })),
     };
     this.visionExtraction = operation;
@@ -1181,8 +1214,9 @@ export class AnalysisCoordinator {
       liveBefore = await this.verifyLivePdfClaim(operation.source, operation.claim);
       if (liveBefore && !operation.controller.signal.aborted) {
         try {
+          operation.nativeStarted = true;
           draft = snapshotVisionDraft(
-            await this.vision.extractReviewedText(operation.source),
+            await this.vision.extractReviewedText(operation.source, operation.authority),
           );
         } catch {
           draft = null;
@@ -1211,10 +1245,73 @@ export class AnalysisCoordinator {
       }
 
       this.dispatch({ type: 'visionDraftReady', generation: operation.generation });
-      return Object.freeze({ completed: true, draft, generation: operation.generation });
+      if (
+        !this.mounted ||
+        this.state.privacyReadiness !== 'ready' ||
+        this.state.generation !== operation.generation ||
+        this.state.mutation !== 'none' ||
+        this.state.source !== null
+      ) return Object.freeze({ completed: false });
+      const authority: VisionDraftAuthority = Symbol('vision-draft-authority');
+      this.visionDraftAuthorities.set(authority, Object.freeze({
+        generation: operation.generation,
+        sourceRevision: operation.sourceRevision,
+        lifecycleEpoch: operation.lifecycleEpoch,
+        pageCount: draft.pageCount ?? 1,
+      }));
+      return Object.freeze({
+        completed: true,
+        draft,
+        generation: operation.generation,
+        authority,
+      });
     } finally {
       if (this.visionExtraction === operation) this.visionExtraction = null;
     }
+  }
+
+  private requestVisionCancellation(operation: VisionExtraction): void {
+    operation.controller.abort();
+    if (!operation.nativeStarted || operation.cancellation !== null) return;
+    try {
+      operation.cancellation = Promise.resolve(
+        this.vision.cancelExtraction(operation.authority),
+      ).then(() => undefined, () => undefined);
+    } catch {
+      operation.cancellation = Promise.resolve();
+    }
+  }
+
+  private revokeVisionDraftAuthorities(): void {
+    this.visionDraftAuthorities.clear();
+  }
+
+  private async completeVisionReview(
+    authority: VisionDraftAuthority,
+    text: string,
+  ): Promise<SourceSelectionReceipt> {
+    if (typeof authority !== 'symbol') return { committed: false };
+    const grant = this.visionDraftAuthorities.get(authority);
+    if (grant === undefined) return { committed: false };
+    this.visionDraftAuthorities.delete(authority);
+    if (
+      !this.mounted ||
+      this.state.privacyReadiness !== 'ready' ||
+      this.state.mutation !== 'none' ||
+      this.state.source !== null ||
+      grant.generation !== this.generation ||
+      grant.sourceRevision !== this.sourceRevision ||
+      grant.lifecycleEpoch !== this.lifecycleEpoch
+    ) return { committed: false };
+    const source = reviewedVisionSource(text, grant.pageCount);
+    if (source === null) return { committed: false };
+    this.revokeVisionDraftAuthorities();
+    return this.selectPreparedSource(source, {
+      source,
+      claimedRequestId: null,
+      newlyClaimed: false,
+      claim: null,
+    });
   }
 
   private analyze(): Promise<void> {
@@ -1249,6 +1346,7 @@ export class AnalysisCoordinator {
   }
 
   private cancelVisionExtraction(): Promise<void> {
+    this.revokeVisionDraftAuthorities();
     if (this.visionExtraction !== null && this.visionExtractionIsCurrent(this.visionExtraction)) {
       return this.reset();
     }
@@ -1415,25 +1513,31 @@ export class AnalysisCoordinator {
       failure = error;
     }
 
-    const retainsPdfForVision = activation.source.kind === 'pdf' &&
+    const scanRequired = activation.source.kind === 'pdf' &&
       failure instanceof ResumeApiError &&
       failure.category === 'service' &&
       failure.code === 'scan_required' &&
       !activation.controller.signal.aborted;
+    const retainsPdfForVision = scanRequired && this.isVisionAvailable();
+    const unavailableVisionCleanup = scanRequired && !retainsPdfForVision;
     let consumed = false;
     if (activation.source.kind === 'pdf' && !retainsPdfForVision) {
       consumed = activation.claim !== null && await this.cleanupClaim(activation.claim);
       activation.sourceConsumed = consumed;
       if (!consumed) {
         if (this.activationIsCurrent(activation)) {
-          this.dispatch({
-            type: 'analysisFailed',
-            generation: activation.generation,
-            activation: activation.id,
-            error: privacyError(),
-            consumeSource: false,
-            cleanupPending: true,
-          });
+          if (unavailableVisionCleanup) {
+            this.blockPrivacy(true);
+          } else {
+            this.dispatch({
+              type: 'analysisFailed',
+              generation: activation.generation,
+              activation: activation.id,
+              error: privacyError(),
+              consumeSource: false,
+              cleanupPending: true,
+            });
+          }
         }
         return;
       }
@@ -1500,6 +1604,7 @@ export class AnalysisCoordinator {
   }
 
   private cancel(): Promise<void> {
+    this.revokeVisionDraftAuthorities();
     if (this.visionExtraction !== null && this.visionExtractionIsCurrent(this.visionExtraction)) {
       return this.reset();
     }
@@ -1545,6 +1650,7 @@ export class AnalysisCoordinator {
   async handleAppState(state: string): Promise<void> {
     if (state !== 'background' && state !== 'inactive') return;
     this.releasePendingPdfPick();
+    this.revokeVisionDraftAuthorities();
     this.lifecycleEpoch += 1;
     this.dispatch({ type: 'lifecycleInvalidated', lifecycleEpoch: this.lifecycleEpoch });
     if (
@@ -1582,6 +1688,7 @@ export class AnalysisCoordinator {
 
   private async performDisposal(): Promise<void> {
     this.releasePendingPdfPick();
+    this.revokeVisionDraftAuthorities();
     const active = this.active;
     const visionExtraction = this.visionExtraction;
     const privacyRecoveries = [...this.privacyRecoveries.values()];
@@ -1591,7 +1698,7 @@ export class AnalysisCoordinator {
     this.sourceRevision += 1;
     this.consentContinuation = null;
     active?.controller.abort();
-    visionExtraction?.controller.abort();
+    if (visionExtraction !== null) this.requestVisionCancellation(visionExtraction);
     await this.mutationTail;
     if (active !== null) await active.promise;
     if (visionExtraction !== null) await visionExtraction.promise;

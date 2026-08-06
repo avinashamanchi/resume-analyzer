@@ -11,6 +11,7 @@ import {
 } from 'react-native';
 
 import { useAppController } from '../../src/controllers/AppController';
+import type { VisionDraftAuthority } from '../../src/analysis/analysisCoordinator';
 import { AnalysisStatus } from '../../src/components/AnalysisStatus';
 import { ConsentSheet } from '../../src/components/ConsentSheet';
 import { AppButton, Card, Eyebrow, Screen, Title, uiStyles } from '../../src/components/primitives';
@@ -30,6 +31,7 @@ type VisionDraftEditor = Readonly<{
   text: string;
   pageCount: number;
   generation: number;
+  authority: VisionDraftAuthority;
 }>;
 
 export default function AnalyzeScreen() {
@@ -217,6 +219,7 @@ export default function AnalyzeScreen() {
         text: receipt.draft.text,
         pageCount: receipt.draft.pageCount ?? 1,
         generation: receipt.generation,
+        authority: receipt.authority,
       });
       setReviewedVisionReady(false);
       setVisionAnnouncementRevision(current => current + 1);
@@ -251,12 +254,10 @@ export default function AnalyzeScreen() {
     const epoch = beginOperation();
     setBusy(true);
     setLocalError(null);
-    const receipt = await commands.selectSource({
-      kind: 'vision_text',
-      text: visionDraft.text,
-      reviewed: true,
-      pageCount: visionDraft.pageCount,
-    });
+    const receipt = await commands.completeVisionReview(
+      visionDraft.authority,
+      visionDraft.text,
+    );
     if (!operationIsCurrent(epoch)) return;
     if (!receipt.committed) {
       setBusy(false);
@@ -311,9 +312,10 @@ export default function AnalyzeScreen() {
 
   const working = (busy && !pickerPending) || state.mutation !== 'none';
   const scanRequired = state.status === 'failed' &&
-    state.error?.code === 'scan_required' &&
-    state.source?.kind === 'pdf';
-  const visionAvailable = scanRequired && commands.isVisionAvailable();
+    state.error?.code === 'scan_required';
+  const visionAvailable = scanRequired &&
+    state.source?.kind === 'pdf' &&
+    commands.isVisionAvailable();
   const reviewedVision = reviewedVisionReady || state.source?.kind === 'vision_text';
   const displayName = pdfDisplay !== null &&
     state.source?.kind === 'pdf' &&

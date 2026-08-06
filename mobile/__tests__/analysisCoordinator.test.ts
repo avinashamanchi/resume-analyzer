@@ -4,6 +4,7 @@ import {
   AnalysisCoordinator,
   type AnalysisCoordinatorOptions,
   type PdfPickAuthority,
+  type VisionDraftAuthority,
 } from '../src/analysis/analysisCoordinator';
 import {
   analysisReducer,
@@ -1770,7 +1771,7 @@ describe('analysis generations and cancellation', () => {
     });
   });
 
-  it('retains a scan-required PDF for explicit local extraction, then returns only an unreviewed draft after exact cleanup', async () => {
+  it('retains a scan-required PDF for explicit local extraction, then returns only an authority-bound unreviewed draft after exact cleanup', async () => {
     const extractReviewedText = jest.fn(async () => Object.freeze({
       kind: 'vision_text' as const,
       text: 'Unreviewed OCR draft',
@@ -1800,12 +1801,13 @@ describe('analysis generations and cancellation', () => {
 
     const receipt = await coordinator.commands.extractVisionDraft();
 
-    expect(extractReviewedText).toHaveBeenCalledWith(source);
+    expect(extractReviewedText).toHaveBeenCalledWith(source, expect.any(Symbol));
     expect(ownership.inspectOwnedFileUri).toHaveBeenCalledTimes(3);
     expect(tempFiles.cleanupRequest).toHaveBeenCalledWith(REQUEST_A, source.lease);
     expect(receipt).toEqual({
       completed: true,
       generation: coordinator.getState().generation,
+      authority: expect.any(Symbol),
       draft: {
         kind: 'vision_text',
         text: 'Unreviewed OCR draft',
@@ -1818,13 +1820,14 @@ describe('analysis generations and cancellation', () => {
     expect(api.analyze).toHaveBeenCalledTimes(1);
   });
 
-  it('never starts local extraction when the native capability is absent', async () => {
+  it('exact-cleans the request ID and lease before exposing paste fallback when native capability is absent', async () => {
     const extractReviewedText = jest.fn();
     const { api, coordinator, tempFiles } = harness({
       vision: { isAvailable: () => false, extractReviewedText },
     } as never);
     await coordinator.initialize();
-    await coordinator.commands.selectSource(pdfSource());
+    const source = pdfSource();
+    await coordinator.commands.selectSource(source);
     api.analyze.mockRejectedValueOnce(new ResumeApiError('service', {
       code: 'scan_required',
       retryable: false,
@@ -1835,13 +1838,54 @@ describe('analysis generations and cancellation', () => {
 
     expect(coordinator.commands.isVisionAvailable()).toBe(false);
     expect(extractReviewedText).not.toHaveBeenCalled();
-    expect(tempFiles.cleanupRequest).not.toHaveBeenCalled();
-    expect(coordinator.getState()).toMatchObject({ source: pdfSource(), error: { code: 'scan_required' } });
+    expect(tempFiles.cleanupRequest).toHaveBeenCalledTimes(1);
+    expect(tempFiles.cleanupRequest).toHaveBeenCalledWith(REQUEST_A, source.lease);
+    expect(coordinator.getState()).toMatchObject({
+      privacyReadiness: 'ready',
+      source: null,
+      error: { code: 'scan_required' },
+    });
+    await coordinator.commands.analyze();
+    expect(api.analyze).toHaveBeenCalledTimes(1);
+  });
+
+  it('blocks privacy and every later API path when Expo Go exact cleanup cannot be verified', async () => {
+    const cleanupRequest = jest.fn(async () => ({
+      attempted: 1,
+      deleted: 0,
+      failed: 1,
+      refused: 0,
+    }));
+    const source = pdfSource();
+    const { api, coordinator } = harness({
+      vision: { isAvailable: () => false, extractReviewedText: jest.fn() },
+      tempFiles: { cleanupAbandoned: jest.fn(async () => CLEAN), cleanupRequest },
+    } as never);
+    await coordinator.initialize();
+    await coordinator.commands.selectSource(source);
+    api.analyze.mockRejectedValueOnce(new ResumeApiError('service', {
+      code: 'scan_required',
+      retryable: false,
+    }));
+
+    await coordinator.commands.analyze();
+
+    expect(cleanupRequest).toHaveBeenCalledWith(REQUEST_A, source.lease);
+    expect(coordinator.getState()).toMatchObject({
+      privacyReadiness: 'blocked',
+      cleanupPending: true,
+      source: null,
+      error: { category: 'privacy' },
+    });
+    await expect(coordinator.commands.selectSource(textSource('must stay blocked')))
+      .resolves.toEqual({ committed: false });
+    await coordinator.commands.analyze();
+    expect(api.analyze).toHaveBeenCalledTimes(1);
   });
 
   it('exact-cleans a retained scan-required PDF when the review route is left before extraction', async () => {
     const { api, coordinator, tempFiles } = harness({
-      vision: { isAvailable: () => false, extractReviewedText: jest.fn() },
+      vision: { isAvailable: () => true, extractReviewedText: jest.fn() },
     } as never);
     const source = pdfSource();
     await coordinator.initialize();
@@ -1862,10 +1906,16 @@ describe('analysis generations and cancellation', () => {
     '%s invalidates pending OCR, waits for native release, and exact-cleans without exposing a stale draft',
     async lifecycle => {
       const native = deferred<ReturnType<typeof visionSource>>();
+      let nativeSettled = false;
+      const cancellationObservedSettlement: boolean[] = [];
+      const cancelExtraction = jest.fn(async () => {
+        cancellationObservedSettlement.push(nativeSettled);
+      });
       const { api, coordinator, tempFiles } = harness({
         vision: {
           isAvailable: () => true,
           extractReviewedText: jest.fn(() => native.promise),
+          cancelExtraction,
         },
       } as never);
       const source = pdfSource();
@@ -1880,11 +1930,15 @@ describe('analysis generations and cancellation', () => {
       const extraction = coordinator.commands.extractVisionDraft();
       await flushPromises();
       const lifecycleChange = coordinator.handleAppState(lifecycle);
+      await flushPromises();
+      nativeSettled = true;
       native.resolve(visionSource(false));
 
       await expect(extraction).resolves.toEqual({ completed: false });
       await lifecycleChange;
       expect(tempFiles.cleanupRequest).toHaveBeenCalledWith(REQUEST_A, source.lease);
+      expect(cancelExtraction).toHaveBeenCalledWith(expect.any(Symbol));
+      expect(cancellationObservedSettlement).toEqual([false]);
       expect(coordinator.getState()).toMatchObject({
         source: null,
         lifecycleEpoch: 1,
@@ -1892,6 +1946,55 @@ describe('analysis generations and cancellation', () => {
       });
       await coordinator.handleAppState('active');
       expect(coordinator.getState().source).toBeNull();
+    },
+  );
+
+  it.each(['route-leave', 'reset', 'cancel', 'replacement', 'dispose'] as const)(
+    '%s cancels the opaque native operation before settlement but retains cleanup authority until settlement',
+    async transition => {
+      const native = deferred<ReturnType<typeof visionSource>>();
+      let nativeSettled = false;
+      const cancellationObservedSettlement: boolean[] = [];
+      const cancelExtraction = jest.fn(async () => {
+        cancellationObservedSettlement.push(nativeSettled);
+      });
+      const { api, coordinator, tempFiles } = harness({
+        vision: {
+          isAvailable: () => true,
+          extractReviewedText: jest.fn(() => native.promise),
+          cancelExtraction,
+        },
+      } as never);
+      const source = pdfSource();
+      await coordinator.initialize();
+      await coordinator.commands.selectSource(source);
+      api.analyze.mockRejectedValueOnce(new ResumeApiError('service', {
+        code: 'scan_required',
+        retryable: false,
+      }));
+      await coordinator.commands.analyze();
+      const extraction = coordinator.commands.extractVisionDraft();
+      await flushPromises();
+
+      let superseding: Promise<unknown>;
+      if (transition === 'route-leave') superseding = coordinator.commands.cancelVisionExtraction();
+      else if (transition === 'reset') superseding = coordinator.commands.reset();
+      else if (transition === 'cancel') superseding = coordinator.commands.cancel();
+      else if (transition === 'replacement') {
+        superseding = coordinator.commands.selectSource(textSource('replacement'));
+      } else superseding = coordinator.dispose();
+      await flushPromises();
+      expect(tempFiles.cleanupRequest).not.toHaveBeenCalled();
+
+      nativeSettled = true;
+      native.resolve(visionSource(false));
+      await expect(extraction).resolves.toEqual({ completed: false });
+      await superseding;
+
+      expect(cancelExtraction).toHaveBeenCalledWith(expect.any(Symbol));
+      expect(cancellationObservedSettlement).toEqual([false]);
+      expect(tempFiles.cleanupRequest).toHaveBeenCalledWith(REQUEST_A, source.lease);
+      expect(api.analyze).toHaveBeenCalledTimes(1);
     },
   );
 
@@ -1940,7 +2043,11 @@ describe('analysis generations and cancellation', () => {
     const draft = await coordinator.commands.extractVisionDraft();
     expect(draft).toMatchObject({ completed: true });
 
-    const selection = coordinator.commands.selectSource(visionSource(true));
+    if (!draft.completed) throw new Error('expected draft');
+    const selection = coordinator.commands.completeVisionReview(
+      draft.authority,
+      'Reviewed resume text',
+    );
     const routeCancellation = coordinator.commands.cancelVisionExtraction();
 
     await expect(selection).resolves.toEqual({ committed: false });
@@ -2023,7 +2130,7 @@ describe('analysis generations and cancellation', () => {
     expect(JSON.stringify(coordinator.getState())).not.toContain('file:///private');
   });
 
-  it('rejects unreviewed Vision text and sends reviewed text without native PDF metadata', async () => {
+  it('rejects every generic Vision source without coordinator-issued review authority and never calls the API', async () => {
     const { api, coordinator } = harness();
     await coordinator.initialize();
     await coordinator.commands.selectSource(visionSource(false));
@@ -2033,11 +2140,104 @@ describe('analysis generations and cancellation', () => {
 
     await coordinator.commands.selectSource(visionSource(true));
     await coordinator.commands.analyze();
-    expect(api.analyze.mock.calls[0][0]).toEqual({
-      source: { kind: 'vision_text', text: 'Reviewed resume text' },
+    expect(api.analyze).not.toHaveBeenCalled();
+  });
+
+  it('commits reviewed text only through the single-use draft authority and sends no native metadata', async () => {
+    const { api, coordinator } = harness({
+      vision: {
+        isAvailable: () => true,
+        extractReviewedText: jest.fn(async () => visionSource(false)),
+      },
+    } as never);
+    await coordinator.initialize();
+    await coordinator.commands.selectSource(pdfSource());
+    api.analyze.mockRejectedValueOnce(new ResumeApiError('service', {
+      code: 'scan_required',
+      retryable: false,
+    }));
+    await coordinator.commands.analyze();
+    const draft = await coordinator.commands.extractVisionDraft();
+    if (!draft.completed) throw new Error('expected draft');
+
+    await expect(coordinator.commands.completeVisionReview(
+      draft.authority,
+      'Corrected reviewed resume text',
+    )).resolves.toMatchObject({ committed: true });
+    await expect(coordinator.commands.completeVisionReview(
+      draft.authority,
+      'Second completion must fail',
+    )).resolves.toEqual({ committed: false });
+    await coordinator.commands.analyze();
+
+    expect(api.analyze).toHaveBeenCalledTimes(2);
+    expect(api.analyze.mock.calls[1][0]).toEqual({
+      source: { kind: 'vision_text', text: 'Corrected reviewed resume text' },
       jobDescription: undefined,
       consentVersion: CONSENT_VERSION,
     });
+    const apiSource = (api.analyze.mock.calls[1][0] as {
+      source: Record<string, unknown>;
+    }).source;
+    expect(apiSource).not.toHaveProperty('pageCount');
+    expect(apiSource).not.toHaveProperty('reviewed');
+    expect(apiSource).not.toHaveProperty('lease');
+    expect(apiSource).not.toHaveProperty('uri');
+  });
+
+  it('rejects missing Vision draft authority without committing or invoking the API', async () => {
+    const { api, coordinator } = harness();
+    await coordinator.initialize();
+
+    await expect(coordinator.commands.completeVisionReview(
+      Symbol('caller-controlled') as VisionDraftAuthority,
+      'Reviewed resume text',
+    )).resolves.toEqual({ committed: false });
+    await coordinator.commands.analyze();
+
+    expect(coordinator.getState().source).toBeNull();
+    expect(api.analyze).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    'reset',
+    'inactive',
+    'background',
+    'replacement',
+    'cancel',
+    'route-leave',
+    'dispose',
+  ] as const)('revokes a Vision draft authority on %s and cannot revive it', async transition => {
+    const { api, coordinator } = harness({
+      vision: {
+        isAvailable: () => true,
+        extractReviewedText: jest.fn(async () => visionSource(false)),
+      },
+    } as never);
+    await coordinator.initialize();
+    await coordinator.commands.selectSource(pdfSource());
+    api.analyze.mockRejectedValueOnce(new ResumeApiError('service', {
+      code: 'scan_required',
+      retryable: false,
+    }));
+    await coordinator.commands.analyze();
+    const draft = await coordinator.commands.extractVisionDraft();
+    if (!draft.completed) throw new Error('expected draft');
+
+    if (transition === 'reset') await coordinator.commands.reset();
+    else if (transition === 'inactive' || transition === 'background') {
+      await coordinator.handleAppState(transition);
+    } else if (transition === 'replacement') {
+      await coordinator.commands.selectSource(textSource('replacement'));
+    } else if (transition === 'cancel') await coordinator.commands.cancel();
+    else if (transition === 'route-leave') await coordinator.commands.cancelVisionExtraction();
+    else await coordinator.dispose();
+
+    await expect(coordinator.commands.completeVisionReview(
+      draft.authority,
+      'Stale reviewed resume text',
+    )).resolves.toEqual({ committed: false });
+    expect(api.analyze).toHaveBeenCalledTimes(1);
   });
 
   it('clears an older draft when an unreviewed Vision replacement is rejected', async () => {

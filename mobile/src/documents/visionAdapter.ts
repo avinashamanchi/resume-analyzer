@@ -1,4 +1,4 @@
-import { requireOptionalNativeModule } from 'expo-modules-core';
+import { requireOptionalNativeModule, uuid } from 'expo-modules-core';
 
 import {
   MAX_PDF_BYTES,
@@ -15,11 +15,13 @@ type NativeVisionResult = Readonly<{
 }>;
 
 type NativeVisionModule = Readonly<{
-  extractTextFromPdf(uri: string): Promise<NativeVisionResult>;
+  extractTextFromPdf(uri: string, operationId: string): Promise<NativeVisionResult>;
+  cancelExtraction(operationId: string): Promise<void>;
 }>;
 
 type VisionAdapterOptions = Readonly<{
   lookup?: () => NativeVisionModule | null;
+  operationId?: () => string;
 }>;
 
 export type VisionExtractionErrorCode =
@@ -100,15 +102,23 @@ function defaultLookup(): NativeVisionModule | null {
 
 export class VisionAdapter {
   private readonly lookup: () => NativeVisionModule | null;
+  private readonly operationId: () => string;
+  private readonly activeOperations = new Map<symbol, Readonly<{
+    id: string;
+    nativeModule: NativeVisionModule;
+  }>>();
 
   constructor(options: VisionAdapterOptions = {}) {
     this.lookup = options.lookup ?? defaultLookup;
+    this.operationId = options.operationId ?? (() => uuid.v4().toLowerCase());
   }
 
   private module(): NativeVisionModule | null {
     try {
       const candidate = this.lookup();
-      return candidate !== null && typeof candidate.extractTextFromPdf === 'function'
+      return candidate !== null &&
+        typeof candidate.extractTextFromPdf === 'function' &&
+        typeof candidate.cancelExtraction === 'function'
         ? candidate
         : null;
     } catch {
@@ -120,19 +130,37 @@ export class VisionAdapter {
     return this.module() !== null;
   }
 
-  async extractReviewedText(source: PdfSource): Promise<VisionTextSource> {
+  async extractReviewedText(source: PdfSource, authority: symbol): Promise<VisionTextSource> {
     const nativeModule = this.module();
     if (nativeModule === null) {
       throw new VisionExtractionError('vision_unavailable', true);
     }
 
     const canonicalUri = validatedSourceUri(source);
+    if (typeof authority !== 'symbol' || this.activeOperations.has(authority)) {
+      throw new VisionExtractionError('vision_invalid_source', false);
+    }
+    let operationId: string;
+    try {
+      operationId = this.operationId();
+    } catch {
+      throw new VisionExtractionError('vision_native_failure', false);
+    }
+    if (typeof operationId !== 'string' || !UUID.test(operationId)) {
+      throw new VisionExtractionError('vision_native_failure', false);
+    }
+    if ([...this.activeOperations.values()].some(operation => operation.id === operationId)) {
+      throw new VisionExtractionError('vision_native_failure', false);
+    }
+    this.activeOperations.set(authority, Object.freeze({ id: operationId, nativeModule }));
 
     let result: NativeVisionResult;
     try {
-      result = await nativeModule.extractTextFromPdf(canonicalUri);
+      result = await nativeModule.extractTextFromPdf(canonicalUri, operationId);
     } catch {
       throw new VisionExtractionError('vision_native_failure', false);
+    } finally {
+      this.activeOperations.delete(authority);
     }
     if (
       result === null ||
@@ -156,5 +184,16 @@ export class VisionAdapter {
       reviewed: false,
       pageCount: result.pageCount,
     });
+  }
+
+  async cancelExtraction(authority: symbol): Promise<void> {
+    if (typeof authority !== 'symbol') return;
+    const operation = this.activeOperations.get(authority);
+    if (operation === undefined) return;
+    try {
+      await operation.nativeModule.cancelExtraction(operation.id);
+    } catch {
+      // Cancellation is best effort; extraction settlement remains authoritative.
+    }
   }
 }

@@ -78,6 +78,11 @@ function harness(overrides: Record<string, unknown> = {}): any {
       setJobDescription: jest.fn(async () => ({ committed: true, generation: 3 })),
       isVisionAvailable: jest.fn(() => false),
       extractVisionDraft: jest.fn(async () => ({ completed: false })),
+      completeVisionReview: jest.fn(async () => ({
+        committed: true,
+        sourceIdentity: null,
+        generation: 2,
+      })),
       cancelVisionExtraction: jest.fn(async () => undefined),
       analyze: jest.fn(async () => undefined),
       grantConsent: jest.fn(async () => undefined),
@@ -155,14 +160,13 @@ describe('native Analyze and Results flows', () => {
   });
 
   it('truthfully routes scan-required PDFs to paste text in Expo Go', async () => {
-    const source = pdfSource(Symbol('scan-pdf'));
     const values = harness({
       analysis: {
         ...harness().analysis,
         state: {
           ...readyState,
           status: 'failed',
-          source,
+          source: null,
           error: {
             category: 'service',
             code: 'scan_required',
@@ -176,6 +180,7 @@ describe('native Analyze and Results flows', () => {
     const view = await render(<AppControllerProvider value={values}><AnalyzeScreen /></AppControllerProvider>);
 
     expect(view.queryByRole('button', { name: 'Extract on this iPhone' })).toBeNull();
+    expect(view.queryByRole('button', { name: 'Analyze resume' })).toBeNull();
     expect(view.getByText(/isn't available in Expo Go/i)).toBeTruthy();
     expect(view.getByText(/requires a Resume\.AI development build/i)).toBeTruthy();
 
@@ -213,6 +218,7 @@ describe('native Analyze and Results flows', () => {
     values.analysis.commands.extractVisionDraft.mockResolvedValueOnce({
       completed: true,
       generation: 1,
+      authority: Symbol('review-authority'),
       draft: {
         kind: 'vision_text',
         text: 'Unreviewed OCR draft',
@@ -233,6 +239,7 @@ describe('native Analyze and Results flows', () => {
     expect(view.getByTestId('vision-review-status').props.accessibilityLiveRegion).toBe('polite');
     expect(announce).toHaveBeenCalledWith('OCR draft ready. Review and edit the extracted text.');
     expect(values.analysis.commands.analyze).not.toHaveBeenCalled();
+    expect(values.analysis.commands.completeVisionReview).not.toHaveBeenCalled();
     expect(values.analysis.commands.selectSource).not.toHaveBeenCalled();
 
     await act(async () => {
@@ -243,12 +250,11 @@ describe('native Analyze and Results flows', () => {
       fireEvent.press(view.getByRole('button', { name: 'Review complete' }));
     });
 
-    expect(values.analysis.commands.selectSource).toHaveBeenCalledWith({
-      kind: 'vision_text',
-      text: 'Corrected OCR resume text',
-      reviewed: true,
-      pageCount: 2,
-    });
+    expect(values.analysis.commands.completeVisionReview).toHaveBeenCalledWith(
+      expect.any(Symbol),
+      'Corrected OCR resume text',
+    );
+    expect(values.analysis.commands.selectSource).not.toHaveBeenCalled();
     expect(values.analysis.commands.analyze).not.toHaveBeenCalled();
     expect(view.getByText('Reviewed scan ready')).toBeTruthy();
     await view.unmount();
@@ -275,6 +281,7 @@ describe('native Analyze and Results flows', () => {
     values.analysis.commands.extractVisionDraft.mockResolvedValueOnce({
       completed: true,
       generation: 1,
+      authority: Symbol('review-authority'),
       draft: { kind: 'vision_text', text: 'private OCR text', reviewed: false, pageCount: 1 },
     });
     const view = await render(<AppControllerProvider value={values}><AnalyzeScreen /></AppControllerProvider>);

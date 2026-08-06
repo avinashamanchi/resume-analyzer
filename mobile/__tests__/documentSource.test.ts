@@ -555,7 +555,7 @@ describe('VisionAdapter capability boundary', () => {
     const adapter = new VisionAdapter({ lookup: () => null });
 
     expect(adapter.isAvailable()).toBe(false);
-    await expect(adapter.extractReviewedText(source)).rejects.toMatchObject({
+    await expect(adapter.extractReviewedText(source, Symbol('operation'))).rejects.toMatchObject({
       category: 'unsupported_pdf',
       developmentBuildRequired: true,
       route: 'paste_text',
@@ -566,11 +566,12 @@ describe('VisionAdapter capability boundary', () => {
     const adapter = new VisionAdapter({
       lookup: () => ({
         extractTextFromPdf: jest.fn(async () => ({ text: 'OCR draft', pageCount: 2 })),
+        cancelExtraction: jest.fn(async () => undefined),
       }),
     });
 
     expect(adapter.isAvailable()).toBe(true);
-    await expect(adapter.extractReviewedText(source)).resolves.toEqual({
+    await expect(adapter.extractReviewedText(source, Symbol('operation'))).resolves.toEqual({
       kind: 'vision_text',
       text: 'OCR draft',
       reviewed: false,

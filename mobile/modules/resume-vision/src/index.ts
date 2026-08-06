@@ -6,7 +6,8 @@ export type ResumeVisionResult = Readonly<{
 }>;
 
 export type ResumeVisionNativeModule = Readonly<{
-  extractTextFromPdf(uri: string): Promise<ResumeVisionResult>;
+  extractTextFromPdf(uri: string, operationId: string): Promise<ResumeVisionResult>;
+  cancelExtraction(operationId: string): Promise<void>;
 }>;
 
 export default requireNativeModule<ResumeVisionNativeModule>('ResumeVision');
