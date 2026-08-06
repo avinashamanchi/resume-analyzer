@@ -1516,6 +1516,117 @@ def test_retention_verifier_accepts_current_server_patterns():
     assert result.stdout == "Sensitive-retention verification passed.\n"
 
 
+@pytest.mark.parametrize(
+    "files",
+    [
+        {
+            "server/app.py": (
+                "def extract():\n"
+                "    return request.data\n"
+                "reader = extract\n"
+                "open('report.bin', 'wb').write(reader())\n"
+            ),
+        },
+        {
+            "server/app.py": (
+                "def extract():\n"
+                "    return request.data\n"
+                "reader = extract\n"
+                "forward = reader\n"
+                "database.execute('INSERT INTO report VALUES (?)', forward())\n"
+            ),
+        },
+        {
+            "server/helpers.py": (
+                "def extract():\n"
+                "    return request.data\n"
+            ),
+            "server/app.py": (
+                "from server.helpers import extract\n"
+                "reader = extract\n"
+                "redis_client.set('report', reader())\n"
+            ),
+        },
+        {
+            "server/helpers.py": (
+                "def extract():\n"
+                "    return request.data\n"
+            ),
+            "server/app.py": (
+                "import server.helpers as helpers\n"
+                "redis_client.set('report', helpers.extract())\n"
+            ),
+        },
+    ],
+)
+def test_retention_verifier_rejects_callable_alias_and_cross_file_flows(
+    tmp_path: Path,
+    files: dict[str, str],
+):
+    private_canary = "candidate-private-retention-canary"
+    repository = _tracked_repo(
+        tmp_path,
+        {
+            path: content.replace("report.bin", private_canary)
+            for path, content in files.items()
+        },
+    )
+
+    result = _retention_verifier(repository)
+
+    assert result.returncode == 1
+    assert "durable-content-sink" in result.stderr
+    assert private_canary not in result.stdout + result.stderr
+
+
+@pytest.mark.parametrize(
+    "files",
+    [
+        {
+            "server/app.py": (
+                "import io\n"
+                "def extract():\n"
+                "    return request.data\n"
+                "reader = extract\n"
+                "reader = lambda: b'safe'\n"
+                "output = io.BytesIO()\n"
+                "output.write(reader())\n"
+            ),
+        },
+        {
+            "server/helpers.py": (
+                "def safe_value():\n"
+                "    return b'safe'\n"
+            ),
+            "server/app.py": (
+                "import io\n"
+                "from server.helpers import safe_value as reader\n"
+                "output = io.BytesIO()\n"
+                "output.write(reader())\n"
+            ),
+        },
+        {
+            "server/app.py": (
+                "import io\n"
+                "def use_reader(reader):\n"
+                "    output = io.BytesIO()\n"
+                "    output.write(reader())\n"
+            ),
+        },
+    ],
+)
+def test_retention_verifier_allows_overwritten_and_safe_callable_controls(
+    tmp_path: Path,
+    files: dict[str, str],
+):
+    repository = _tracked_repo(tmp_path, files)
+
+    result = _retention_verifier(repository)
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "Sensitive-retention verification passed.\n"
+
+
 def test_release_docs_and_ci_cover_required_unverified_boundaries():
     required_docs = (
         ROOT / "docs" / "privacy-policy.md",

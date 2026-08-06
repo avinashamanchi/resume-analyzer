@@ -230,6 +230,10 @@ class PythonRetentionVisitor(ast.NodeVisitor):
         self,
         tainted_functions: set[str] | None = None,
         request_functions: set[str] | None = None,
+        *,
+        module_name: str = "app",
+        project_modules: set[str] | None = None,
+        local_callable_names: set[str] | None = None,
     ) -> None:
         self.findings: set[str] = set()
         self._tainted_paths: set[AccessPath] = set()
@@ -237,13 +241,21 @@ class PythonRetentionVisitor(ast.NodeVisitor):
         self._request_paths: set[AccessPath] = {("request",)}
         self._durable_receivers: dict[AccessPath, str] = {}
         self._callable_factories: dict[AccessPath, str] = {}
+        self._callable_aliases: dict[AccessPath, str] = {}
         self._module_aliases: dict[AccessPath, str] = {}
         self._bound_paths: set[AccessPath] = set()
         self._flask_module_aliases: set[str] = {"flask"}
         self._path_constructor_aliases: set[str] = {"Path"}
         self.tainted_functions: set[str] = set(tainted_functions or ())
         self.request_functions: set[str] = set(request_functions or ())
+        self._module_name = module_name
+        self._project_modules = set(project_modules or ())
         self._function_stack: list[str] = []
+        for name in local_callable_names or ():
+            path = (name,)
+            self._bound_paths.add(path)
+            self._callable_factories[path] = "local"
+            self._callable_aliases[path] = f"{self._module_name}.{name}"
 
     def _path_is_request_object(self, path: AccessPath | None) -> bool:
         if path is None:
@@ -256,12 +268,25 @@ class PythonRetentionVisitor(ast.NodeVisitor):
             and path[1] == "attr:request"
         )
 
-    @staticmethod
-    def _summary_contains(node: ast.Call, summaries: set[str]) -> bool:
-        dotted = _dotted_name(node.func)
-        if dotted is None:
-            return False
-        return dotted in summaries or dotted.rsplit(".", maxsplit=1)[-1] in summaries
+    def _callable_identity(self, node: ast.AST) -> str | None:
+        path = _access_path(node)
+        if path is not None and path in self._callable_aliases:
+            return self._callable_aliases[path]
+        canonical_member = self._canonical_module_member(node)
+        if canonical_member is not None:
+            return canonical_member
+        if isinstance(node, ast.Attribute):
+            local_candidate = f"{self._module_name}.{node.attr}"
+            if (
+                local_candidate in self.tainted_functions
+                or local_candidate in self.request_functions
+            ):
+                return local_candidate
+        return None
+
+    def _summary_contains(self, node: ast.Call, summaries: set[str]) -> bool:
+        identity = self._callable_identity(node.func)
+        return identity is not None and identity in summaries
 
     def _expression_is_request_object(self, node: ast.AST | None) -> bool:
         if node is None:
@@ -387,10 +412,19 @@ class PythonRetentionVisitor(ast.NodeVisitor):
         path = _access_path(node)
         if path is None or len(path) < 2 or not path[-1].startswith("attr:"):
             return None
-        module = self._module_aliases.get(path[:-1])
-        if module is None:
-            return None
-        return f"{module}.{path[-1].removeprefix('attr:')}"
+        for prefix_length in range(len(path) - 1, 0, -1):
+            module = self._module_aliases.get(path[:prefix_length])
+            if module is None:
+                continue
+            members = [
+                component.removeprefix("attr:")
+                for component in path[prefix_length:]
+                if component.startswith("attr:")
+            ]
+            if len(members) != len(path) - prefix_length:
+                return None
+            return ".".join((module, *members))
+        return None
 
     def _callable_factory_kind(self, node: ast.AST | None) -> str | None:
         if node is None:
@@ -515,6 +549,11 @@ class PythonRetentionVisitor(ast.NodeVisitor):
             for candidate, kind in self._callable_factories.items()
             if not _path_is_prefix(path, candidate)
         }
+        self._callable_aliases = {
+            candidate: identity
+            for candidate, identity in self._callable_aliases.items()
+            if not _path_is_prefix(path, candidate)
+        }
         self._module_aliases = {
             candidate: module
             for candidate, module in self._module_aliases.items()
@@ -589,6 +628,8 @@ class PythonRetentionVisitor(ast.NodeVisitor):
             self._callable_factories[target] = factory_kind
         if source is not None and source in self._module_aliases:
             self._module_aliases[target] = self._module_aliases[source]
+        if source is not None and source in self._callable_aliases:
+            self._callable_aliases[target] = self._callable_aliases[source]
         sink_kind = self._sink_kind(value)
         if sink_kind is not None:
             self._sink_aliases[target] = sink_kind
@@ -618,6 +659,7 @@ class PythonRetentionVisitor(ast.NodeVisitor):
         self._clear_target(path)
         self._bound_paths.add(path)
         self._callable_factories[path] = "local"
+        self._callable_aliases[path] = f"{self._module_name}.{name}"
 
     def _bind_import(self, name: str) -> AccessPath:
         path = (name,)
@@ -641,6 +683,7 @@ class PythonRetentionVisitor(ast.NodeVisitor):
         previous_request_paths = self._request_paths
         previous_receivers = self._durable_receivers
         previous_factories = self._callable_factories
+        previous_callables = self._callable_aliases
         previous_modules = self._module_aliases
         previous_bound_paths = self._bound_paths
         previous_flask_aliases = self._flask_module_aliases
@@ -662,6 +705,7 @@ class PythonRetentionVisitor(ast.NodeVisitor):
         self._request_paths = set(previous_request_paths)
         self._durable_receivers = dict(previous_receivers)
         self._callable_factories = dict(previous_factories)
+        self._callable_aliases = dict(previous_callables)
         self._module_aliases = dict(previous_modules)
         self._bound_paths = set(previous_bound_paths)
         self._flask_module_aliases = set(previous_flask_aliases)
@@ -684,6 +728,7 @@ class PythonRetentionVisitor(ast.NodeVisitor):
         self._request_paths = previous_request_paths
         self._durable_receivers = previous_receivers
         self._callable_factories = previous_factories
+        self._callable_aliases = previous_callables
         self._module_aliases = previous_modules
         self._bound_paths = previous_bound_paths
         self._flask_module_aliases = previous_flask_aliases
@@ -708,6 +753,7 @@ class PythonRetentionVisitor(ast.NodeVisitor):
         previous_request_paths = self._request_paths
         previous_receivers = self._durable_receivers
         previous_factories = self._callable_factories
+        previous_callables = self._callable_aliases
         previous_modules = self._module_aliases
         previous_bound_paths = self._bound_paths
         previous_flask_aliases = self._flask_module_aliases
@@ -717,6 +763,7 @@ class PythonRetentionVisitor(ast.NodeVisitor):
         self._request_paths = set(previous_request_paths)
         self._durable_receivers = dict(previous_receivers)
         self._callable_factories = dict(previous_factories)
+        self._callable_aliases = dict(previous_callables)
         self._module_aliases = dict(previous_modules)
         self._bound_paths = set(previous_bound_paths)
         self._flask_module_aliases = set(previous_flask_aliases)
@@ -728,6 +775,7 @@ class PythonRetentionVisitor(ast.NodeVisitor):
         self._request_paths = previous_request_paths
         self._durable_receivers = previous_receivers
         self._callable_factories = previous_factories
+        self._callable_aliases = previous_callables
         self._module_aliases = previous_modules
         self._bound_paths = previous_bound_paths
         self._flask_module_aliases = previous_flask_aliases
@@ -762,9 +810,13 @@ class PythonRetentionVisitor(ast.NodeVisitor):
 
     def visit_Return(self, node: ast.Return) -> None:
         if self._function_stack and self._expression_is_tainted(node.value):
-            self.tainted_functions.add(self._function_stack[-1])
+            self.tainted_functions.add(
+                f"{self._module_name}.{self._function_stack[-1]}"
+            )
         if self._function_stack and self._expression_is_request_object(node.value):
-            self.request_functions.add(self._function_stack[-1])
+            self.request_functions.add(
+                f"{self._module_name}.{self._function_stack[-1]}"
+            )
         if node.value is not None:
             self.visit(node.value)
 
@@ -773,12 +825,14 @@ class PythonRetentionVisitor(ast.NodeVisitor):
         for alias in node.names:
             target_name = alias.asname or alias.name.split(".", maxsplit=1)[0]
             target = self._bind_import(target_name)
-            if alias.name in tracked_modules:
-                self._module_aliases[target] = alias.name
+            bound_module = alias.name if alias.asname else alias.name.split(".", 1)[0]
+            if alias.name in tracked_modules or alias.name in self._project_modules:
+                self._module_aliases[target] = bound_module
             if alias.name == "flask":
                 self._flask_module_aliases.add(target_name)
 
     def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
+        imported_module = self._resolve_import_from_module(node)
         for alias in node.names:
             if alias.name == "*":
                 continue
@@ -795,6 +849,19 @@ class PythonRetentionVisitor(ast.NodeVisitor):
                 self._callable_factories[target] = "file"
             elif node.module == "io" and alias.name in LOCAL_RECEIVER_CONSTRUCTORS:
                 self._callable_factories[target] = "local"
+            if imported_module in self._project_modules:
+                self._callable_aliases[target] = f"{imported_module}.{alias.name}"
+
+    def _resolve_import_from_module(self, node: ast.ImportFrom) -> str:
+        if node.level == 0:
+            return node.module or ""
+        package = self._module_name.split(".")[:-1]
+        ascend = max(node.level - 1, 0)
+        if ascend:
+            package = package[:-ascend]
+        if node.module:
+            package.extend(node.module.split("."))
+        return ".".join(package)
 
     def _visit_with(self, node: ast.With | ast.AsyncWith) -> None:
         for item in node.items:
@@ -882,30 +949,65 @@ def _path_open_call_writes(node: ast.Call) -> bool:
     return isinstance(mode, str) and any(marker in mode for marker in ("a", "w", "x", "+"))
 
 
-def python_findings(content: str) -> set[str]:
-    try:
-        parsed = ast.parse(content)
-    except (SyntaxError, ValueError):
-        return {"unparseable-production-python"}
+def _module_name(relative_path: str) -> str:
+    path = relative_path.removesuffix(".py").replace("/", ".")
+    return path.removesuffix(".__init__")
+
+
+def python_project_findings(contents: dict[str, str]) -> dict[str, set[str]]:
+    parsed_modules: dict[str, ast.Module] = {}
+    findings = {relative_path: set() for relative_path in contents}
+    modules_by_path = {
+        relative_path: _module_name(relative_path) for relative_path in contents
+    }
+    for relative_path, content in contents.items():
+        try:
+            parsed_modules[relative_path] = ast.parse(content)
+        except (SyntaxError, ValueError):
+            findings[relative_path].add("unparseable-production-python")
+
+    project_modules = set(modules_by_path.values())
     tainted_functions: set[str] = set()
     request_functions: set[str] = set()
-    findings: set[str] = set()
     function_count = sum(
         isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        for parsed in parsed_modules.values()
         for node in ast.walk(parsed)
     )
     for _ in range(function_count + 1):
-        visitor = PythonRetentionVisitor(tainted_functions, request_functions)
-        visitor.visit(parsed)
-        findings.update(visitor.findings)
+        discovered_tainted = set(tainted_functions)
+        discovered_request = set(request_functions)
+        for relative_path, parsed in parsed_modules.items():
+            visitor = PythonRetentionVisitor(
+                tainted_functions,
+                request_functions,
+                module_name=modules_by_path[relative_path],
+                project_modules=project_modules,
+                local_callable_names={
+                    node.name
+                    for node in parsed.body
+                    if isinstance(
+                        node,
+                        (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef),
+                    )
+                },
+            )
+            visitor.visit(parsed)
+            findings[relative_path].update(visitor.findings)
+            discovered_tainted.update(visitor.tainted_functions)
+            discovered_request.update(visitor.request_functions)
         if (
-            visitor.tainted_functions <= tainted_functions
-            and visitor.request_functions <= request_functions
+            discovered_tainted == tainted_functions
+            and discovered_request == request_functions
         ):
             break
-        tainted_functions.update(visitor.tainted_functions)
-        request_functions.update(visitor.request_functions)
+        tainted_functions = discovered_tainted
+        request_functions = discovered_request
     return findings
+
+
+def python_findings(content: str) -> set[str]:
+    return python_project_findings({"app.py": content})["app.py"]
 
 
 def tracked_files(root: Path) -> list[str]:
@@ -943,6 +1045,7 @@ def main() -> int:
         return 2
 
     findings: list[tuple[str, str]] = []
+    production_contents: dict[str, str] = {}
     for relative_path in files:
         if not is_production_path(relative_path):
             continue
@@ -956,13 +1059,15 @@ def main() -> int:
             relative_path == "app.py"
             or relative_path.startswith("server/")
         ) and relative_path.endswith(".py"):
-            findings.extend(
-                (relative_path, rule_name)
-                for rule_name in sorted(python_findings(content))
-            )
+            production_contents[relative_path] = content
         for rule_name, pattern, applies in RULES:
             if applies(relative_path) and pattern.search(content):
                 findings.append((relative_path, rule_name))
+
+    for relative_path, rules in python_project_findings(production_contents).items():
+        findings.extend(
+            (relative_path, rule_name) for rule_name in sorted(rules)
+        )
 
     if findings:
         print(
