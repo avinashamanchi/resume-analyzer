@@ -65,6 +65,7 @@ export default function SettingsScreen() {
         <Text style={uiStyles.sectionTitle}>How data moves</Text>
         <Text style={uiStyles.body}>Reports are optional and local to this device. Resume and job input is transient.</Text>
         <Text style={uiStyles.muted}>After consent, Resume.AI’s server extracts supported PDFs and sends resume text and optional job-description text to Groq for feedback.</Text>
+        <Text style={uiStyles.muted}>Groq retains usage metadata and may retain inference content for up to 30 days; this project’s Zero Data Retention setting is unverified. Render application logs are retained for 7, 14, or 30 days by plan, while app-controlled logs are content-free.</Text>
       </Card>
       <Card>
         <Text style={uiStyles.sectionTitle}>Private controls</Text>

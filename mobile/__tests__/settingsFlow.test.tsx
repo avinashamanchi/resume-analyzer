@@ -45,6 +45,7 @@ describe('native Settings, privacy, and support flows', () => {
 
   it('states local and transient boundaries without account claims', async () => {
     const context = values();
+    const settings = await render(<AppControllerProvider value={context}><SettingsScreen /></AppControllerProvider>);
     const privacy = await render(<AppControllerProvider value={context}><PrivacyScreen /></AppControllerProvider>);
     const support = await render(<AppControllerProvider value={context}><SupportScreen /></AppControllerProvider>);
     expect(privacy.getByText(/Reports are saved only on this device/i)).toBeTruthy();
@@ -54,6 +55,24 @@ describe('native Settings, privacy, and support flows', () => {
     expect(privacy.getByText(/Cleanup cannot undo processing already completed by the Resume\.AI server or Groq/i)).toBeTruthy();
     expect(privacy.queryByText(/processing stops if cleanup cannot be confirmed/i)).toBeNull();
     expect(privacy.queryByText(/delete account|cloud history/i)).toBeNull();
+    expect(privacy.getByText(/hosted on Render/i)).toBeTruthy();
+    expect(privacy.getByText(/raw PDF bytes are never sent to Groq/i)).toBeTruthy();
+    expect(privacy.getByText(/Vision OCR stays on this iPhone until you review the text and consent/i)).toBeTruthy();
+    expect(privacy.getByText(/usage metadata/i)).toBeTruthy();
+    expect(privacy.getByText(/up to 30 days/i)).toBeTruthy();
+    expect(privacy.getByText(/has not verified Zero Data Retention/i)).toBeTruthy();
+    expect(privacy.getByText(/7, 14, or 30 days/i)).toBeTruthy();
+    expect(privacy.getByText(/provider-side connection and HTTP request metadata/i)).toBeTruthy();
+    expect(privacy.getByText(/Device\/IP Data and IP-based geolocation/i)).toBeTruthy();
+    expect(privacy.getByText(/coarse pseudonymous rate-limit key/i)).toBeTruthy();
+    expect(support.getByText(/not an exact ATS or employment prediction/i)).toBeTruthy();
+    expect(support.getByText(/no hiring guarantee/i)).toBeTruthy();
+    expect(support.getByText(/not professional, legal, or employment advice/i)).toBeTruthy();
+    expect(support.getByText(/Never post resumes, job descriptions, tokens, or private identifiers/i)).toBeTruthy();
+    expect(settings.getByText(/usage metadata/i)).toBeTruthy();
+    expect(settings.getByText(/up to 30 days/i)).toBeTruthy();
+    expect(settings.getByText(/Zero Data Retention.*unverified/i)).toBeTruthy();
+    expect(settings.getByText(/7, 14, or 30 days/i)).toBeTruthy();
     await act(async () => { fireEvent.press(support.getByRole('button', { name: 'Open public support' })); });
     expect(context.actions.openSupport).toHaveBeenCalledTimes(1);
   });

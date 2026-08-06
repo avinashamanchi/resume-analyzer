@@ -1,0 +1,78 @@
+name: Verify
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: false
+
+      - name: Set up Node 22.23.2
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.23.2
+
+      - name: Install frozen Python environment
+        run: uv sync --frozen
+
+      - name: Test Python service
+        run: uv run pytest -q
+
+      - name: Test browser client
+        run: node --test tests/*.test.cjs
+
+      - name: Scan tracked files
+        run: node scripts/scan-secrets.mjs
+
+      - name: Verify no sensitive retention
+        run: uv run python scripts/verify_no_sensitive_retention.py
+
+      - name: Install frozen mobile environment
+        working-directory: mobile
+        run: npm ci
+
+      - name: Test mobile app
+        working-directory: mobile
+        run: npm test -- --runInBand
+
+      - name: Type-check mobile app
+        working-directory: mobile
+        run: npm run typecheck
+
+      - name: Lint mobile app
+        working-directory: mobile
+        run: npm run lint
+
+      - name: Check Expo dependencies
+        working-directory: mobile
+        run: npx --yes expo-doctor@latest
+
+      - name: Export iOS bundle
+        working-directory: mobile
+        run: npx expo export --platform ios
+
+      - name: Audit mobile dependencies
+        working-directory: mobile
+        run: npm audit --audit-level=high
+
+      - name: Check patch whitespace
+        run: git diff --check

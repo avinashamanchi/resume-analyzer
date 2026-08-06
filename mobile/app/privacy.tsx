@@ -10,11 +10,13 @@ export default function PrivacyScreen() {
       <Title>Your resume is not your profile.</Title>
       <Card>
         <Text style={uiStyles.sectionTitle}>What leaves this iPhone</Text>
-        <Text style={uiStyles.body}>Only after you consent and tap Analyze, Resume.AI sends the selected PDF or pasted resume text and an optional job description to its server. The server extracts supported PDF text and sends resume text and optional job-description text to Groq for AI feedback.</Text>
+        <Text style={uiStyles.body}>Only after you consent and tap Analyze, a selected standard PDF is transiently sent to the Resume.AI server hosted on Render for text extraction. Raw PDF bytes are never sent to Groq.</Text>
+        <Text style={uiStyles.body}>Reviewed, pasted, or extracted resume text and optional job-description text are sent to Groq only after consent.</Text>
       </Card>
       <Card>
         <Text style={uiStyles.sectionTitle}>What stays local</Text>
         <Text style={uiStyles.body}>Reports are saved only on this device, only when you choose Save locally. Saved reports contain scores and feedback—not the source resume, filename, job description, or request identifiers.</Text>
+        <Text style={uiStyles.body}>Vision OCR stays on this iPhone until you review the text and consent. The app server keeps no report or content history.</Text>
       </Card>
       <Card>
         <Text style={uiStyles.sectionTitle}>Temporary handling</Text>
@@ -24,7 +26,12 @@ export default function PrivacyScreen() {
       </Card>
       <Card>
         <Text style={uiStyles.sectionTitle}>Anonymous security identifier</Text>
-        <Text style={uiStyles.body}>Resume.AI uses an anonymous installation token to protect the service from abuse. It is not used for advertising or cross-app tracking.</Text>
+        <Text style={uiStyles.body}>Resume.AI uses an anonymous installation token and a coarse pseudonymous rate-limit key to protect the service from abuse. They are not used for advertising, analytics, or cross-app tracking.</Text>
+      </Card>
+      <Card>
+        <Text style={uiStyles.sectionTitle}>Provider retention</Text>
+        <Text style={uiStyles.body}>Groq always retains usage metadata and may retain inference content for reliability and abuse prevention for up to 30 days unless Zero Data Retention is enabled. Resume.AI has not verified Zero Data Retention for this project.</Text>
+        <Text style={uiStyles.body}>Render keeps application logs for 7, 14, or 30 days by plan. Resume.AI application logs are content-free. Render may separately retain provider-side connection and HTTP request metadata and may process Device/IP Data and IP-based geolocation under its policy.</Text>
       </Card>
       <Card>
         <Text style={uiStyles.sectionTitle}>Limits</Text>

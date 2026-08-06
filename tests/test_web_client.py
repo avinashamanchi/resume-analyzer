@@ -84,20 +84,34 @@ def test_flask_serves_documented_first_party_web_assets(web_client, path, conten
     assert response.status_code == 200
     assert response.mimetype == content_type
     assert "default-src 'self'" in response.headers["Content-Security-Policy"]
-    assert "https://" not in response.get_data(as_text=True)
+    body = response.get_data(as_text=True)
+    if path == "/static/support.html":
+        assert body.count("https://") == 1
+        assert "https://github.com/avinashamanchi/resume-analyzer/issues" in body
+    else:
+        assert "https://" not in body
 
 
-def test_every_public_web_page_has_exact_privacy_boundaries():
+def test_every_public_web_page_has_exact_privacy_boundaries(web_client):
     disclosures = (
-        "Resume.AI transiently processes the selected PDF and extracts text.",
+        "Selected standard PDFs are transiently sent to the Resume.AI server hosted on Render for text extraction.",
         "Raw PDF bytes are never sent to Groq.",
-        "Extracted resume text and any optional job description are sent to Groq only after consent.",
-        "No server history is kept.",
+        "Reviewed, pasted, or extracted resume text and any optional job description are sent to Groq only after consent.",
+        "The app server keeps no report or content history, and this browser keeps no report history.",
         "No tracking or analytics are used.",
-        "Only a session installation token is kept in this browser.",
+        "An installation security identifier and coarse pseudonymous rate-limit key are used without ads or tracking.",
+        "Groq always retains usage metadata and may retain inference content for up to 30 days for reliability and abuse prevention unless Zero Data Retention is enabled; Resume.AI has not verified that setting.",
+        "Render may retain provider-side connection and HTTP request metadata under its policy; Resume.AI controls only its content-free application logs.",
+        "Render may process Device/IP Data and IP-based geolocation under its policy.",
     )
 
     for filename in ("index.html", "privacy.html", "support.html"):
-        text = (STATIC / filename).read_text()
+        response = web_client.get(f"/static/{filename}")
+        assert response.status_code == 200
+        text = response.get_data(as_text=True)
         for disclosure in disclosures:
             assert disclosure in text
+
+    support = web_client.get("/static/support.html").get_data(as_text=True)
+    assert 'href="https://github.com/avinashamanchi/resume-analyzer/issues"' in support
+    assert 'rel="noreferrer"' in support

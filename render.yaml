@@ -1,0 +1,44 @@
+services:
+  - type: web
+    name: resume-ai
+    runtime: python
+    plan: starter
+    region: oregon
+    previews:
+      generation: off
+    buildCommand: uv sync --frozen --no-dev
+    startCommand: >-
+      gunicorn 'server.app:create_app()' --bind 0.0.0.0:$PORT --workers 2
+      --threads 4 --timeout 45 --graceful-timeout 30 --keep-alive 5
+      --max-requests 1000 --max-requests-jitter 100
+      --access-logfile /dev/null --error-logfile -
+    healthCheckPath: /healthz
+    envVars:
+      - key: APP_ENV
+        value: production
+      - key: DEBUG
+        value: "false"
+      - key: GROQ_API_KEY
+        sync: false
+      - key: GROQ_MODEL
+        value: llama-3.3-70b-versatile
+      - key: INSTALLATION_SIGNING_KEY
+        generateValue: true
+      - key: REDIS_URL
+        fromService:
+          type: keyvalue
+          name: resume-ai-rate-limit
+          property: connectionString
+      - key: ALLOWED_WEB_ORIGINS
+        value: https://resume-ai.onrender.com
+      - key: PROVIDER_DEADLINE_SECONDS
+        value: "8"
+      - key: REQUEST_DEADLINE_SECONDS
+        value: "10"
+
+  - type: keyvalue
+    name: resume-ai-rate-limit
+    plan: starter
+    region: oregon
+    ipAllowList: []
+    maxmemoryPolicy: allkeys-lru

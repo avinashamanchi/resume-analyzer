@@ -50,7 +50,7 @@ export default function AnalyzeScreen() {
   const [busy, setBusy] = useState(false);
   const [pickerPending, setPickerPending] = useState(false);
   const [visionPending, setVisionPending] = useState(false);
-  const [visionDraft, setVisionDraft] = useState<VisionDraftEditor | null>(null);
+  const [visionDraftState, setVisionDraft] = useState<VisionDraftEditor | null>(null);
   const [reviewedVisionReady, setReviewedVisionReady] = useState(false);
   const [visionAnnouncementRevision, setVisionAnnouncementRevision] = useState(0);
   const priorGeneration = useRef(state.generation);
@@ -85,7 +85,7 @@ export default function AnalyzeScreen() {
   }, [commands]));
 
   useEffect(() => {
-    if (visionAnnouncementRevision === 0 || visionDraft === null) return;
+    if (visionAnnouncementRevision === 0) return;
     AccessibilityInfo.announceForAccessibility(
       'OCR draft ready. Review and edit the extracted text.',
     );
@@ -142,22 +142,10 @@ export default function AnalyzeScreen() {
     priorGeneration.current = state.generation;
   }, [state.generation, state.jobDescription, state.source, state.status]);
 
-  useEffect(() => {
-    if (visionDraft !== null && state.generation !== visionDraft.generation) {
-      setVisionDraft(null);
-    }
-  }, [state.generation, visionDraft]);
-
-  useEffect(() => {
-    if (
-      pdfDisplay !== null &&
-      state.generation >= pdfDisplay.sourceGeneration &&
-      (state.source?.kind !== 'pdf' || state.source.lease !== pdfDisplay.sourceIdentity) &&
-      state.mutation === 'none'
-    ) {
-      setPdfDisplay(null);
-    }
-  }, [pdfDisplay, state.generation, state.mutation, state.source]);
+  const visionDraft = visionDraftState !== null &&
+    state.generation === visionDraftState.generation
+    ? visionDraftState
+    : null;
 
   const changeMode = async (next: SourceMode) => {
     if (next === mode || (busy && !pickerPending) || state.status === 'analyzing') return;
@@ -398,7 +386,7 @@ export default function AnalyzeScreen() {
               </>
             ) : (
               <Text style={uiStyles.body}>
-                On-device Apple Vision extraction requires a Resume.AI development build and isn't available in Expo Go. Paste the resume text instead.
+                On-device Apple Vision extraction requires a Resume.AI development build and {"isn't"} available in Expo Go. Paste the resume text instead.
               </Text>
             )}
             <AppButton

@@ -67,12 +67,15 @@
         <section class="privacy-disclosure" aria-labelledby="privacy-boundary-title">
           <h2 id="privacy-boundary-title">Privacy boundary</h2>
           <ul>
-            <li>Resume.AI transiently processes the selected PDF and extracts text.</li>
+            <li>Selected standard PDFs are transiently sent to the Resume.AI server hosted on Render for text extraction.</li>
             <li>Raw PDF bytes are never sent to Groq.</li>
-            <li>Extracted resume text and any optional job description are sent to Groq only after consent.</li>
-            <li>No server history is kept.</li>
+            <li>Reviewed, pasted, or extracted resume text and any optional job description are sent to Groq only after consent.</li>
+            <li>The app server keeps no report or content history, and this browser keeps no report history.</li>
             <li>No tracking or analytics are used.</li>
-            <li>Only a session installation token is kept in this browser.</li>
+            <li>An installation security identifier and coarse pseudonymous rate-limit key are used without ads or tracking.</li>
+            <li>Groq always retains usage metadata and may retain inference content for up to 30 days for reliability and abuse prevention unless Zero Data Retention is enabled; Resume.AI has not verified that setting.</li>
+            <li>Render may retain provider-side connection and HTTP request metadata under its policy; Resume.AI controls only its content-free application logs.</li>
+            <li>Render may process Device/IP Data and IP-based geolocation under its policy.</li>
           </ul>
         </section>
 

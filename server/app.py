@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+import json
 from pathlib import Path
+import sys
+import time
 from typing import Any
 from uuid import uuid4
 
@@ -36,6 +39,15 @@ _CORS_METHODS = "GET, POST, OPTIONS"
 _CORS_HEADERS = "Authorization, Content-Type"
 _CORS_HEADER_NAMES = frozenset({"authorization", "content-type"})
 _WEB_STATIC_DIRECTORY = Path(__file__).resolve().parent.parent / "static"
+def _response_size_bucket(response: Any) -> str:
+    size = response.calculate_content_length()
+    if size is None:
+        return "unknown"
+    if size <= 16 * 1024:
+        return "small"
+    if size <= 256 * 1024:
+        return "medium"
+    return "large"
 
 
 def create_app(
@@ -86,6 +98,7 @@ def create_app(
     @app.before_request
     def assign_request_id() -> None:
         g.resume_ai_request_id = uuid4()
+        g.resume_ai_started_ns = time.monotonic_ns()
 
     @app.after_request
     def apply_response_policy(response: Any) -> Any:
@@ -119,6 +132,22 @@ def create_app(
                         response.headers["Access-Control-Allow-Headers"] = (
                             _CORS_HEADERS
                         )
+        return response
+
+    @app.after_request
+    def emit_content_free_request_log(response: Any) -> Any:
+        started_ns = getattr(g, "resume_ai_started_ns", time.monotonic_ns())
+        elapsed_ms = max(0, (time.monotonic_ns() - started_ns) // 1_000_000)
+        payload = {
+            "request_id": str(g.resume_ai_request_id),
+            "status_class": f"{response.status_code // 100}xx",
+            "response_size_bucket": _response_size_bucket(response),
+            "latency_ms": min(elapsed_ms, 60_000),
+        }
+        sys.stderr.write(
+            json.dumps(payload, separators=(",", ":"), sort_keys=True) + "\n"
+        )
+        sys.stderr.flush()
         return response
 
     def content_free_failure(

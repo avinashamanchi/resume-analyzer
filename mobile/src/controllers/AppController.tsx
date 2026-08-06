@@ -116,7 +116,14 @@ export function AppControllerRoot({
     });
   }, [data, serialize]);
 
-  useEffect(() => { void load(); }, [load]);
+  useEffect(() => {
+    let active = true;
+    void Promise.resolve().then(() => {
+      if (active) return load();
+      return undefined;
+    });
+    return () => { active = false; };
+  }, [load]);
 
   const get = useCallback(async (id: string): Promise<DisplayReport | null> => {
     if (analysis.state.result?.analysisId === id) return analysis.state.result;

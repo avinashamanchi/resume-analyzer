@@ -1,7 +1,8 @@
 import SQLiteKeyValueStore from 'expo-sqlite/kv-store';
 
-export { CONSENT_VERSION } from '../domain/consent';
 import { CONSENT_VERSION } from '../domain/consent';
+
+export { CONSENT_VERSION } from '../domain/consent';
 export const CONSENT_STORAGE_KEY = 'resume-ai.consent.v1';
 
 export type ConsentKeyValueStore = Readonly<{

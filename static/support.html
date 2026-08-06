@@ -3,7 +3,24 @@
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Support — Resume.AI</title><link rel="stylesheet" href="/static/styles.css"></head>
 <body>
   <header class="site-header wrap"><a class="wordmark" href="/static/index.html">Resume<span>.</span>AI</a><nav aria-label="Utility"><a href="/static/privacy.html">Privacy</a></nav></header>
-  <main class="wrap prose"><p class="eyebrow">Support and limits</p><h1>Useful feedback has limits.</h1><h2>Privacy boundary</h2><ul><li>Resume.AI transiently processes the selected PDF and extracts text.</li><li>Raw PDF bytes are never sent to Groq.</li><li>Extracted resume text and any optional job description are sent to Groq only after consent.</li><li>No server history is kept.</li><li>No tracking or analytics are used.</li><li>Only a session installation token is kept in this browser.</li></ul><h2>What the readiness review does</h2><p>It combines deterministic checks for structure, impact, readability, and relevant terms with AI coaching from Groq. A readiness score helps prioritize edits; it is not a prediction or guarantee of an outcome.</p><h2>File help</h2><p>Use a readable, unencrypted PDF under 10 MB, or paste up to 30,000 characters of resume text. If a PDF is image-only, paste its text instead. The role description is optional and accepts up to 20,000 characters.</p><h2>Request help</h2><p>There is no automatic retry. If a request times out or the service is unavailable, wait and submit again manually. If you repeatedly see a service configuration message, contact the site operator with the request ID shown by the service, if one is available.</p><h2>Accessibility</h2><p>The form supports keyboard navigation, browser zoom, visible focus, and reduced-motion preferences. Use a modern browser that supports request cancellation and secure random request identifiers.</p></main>
+  <main class="wrap prose">
+    <p class="eyebrow">Support and limits</p><h1>Useful feedback has limits.</h1>
+    <h2>Privacy boundary</h2><ul>
+      <li>Selected standard PDFs are transiently sent to the Resume.AI server hosted on Render for text extraction.</li>
+      <li>Raw PDF bytes are never sent to Groq.</li>
+      <li>Reviewed, pasted, or extracted resume text and any optional job description are sent to Groq only after consent.</li>
+      <li>The app server keeps no report or content history, and this browser keeps no report history.</li>
+      <li>No tracking or analytics are used.</li>
+      <li>An installation security identifier and coarse pseudonymous rate-limit key are used without ads or tracking.</li>
+      <li>Groq always retains usage metadata and may retain inference content for up to 30 days for reliability and abuse prevention unless Zero Data Retention is enabled; Resume.AI has not verified that setting.</li>
+      <li>Render may retain provider-side connection and HTTP request metadata under its policy; Resume.AI controls only its content-free application logs.</li>
+      <li>Render may process Device/IP Data and IP-based geolocation under its policy.</li>
+    </ul>
+    <h2>What the readiness review does</h2><p>It combines deterministic checks with AI coaching from Groq. It is not an exact ATS or employment prediction, has no hiring guarantee, and is not professional, legal, or employment advice.</p>
+    <h2>File help</h2><p>Use a readable, unencrypted PDF under 10 MB, or paste up to 30,000 characters of resume text. The optional role description accepts up to 20,000 characters.</p>
+    <h2>Public support</h2><p>Open an issue at <a href="https://github.com/avinashamanchi/resume-analyzer/issues" rel="noreferrer">the Resume.AI public issue tracker</a>. Never post resumes, job descriptions, tokens, request identifiers, filenames, contact details, or private identifiers.</p>
+    <h2>Request help</h2><p>There is no automatic retry. If a request times out or the service is unavailable, wait and submit again manually. Share only the app version, operating-system version, action taken, and stable error category.</p>
+  </main>
   <footer class="site-footer wrap"><span>Resume.AI coaching</span><a href="/static/index.html">Back to review</a></footer>
 </body>
 </html>

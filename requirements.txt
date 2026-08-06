@@ -107,6 +107,10 @@ groq==0.37.1 \
     --hash=sha256:7353d6dfb60834fd7aacbb86af106e2dc2aeaff6d0edd65fb2fd0f16bd39314c \
     --hash=sha256:b49f8c8898c55eaec9f71f1342f3fcacc9560d67a08ce5f35fbfb84e8dacd3da
     # via resume-ai-service
+gunicorn==23.0.0 \
+    --hash=sha256:ec400d38950de4dfd418cff8328b2c8faed0edb0d517d3394e457c317908ca4d \
+    --hash=sha256:f014447a0101dc57e294f6c18ca6b40227a4c90e9bdb586042628030cba004ec
+    # via resume-ai-service
 h11==0.16.0 \
     --hash=sha256:4e35b956cf45792e4caa5885e69fba00bdbc6ffafbfa020300e549b208ee5ff1 \
     --hash=sha256:63cf8bbe7522de3bf65932fda1d9c2772064ffb3dae62d55932da54b31cb6c86
@@ -152,6 +156,10 @@ markupsafe==3.0.3 \
     #   flask
     #   jinja2
     #   werkzeug
+packaging==26.3 \
+    --hash=sha256:94edc256424af38762eb31306eed28beb9f0efc50a8837492c9d6fd6004aed79 \
+    --hash=sha256:d7193f7c8e4e93f444fde0262bf90af30e16fa0ad0ad44cb553c87339b23cd1c
+    # via gunicorn
 pdfminer-six==20260107 \
     --hash=sha256:366585ba97e80dffa8f00cebe303d2f381884d8637af4ce422f1df3ef38111a9 \
     --hash=sha256:96bfd431e3577a55a0efd25676968ca4ce8fd5b53f14565f85716ff363889602

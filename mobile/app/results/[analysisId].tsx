@@ -1,5 +1,5 @@
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   AccessibilityInfo,
   AppState,
@@ -96,12 +96,18 @@ export function ResultsScreen({
   exporter = reportExporter,
 }: Readonly<{ exporter?: ReportExporterPort }>) {
   const params = useLocalSearchParams<{ analysisId?: string | string[] }>();
+  const id = Array.isArray(params.analysisId) ? params.analysisId[0] : params.analysisId;
+  return <ResultsScreenContent key={id ?? 'missing'} id={id} exporter={exporter} />;
+}
+
+function ResultsScreenContent({
+  id,
+  exporter,
+}: Readonly<{ id: string | undefined; exporter: ReportExporterPort }>) {
   const router = useRouter();
   const { actions, analysis, history } = useAppController();
-  const id = Array.isArray(params.analysisId) ? params.analysisId[0] : params.analysisId;
   const [loadedReport, setLoadedReport] = useState<LoadedReport | null>(null);
-  const [loaded, setLoaded] = useState(false);
-  const [loadedId, setLoadedId] = useState<string | undefined>(undefined);
+  const [loaded, setLoaded] = useState(typeof id !== 'string');
   const [receipt, setReceipt] = useState<ReceiptNotice | null>(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
@@ -111,17 +117,9 @@ export function ResultsScreen({
   const mounted = useRef(true);
   const shareAuthority = useRef<ShareAuthority | null>(null);
   const deleteAuthority = useRef<DeleteAuthority | null>(null);
-  const routeAuthority = useRef({ analysisId: id, epoch: 0 });
-  if (routeAuthority.current.analysisId !== id) {
-    shareAuthority.current?.lifecycle.abort();
-    deleteAuthority.current?.lifecycle.abort();
-    deleteAuthority.current = null;
-    routeAuthority.current = { analysisId: id, epoch: routeAuthority.current.epoch + 1 };
-  }
-  const routeEpoch = routeAuthority.current.epoch;
-  const currentReport = loaded && loadedId === id ? loadedReport : null;
+  const routeEpoch = 0;
+  const currentReport = loaded ? loadedReport : null;
   const currentReportRef = useRef<LoadedReport | null>(currentReport);
-  currentReportRef.current = currentReport;
   const headingRef = useRef<View | null>(null);
   const receiptRef = useRef<Text | null>(null);
   const deleteErrorRef = useRef<Text | null>(null);
@@ -130,17 +128,18 @@ export function ResultsScreen({
     () => history.reports.some(report => report.id === id),
     [history.reports, id],
   );
+  const getReport = history.get;
 
-  const publishReceipt = (message: string) => {
+  const publishReceipt = useCallback((message: string) => {
     receiptSequence.current += 1;
     setReceipt({ sequence: receiptSequence.current, routeEpoch, message });
-  };
+  }, []);
 
   const routeIsCurrent = (authority: ShareAuthority): boolean => (
     mounted.current &&
     !authority.lifecycle.signal.aborted &&
-    routeAuthority.current.analysisId === authority.analysisId &&
-    routeAuthority.current.epoch === authority.routeEpoch &&
+    id === authority.analysisId &&
+    routeEpoch === authority.routeEpoch &&
     currentReportRef.current === authority.report
   );
 
@@ -153,8 +152,8 @@ export function ResultsScreen({
     if (
       !mounted.current ||
       typeof analysisId !== 'string' ||
-      routeAuthority.current.analysisId !== analysisId ||
-      routeAuthority.current.epoch !== epoch ||
+      id !== analysisId ||
+      routeEpoch !== epoch ||
       currentReportRef.current !== report ||
       report.result.analysisId !== analysisId ||
       report.exportRecord.id !== analysisId ||
@@ -188,8 +187,8 @@ export function ResultsScreen({
     mounted.current &&
     !authority.lifecycle.signal.aborted &&
     deleteAuthority.current === authority &&
-    routeAuthority.current.analysisId === authority.analysisId &&
-    routeAuthority.current.epoch === authority.routeEpoch &&
+    id === authority.analysisId &&
+    routeEpoch === authority.routeEpoch &&
     currentReportRef.current === authority.report
   );
 
@@ -201,8 +200,8 @@ export function ResultsScreen({
     if (
       !mounted.current ||
       typeof analysisId !== 'string' ||
-      routeAuthority.current.analysisId !== analysisId ||
-      routeAuthority.current.epoch !== epoch ||
+      id !== analysisId ||
+      routeEpoch !== epoch ||
       currentReportRef.current !== report ||
       report.result.analysisId !== analysisId ||
       report.exportRecord.id !== analysisId ||
@@ -250,27 +249,22 @@ export function ResultsScreen({
         publishReceipt('A temporary PDF could not be verified as removed. Reopen this report to retry cleanup.');
       }
     });
-  }, [exporter]);
+  }, [exporter, publishReceipt]);
+
+  useEffect(() => {
+    currentReportRef.current = currentReport;
+  }, [currentReport]);
 
   useEffect(() => {
     let active = true;
-    setConfirmDelete(false);
-    setDeleteError(null);
-    setDeleting(false);
-    if (typeof id !== 'string') {
-      setLoadedReport(null);
-      setLoadedId(id);
-      setLoaded(true);
-      return () => { active = false; };
-    }
-    void history.get(id).then(value => {
+    if (typeof id !== 'string') return () => { active = false; };
+    void getReport(id).then(value => {
       if (!active) return;
       setLoadedReport(value === null ? null : loadedFromDisplay(value));
-      setLoadedId(id);
       setLoaded(true);
     });
     return () => { active = false; };
-  }, [history.get, id]);
+  }, [getReport, id]);
 
   useEffect(() => {
     if (loadedReport !== null) focusNode(headingRef.current);
@@ -282,7 +276,7 @@ export function ResultsScreen({
     focusNode(deleteError === null ? receiptRef.current : deleteErrorRef.current);
   }, [deleteError, receipt, routeEpoch]);
 
-  if (!loaded || loadedId !== id) {
+  if (!loaded) {
     return <Screen><Eyebrow>Resume.AI</Eyebrow><Title>Opening report…</Title></Screen>;
   }
   if (currentReport === null) {

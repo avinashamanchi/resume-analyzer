@@ -69,8 +69,6 @@ export function DataProvider({
     let active = true;
     let dispose!: () => void;
     const disposed = new Promise<void>(resolve => { dispose = resolve; });
-    setState({ status: 'loading', repository: null });
-
     const closeOwned = async (repository: ReportRepositoryPort): Promise<boolean> => {
       try {
         await repository.close();
