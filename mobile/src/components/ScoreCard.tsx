@@ -20,7 +20,9 @@ export function ScoreCard({ score }: Readonly<{ score: AnalysisResponse['score']
           <Text style={styles.label}>{score.label}</Text>
           <Text style={uiStyles.caption}>Deterministic resume-readiness-v1 method</Text>
         </View>
-        <Text adjustsFontSizeToFit minimumFontScale={0.72} numberOfLines={1} style={styles.score}>
+        <Text
+          accessibilityLabel={`Readiness score: ${score.readinessScore} out of 100, ${score.label}`}
+          style={styles.score}>
           {score.readinessScore}
           <Text style={styles.outOf}>/100</Text>
         </Text>

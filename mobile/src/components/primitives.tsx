@@ -16,6 +16,7 @@ export function Screen({ children }: Readonly<{ children: ReactNode }>) {
   return (
     <SafeAreaView style={styles.safeArea} edges={['top']}>
       <ScrollView
+        testID="screen-scroll-view"
         contentContainerStyle={styles.scrollContent}
         keyboardDismissMode="interactive"
         keyboardShouldPersistTaps="handled"
@@ -47,12 +48,14 @@ export function AppButton({
   disabled = false,
   tone = 'primary',
   accessibilityLabel,
+  accessibilityHint,
 }: Readonly<{
   label: string;
   onPress(): void;
   disabled?: boolean;
   tone?: 'primary' | 'secondary' | 'danger' | 'quiet';
   accessibilityLabel?: string;
+  accessibilityHint?: string;
 }>) {
   const buttonStyle: ViewStyle = tone === 'primary'
     ? styles.buttonPrimary
@@ -66,6 +69,7 @@ export function AppButton({
     <Pressable
       accessibilityRole="button"
       accessibilityLabel={accessibilityLabel ?? label}
+      accessibilityHint={accessibilityHint}
       accessibilityState={{ disabled }}
       disabled={disabled}
       onPress={onPress}
