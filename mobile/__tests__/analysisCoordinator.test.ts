@@ -14,7 +14,13 @@ import { CONSENT_VERSION } from '../src/domain/consent';
 import type { AnalysisResponse } from '../src/domain/contracts';
 import { ResumeApiError } from '../src/domain/errors';
 import type { ResumeSource } from '../src/documents/documentSource';
-import type { CleanupReceipt } from '../src/documents/tempFileRegistry';
+import {
+  TempFileRegistry,
+  type CleanupReceipt,
+  type DirectoryEntry,
+  type FileInspection,
+  type TempFileSystem,
+} from '../src/documents/tempFileRegistry';
 
 const REQUEST_A = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const REQUEST_B = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
@@ -28,6 +34,69 @@ const PDF_LEASES = new Map<string, symbol>([
 ]);
 const CLEAN: CleanupReceipt = { attempted: 0, deleted: 0, failed: 0, refused: 0 };
 const OWNED_PDF_PATTERN = /^file:\/\/\/app\/cache\/resume-ai-v1\/([0-9a-f-]+)\/([0-9a-f-]+\.pdf)$/;
+const REGISTRY_NAMESPACE = 'file:///app/cache/resume-ai-v1';
+const FILE_A = '11111111-1111-4111-8111-111111111111';
+
+class CoordinatorRegistryFileSystem implements TempFileSystem {
+  readonly cacheDirectoryUri = 'file:///app/cache/';
+  readonly directories = new Set<string>();
+  readonly entries = new Map<string, DirectoryEntry[]>();
+  readonly deleteAttempts: string[] = [];
+  failNextRequestDelete = false;
+
+  async createDirectory(uri: string): Promise<void> {
+    this.directories.add(uri);
+    if (uri.startsWith(`${REGISTRY_NAMESPACE}/`)) {
+      const namespaceEntries = this.entries.get(REGISTRY_NAMESPACE) ?? [];
+      if (!namespaceEntries.some(entry => entry.uri === uri)) {
+        this.entries.set(REGISTRY_NAMESPACE, [
+          ...namespaceEntries,
+          { uri, kind: 'directory' },
+        ]);
+      }
+    }
+  }
+
+  async directoryExists(uri: string): Promise<boolean> {
+    return this.directories.has(uri);
+  }
+
+  async listDirectory(uri: string): Promise<readonly DirectoryEntry[]> {
+    return this.entries.get(uri) ?? [];
+  }
+
+  async copyFile(_source: string, destination: string): Promise<void> {
+    const requestUri = destination.slice(0, destination.lastIndexOf('/'));
+    const requestEntries = this.entries.get(requestUri) ?? [];
+    this.entries.set(requestUri, [
+      ...requestEntries,
+      { uri: destination, kind: 'file' },
+    ]);
+  }
+
+  async inspectFile(_uri: string): Promise<FileInspection> {
+    return {
+      exists: true,
+      size: 1_024,
+      header: new Uint8Array([0x25, 0x50, 0x44, 0x46, 0x2d]),
+    };
+  }
+
+  async deleteDirectory(uri: string): Promise<void> {
+    this.deleteAttempts.push(uri);
+    if (this.failNextRequestDelete && uri.startsWith(`${REGISTRY_NAMESPACE}/`)) {
+      this.failNextRequestDelete = false;
+      throw new Error('private controlled delete failure');
+    }
+    this.directories.delete(uri);
+    this.entries.delete(uri);
+    const namespaceEntries = this.entries.get(REGISTRY_NAMESPACE) ?? [];
+    this.entries.set(
+      REGISTRY_NAMESPACE,
+      namespaceEntries.filter(entry => entry.uri !== uri),
+    );
+  }
+}
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -489,7 +558,8 @@ describe('review fixes: PDF consent exits', () => {
     expect(cleanupRequest).toHaveBeenCalledWith(REQUEST_A, LEASE_A);
     expect(coordinator.getState()).toMatchObject({
       status: 'failed',
-      source: pdfSource(),
+      privacyReadiness: 'blocked',
+      source: null,
       cleanupPending: true,
       lifecycleEpoch: 1,
       error: { category: 'privacy' },
@@ -513,7 +583,8 @@ describe('review fixes: PDF consent exits', () => {
 
     expect(coordinator.getState()).toMatchObject({
       status: 'failed',
-      source: pdfSource(),
+      privacyReadiness: 'blocked',
+      source: null,
       cleanupPending: true,
       error: { category: 'privacy' },
     });
@@ -597,7 +668,8 @@ describe('review fixes: concurrent staged PDF ownership', () => {
     expect(selection).toEqual({ committed: false });
     expect(coordinator.getState()).toMatchObject({
       status: 'failed',
-      source: pdfSource(REQUEST_A),
+      privacyReadiness: 'blocked',
+      source: null,
       cleanupPending: true,
       error: { category: 'privacy' },
     });
@@ -1097,13 +1169,17 @@ describe('quarantined native-picker cleanup recovery', () => {
     });
   });
 
-  it('recovers a failed colliding B when retry proves B stale under current A', async () => {
+  it('never retries failed colliding B and requires A release before abandoned recovery', async () => {
     const cleanupRequest = jest.fn()
       .mockResolvedValueOnce({ attempted: 1, deleted: 0, failed: 1, refused: 0 })
-      .mockResolvedValueOnce({ attempted: 0, deleted: 0, failed: 0, refused: 1 });
+      .mockResolvedValueOnce({ attempted: 1, deleted: 1, failed: 0, refused: 0 });
+    const cleanupAbandoned = jest.fn()
+      .mockResolvedValueOnce(CLEAN)
+      .mockResolvedValueOnce({ attempted: 0, deleted: 0, failed: 0, refused: 1 })
+      .mockResolvedValueOnce(CLEAN);
     const { coordinator } = harness({
       tempFiles: {
-        cleanupAbandoned: jest.fn(async () => CLEAN),
+        cleanupAbandoned,
         cleanupRequest,
       },
     });
@@ -1118,29 +1194,47 @@ describe('quarantined native-picker cleanup recovery', () => {
     );
     expect(coordinator.getState().privacyReadiness).toBe('blocked');
 
+    await expect(coordinator.commands.recoverPrivacyCleanup()).resolves.toBe(false);
+
+    expect(cleanupRequest.mock.calls).toEqual([
+      [REQUEST_A, LEASE_B],
+    ]);
+    expect(coordinator.getState()).toMatchObject({
+      status: 'failed',
+      privacyReadiness: 'blocked',
+      cleanupPending: true,
+      source: { kind: 'pdf', requestId: REQUEST_A, lease: LEASE_A },
+      error: { category: 'privacy' },
+    });
+
+    await coordinator.commands.reset();
     await expect(coordinator.commands.recoverPrivacyCleanup()).resolves.toBe(true);
 
     expect(cleanupRequest.mock.calls).toEqual([
       [REQUEST_A, LEASE_B],
-      [REQUEST_A, LEASE_B],
+      [REQUEST_A, LEASE_A],
     ]);
+    expect(cleanupAbandoned).toHaveBeenCalledTimes(3);
     expect(coordinator.getState()).toMatchObject({
-      status: 'ready',
+      status: 'idle',
       privacyReadiness: 'ready',
       cleanupPending: false,
-      source: { kind: 'pdf', requestId: REQUEST_A, lease: LEASE_A },
+      source: null,
       error: null,
     });
   });
 
-  it('keeps unproven B refusal blocked without touching current A or B claims', async () => {
+  it('does not retry failed unrelated B while current A keeps abandoned recovery blocked', async () => {
     const cleanupRequest = jest.fn()
       .mockResolvedValueOnce({ attempted: 1, deleted: 0, failed: 1, refused: 0 })
-      .mockResolvedValueOnce({ attempted: 0, deleted: 0, failed: 0, refused: 1 })
+      .mockResolvedValueOnce(CLEAN);
+    const cleanupAbandoned = jest.fn()
+      .mockResolvedValueOnce(CLEAN)
+      .mockResolvedValueOnce({ attempted: 1, deleted: 1, failed: 0, refused: 1 })
       .mockResolvedValueOnce(CLEAN);
     const { coordinator } = harness({
       tempFiles: {
-        cleanupAbandoned: jest.fn(async () => CLEAN),
+        cleanupAbandoned,
         cleanupRequest,
       },
     });
@@ -1158,7 +1252,6 @@ describe('quarantined native-picker cleanup recovery', () => {
 
     expect(cleanupRequest.mock.calls).toEqual([
       [REQUEST_B, LEASE_B],
-      [REQUEST_B, LEASE_B],
     ]);
     expect(coordinator.getState()).toMatchObject({
       privacyReadiness: 'blocked',
@@ -1167,17 +1260,18 @@ describe('quarantined native-picker cleanup recovery', () => {
       error: { category: 'privacy' },
     });
 
+    await coordinator.commands.reset();
     await expect(coordinator.commands.recoverPrivacyCleanup()).resolves.toBe(true);
     expect(cleanupRequest.mock.calls).toEqual([
       [REQUEST_B, LEASE_B],
-      [REQUEST_B, LEASE_B],
-      [REQUEST_B, LEASE_B],
+      [REQUEST_A, LEASE_A],
     ]);
+    expect(cleanupAbandoned).toHaveBeenCalledTimes(3);
     expect(coordinator.getState()).toMatchObject({
-      status: 'ready',
+      status: 'idle',
       privacyReadiness: 'ready',
       cleanupPending: false,
-      source: { kind: 'pdf', requestId: REQUEST_A, lease: LEASE_A },
+      source: null,
       error: null,
     });
   });
@@ -1592,10 +1686,13 @@ describe('quarantined native-picker cleanup recovery', () => {
     });
   });
 
-  it('recovers both an exact stale-picker claim and an abandoned obligation before readiness', async () => {
-    const cleanupRequest = jest.fn()
-      .mockResolvedValueOnce({ attempted: 1, deleted: 0, failed: 1, refused: 0 })
-      .mockResolvedValueOnce({ attempted: 1, deleted: 1, failed: 0, refused: 0 });
+  it('recovers an exact-cleanup handoff and a later abandoned obligation with one sweep', async () => {
+    const cleanupRequest = jest.fn(async () => ({
+      attempted: 1,
+      deleted: 0,
+      failed: 1,
+      refused: 0,
+    }));
     const cleanupAbandoned = jest.fn()
       .mockResolvedValueOnce(CLEAN)
       .mockResolvedValueOnce({ attempted: 1, deleted: 1, failed: 0, refused: 0 });
@@ -1612,7 +1709,7 @@ describe('quarantined native-picker cleanup recovery', () => {
 
     await expect(coordinator.commands.recoverPrivacyCleanup()).resolves.toBe(true);
 
-    expect(cleanupRequest).toHaveBeenCalledTimes(2);
+    expect(cleanupRequest).toHaveBeenCalledTimes(1);
     expect(cleanupAbandoned).toHaveBeenCalledTimes(2);
     expect(coordinator.getState()).toMatchObject({
       privacyReadiness: 'ready',
@@ -1903,6 +2000,90 @@ describe('analysis generations and cancellation', () => {
   });
 
   it.each(['inactive', 'background'] as const)(
+    '%s exact-cleans a retained scan-required PDF before OCR starts and foreground cannot revive it',
+    async lifecycle => {
+      const { api, coordinator, tempFiles } = harness({
+        vision: { isAvailable: () => true, extractReviewedText: jest.fn() },
+      } as never);
+      const source = pdfSource();
+      await coordinator.initialize();
+      await coordinator.commands.selectSource(source);
+      api.analyze.mockRejectedValueOnce(new ResumeApiError('service', {
+        code: 'scan_required',
+        retryable: false,
+      }));
+      await coordinator.commands.analyze();
+
+      await coordinator.handleAppState(lifecycle);
+
+      expect(tempFiles.cleanupRequest).toHaveBeenCalledTimes(1);
+      expect(tempFiles.cleanupRequest).toHaveBeenCalledWith(REQUEST_A, source.lease);
+      expect(coordinator.getState()).toMatchObject({
+        status: 'idle',
+        privacyReadiness: 'ready',
+        source: null,
+        cleanupPending: false,
+        lifecycleEpoch: 1,
+      });
+      await coordinator.handleAppState('active');
+      expect(coordinator.getState()).toMatchObject({
+        status: 'idle',
+        source: null,
+        lifecycleEpoch: 1,
+      });
+      expect(api.analyze).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it.each(['inactive', 'background'] as const)(
+    '%s blocks privacy and drops retained OCR authority when lifecycle exact cleanup is unverified',
+    async lifecycle => {
+      const cleanupAbandoned = jest.fn(async () => CLEAN);
+      const cleanupRequest = jest.fn(async () => ({
+        attempted: 1,
+        deleted: 0,
+        failed: 1,
+        refused: 0,
+      }));
+      const { api, coordinator } = harness({
+        vision: { isAvailable: () => true, extractReviewedText: jest.fn() },
+        tempFiles: { cleanupAbandoned, cleanupRequest },
+      } as never);
+      const source = pdfSource();
+      await coordinator.initialize();
+      await coordinator.commands.selectSource(source);
+      api.analyze.mockRejectedValueOnce(new ResumeApiError('service', {
+        code: 'scan_required',
+        retryable: false,
+      }));
+      await coordinator.commands.analyze();
+
+      await coordinator.handleAppState(lifecycle);
+
+      expect(cleanupRequest).toHaveBeenCalledTimes(1);
+      expect(cleanupRequest).toHaveBeenCalledWith(REQUEST_A, source.lease);
+      expect(cleanupAbandoned).toHaveBeenCalledTimes(1);
+      expect(coordinator.getState()).toMatchObject({
+        status: 'failed',
+        privacyReadiness: 'blocked',
+        source: null,
+        cleanupPending: true,
+        privacyRecoveryAvailable: true,
+        lifecycleEpoch: 1,
+        error: { category: 'privacy' },
+      });
+      await coordinator.handleAppState('active');
+      expect(coordinator.getState()).toMatchObject({
+        privacyReadiness: 'blocked',
+        source: null,
+        lifecycleEpoch: 1,
+      });
+      expect(cleanupRequest).toHaveBeenCalledTimes(1);
+      expect(api.analyze).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it.each(['inactive', 'background'] as const)(
     '%s invalidates pending OCR, waits for native release, and exact-cleans without exposing a stale draft',
     async lifecycle => {
       const native = deferred<ReturnType<typeof visionSource>>();
@@ -2057,15 +2238,21 @@ describe('analysis generations and cancellation', () => {
   });
 
   it('blocks privacy readiness and withholds the OCR draft when exact cleanup fails', async () => {
-    const cleanupRequest = jest.fn()
-      .mockResolvedValueOnce({ attempted: 1, deleted: 0, failed: 1, refused: 0 })
+    const cleanupRequest = jest.fn(async () => ({
+      attempted: 1,
+      deleted: 0,
+      failed: 1,
+      refused: 0,
+    }));
+    const cleanupAbandoned = jest.fn()
+      .mockResolvedValueOnce(CLEAN)
       .mockResolvedValueOnce({ attempted: 1, deleted: 1, failed: 0, refused: 0 });
     const { api, coordinator } = harness({
       vision: {
         isAvailable: () => true,
         extractReviewedText: jest.fn(async () => visionSource(false)),
       },
-      tempFiles: { cleanupAbandoned: jest.fn(async () => CLEAN), cleanupRequest },
+      tempFiles: { cleanupAbandoned, cleanupRequest },
     } as never);
     await coordinator.initialize();
     await coordinator.commands.selectSource(pdfSource());
@@ -2085,7 +2272,8 @@ describe('analysis generations and cancellation', () => {
 
     await flushPromises();
     const recovered = await coordinator.commands.recoverPrivacyCleanup();
-    expect(cleanupRequest).toHaveBeenCalledTimes(2);
+    expect(cleanupRequest).toHaveBeenCalledTimes(1);
+    expect(cleanupAbandoned).toHaveBeenCalledTimes(2);
     expect(recovered).toBe(true);
     expect(coordinator.getState()).toMatchObject({
       privacyReadiness: 'ready',
@@ -2094,6 +2282,74 @@ describe('analysis generations and cancellation', () => {
     });
     await coordinator.commands.analyze();
     expect(api.analyze).toHaveBeenCalledTimes(1);
+  });
+
+  it('hands a production exact-cleanup failure to fenced abandoned recovery without retrying the released lease', async () => {
+    const fileSystem = new CoordinatorRegistryFileSystem();
+    const registry = new TempFileRegistry({ fileSystem });
+    const cleanupRequest = jest.spyOn(registry, 'cleanupRequest');
+    const cleanupAbandoned = jest.spyOn(registry, 'cleanupAbandoned');
+    const { api, coordinator } = harness({
+      tempFiles: registry,
+      pdfOwnership: registry,
+      vision: {
+        isAvailable: () => true,
+        extractReviewedText: jest.fn(async () => ({
+          kind: 'vision_text' as const,
+          text: 'Reviewed resume text',
+          reviewed: false,
+          pageCount: 2,
+        })),
+        cancelExtraction: jest.fn(async () => undefined),
+      },
+    });
+    await coordinator.initialize();
+    const staged = await registry.stagePdf(
+      REQUEST_A,
+      FILE_A,
+      'file:///provider/private-resume.pdf',
+    );
+    const source = pdfSource(REQUEST_A, staged.lease);
+    await coordinator.commands.selectSource(source);
+    api.analyze.mockRejectedValueOnce(new ResumeApiError('service', {
+      code: 'scan_required',
+      retryable: false,
+    }));
+    await coordinator.commands.analyze();
+    fileSystem.failNextRequestDelete = true;
+
+    await expect(coordinator.commands.extractVisionDraft()).resolves.toEqual({ completed: false });
+
+    expect(cleanupRequest).toHaveBeenCalledTimes(1);
+    expect(cleanupRequest).toHaveBeenCalledWith(REQUEST_A, staged.lease);
+    await expect(registry.inspectOwnedFileUri(source.uri, REQUEST_A, staged.lease))
+      .rejects.toMatchObject({ category: 'privacy', code: 'cache_request_lease_mismatch' });
+    expect(cleanupAbandoned).toHaveBeenCalledTimes(1);
+    expect(fileSystem.directories.has(`${REGISTRY_NAMESPACE}/${REQUEST_A}`)).toBe(true);
+    expect(coordinator.getState()).toMatchObject({
+      status: 'failed',
+      privacyReadiness: 'blocked',
+      source: null,
+      cleanupPending: true,
+      error: { category: 'privacy' },
+    });
+
+    await expect(coordinator.commands.recoverPrivacyCleanup()).resolves.toBe(true);
+
+    expect(cleanupRequest).toHaveBeenCalledTimes(1);
+    expect(cleanupAbandoned).toHaveBeenCalledTimes(2);
+    expect(fileSystem.deleteAttempts).toEqual([
+      `${REGISTRY_NAMESPACE}/${REQUEST_A}`,
+      `${REGISTRY_NAMESPACE}/${REQUEST_A}`,
+    ]);
+    expect(fileSystem.directories.has(`${REGISTRY_NAMESPACE}/${REQUEST_A}`)).toBe(false);
+    expect(coordinator.getState()).toMatchObject({
+      status: 'idle',
+      privacyReadiness: 'ready',
+      source: null,
+      cleanupPending: false,
+      error: null,
+    });
   });
 
   it('cleans the exact lease and exposes no private native rejection details', async () => {
@@ -2309,12 +2565,13 @@ describe('review fixes: registry lease epochs', () => {
     expect(coordinator.getState()).toMatchObject({ status: 'idle', source: null });
   });
 
-  it('keeps timeout, reset, and dispose cleanup bound to stale A after B becomes current', async () => {
+  it('never retries a timed-out stale A lease and fences disposal from concurrent abandoned cleanup', async () => {
     jest.useFakeTimers();
     try {
       const lateCleanup = deferred<CleanupReceipt>();
       let currentLease: symbol | null = LEASE_A;
       const deletedLeases: symbol[] = [];
+      const cleanupAbandoned = jest.fn(async () => CLEAN);
       const cleanupRequest = jest.fn((
         _requestId: string,
         lease?: symbol,
@@ -2341,7 +2598,7 @@ describe('review fixes: registry lease epochs', () => {
       const { coordinator } = harness({
         api: { analyze: jest.fn(async () => result(RESULT_A, 'pdf')) },
         pdfOwnership: leasedPdfOwnership(),
-        tempFiles: { cleanupAbandoned: jest.fn(async () => CLEAN), cleanupRequest },
+        tempFiles: { cleanupAbandoned, cleanupRequest },
         cleanupTimeoutMs: 25,
       });
       await coordinator.initialize();
@@ -2352,17 +2609,21 @@ describe('review fixes: registry lease epochs', () => {
       await analysis;
       currentLease = LEASE_B;
       await coordinator.commands.reset();
-      await coordinator.dispose();
+      const disposal = coordinator.dispose();
+      await flushPromises();
+      expect(cleanupRequest).toHaveBeenCalledTimes(1);
+      expect(cleanupAbandoned).toHaveBeenCalledTimes(1);
+      await jest.advanceTimersByTimeAsync(25);
+      await disposal;
       lateCleanup.resolve({ attempted: 1, deleted: 1, failed: 0, refused: 0 });
       await flushPromises();
 
       expect(cleanupRequest.mock.calls).toEqual([
         [REQUEST_A, LEASE_A],
-        [REQUEST_A, LEASE_A],
-        [REQUEST_A, LEASE_A],
       ]);
       expect(deletedLeases).toEqual([]);
       expect(currentLease).toBe(LEASE_B);
+      expect(cleanupAbandoned).toHaveBeenCalledTimes(1);
     } finally {
       jest.useRealTimers();
     }
@@ -2611,7 +2872,8 @@ describe('PDF terminal cleanup', () => {
     expect(edit).toEqual({ committed: false });
     expect(coordinator.getState()).toMatchObject({
       status: 'failed',
-      source: pdfSource(),
+      privacyReadiness: 'blocked',
+      source: null,
       error: { category: 'privacy' },
       cleanupPending: true,
     });
@@ -2639,29 +2901,52 @@ describe('PDF terminal cleanup', () => {
     expect(coordinator.getState().result).toBeNull();
   });
 
-  it('bounds a never-settling cleanup and retains a non-sensitive cleanup retry reference', async () => {
+  it('bounds a timed-out exact cleanup and fences abandoned recovery until it settles', async () => {
     jest.useFakeTimers();
-    const never = new Promise<CleanupReceipt>(() => undefined);
-    const { coordinator } = harness({
-      api: { analyze: jest.fn(async () => result(RESULT_A, 'pdf')) },
-      tempFiles: {
-        cleanupAbandoned: jest.fn(async () => CLEAN),
-        cleanupRequest: jest.fn(() => never),
-      },
-      cleanupTimeoutMs: 25,
-    });
-    await coordinator.initialize();
-    await coordinator.commands.selectSource(pdfSource());
-    const analysis = coordinator.commands.analyze();
-    await jest.advanceTimersByTimeAsync(25);
-    await analysis;
+    try {
+      const lateCleanup = deferred<CleanupReceipt>();
+      const cleanupRequest = jest.fn(() => lateCleanup.promise);
+      const cleanupAbandoned = jest.fn(async () => CLEAN);
+      const { coordinator } = harness({
+        api: { analyze: jest.fn(async () => result(RESULT_A, 'pdf')) },
+        tempFiles: { cleanupAbandoned, cleanupRequest },
+        cleanupTimeoutMs: 25,
+      });
+      await coordinator.initialize();
+      await coordinator.commands.selectSource(pdfSource());
+      const analysis = coordinator.commands.analyze();
+      await jest.advanceTimersByTimeAsync(25);
+      await analysis;
 
-    expect(coordinator.getState()).toMatchObject({
-      status: 'failed',
-      error: { category: 'privacy' },
-      cleanupPending: true,
-    });
-    jest.useRealTimers();
+      expect(coordinator.getState()).toMatchObject({
+        status: 'failed',
+        privacyReadiness: 'blocked',
+        source: null,
+        error: { category: 'privacy' },
+        cleanupPending: true,
+      });
+      expect(cleanupRequest).toHaveBeenCalledTimes(1);
+
+      const fencedRecovery = coordinator.commands.recoverPrivacyCleanup();
+      await flushPromises();
+      expect(cleanupAbandoned).toHaveBeenCalledTimes(1);
+      await jest.advanceTimersByTimeAsync(25);
+      await expect(fencedRecovery).resolves.toBe(false);
+
+      lateCleanup.resolve({ attempted: 1, deleted: 0, failed: 1, refused: 0 });
+      await flushPromises();
+      await expect(coordinator.commands.recoverPrivacyCleanup()).resolves.toBe(true);
+      expect(cleanupRequest).toHaveBeenCalledTimes(1);
+      expect(cleanupAbandoned).toHaveBeenCalledTimes(2);
+      expect(coordinator.getState()).toMatchObject({
+        status: 'idle',
+        privacyReadiness: 'ready',
+        source: null,
+        cleanupPending: false,
+      });
+    } finally {
+      jest.useRealTimers();
+    }
   });
 
   it('blocks another upload while a prior PDF deletion remains unverified', async () => {
@@ -2686,23 +2971,34 @@ describe('PDF terminal cleanup', () => {
     expect(coordinator.getState()).toMatchObject({ status: 'failed', cleanupPending: true });
   });
 
-  it('allows an explicit edit to retry cleanup without re-uploading and clears the warning on proof', async () => {
-    const cleanupRequest = jest.fn()
-      .mockResolvedValueOnce({ attempted: 1, deleted: 0, failed: 1, refused: 0 })
+  it('requires explicit abandoned recovery before an edit can resume without re-uploading', async () => {
+    const cleanupRequest = jest.fn(async () => ({
+      attempted: 1,
+      deleted: 0,
+      failed: 1,
+      refused: 0,
+    }));
+    const cleanupAbandoned = jest.fn()
+      .mockResolvedValueOnce(CLEAN)
       .mockResolvedValueOnce({ attempted: 1, deleted: 1, failed: 0, refused: 0 });
     const api = { analyze: jest.fn(async () => result(RESULT_A, 'pdf')) };
     const { coordinator } = harness({
       api,
-      tempFiles: { cleanupAbandoned: jest.fn(async () => CLEAN), cleanupRequest },
+      tempFiles: { cleanupAbandoned, cleanupRequest },
     });
     await coordinator.initialize();
     await coordinator.commands.selectSource(pdfSource());
     await coordinator.commands.analyze();
 
-    await coordinator.commands.setJobDescription('updated private job draft');
+    await expect(coordinator.commands.setJobDescription('updated private job draft'))
+      .resolves.toEqual({ committed: false });
+    await expect(coordinator.commands.recoverPrivacyCleanup()).resolves.toBe(true);
+    await expect(coordinator.commands.setJobDescription('updated private job draft'))
+      .resolves.toMatchObject({ committed: true });
 
     expect(api.analyze).toHaveBeenCalledTimes(1);
-    expect(cleanupRequest).toHaveBeenCalledTimes(2);
+    expect(cleanupRequest).toHaveBeenCalledTimes(1);
+    expect(cleanupAbandoned).toHaveBeenCalledTimes(2);
     expect(coordinator.getState()).toMatchObject({
       status: 'idle',
       source: null,

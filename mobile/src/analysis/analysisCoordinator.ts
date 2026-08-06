@@ -350,14 +350,15 @@ export class AnalysisCoordinator {
   private committedPdfClaim: PdfClaim | null = null;
   private readonly pdfClaims = new Map<string, PdfClaim>();
   private readonly ownedPdfRequestIds = new Set<string>();
-  private readonly cleanupFailures = new Set<TempFileLease>();
-  private readonly pickerCleanupFailures = new Map<TempFileLease, PdfClaim>();
   private readonly cleanupOperations = new Map<TempFileLease, Promise<boolean>>();
+  private readonly inFlightExactCleanupFences = new Set<Promise<void>>();
   private readonly preReadyPdfCleanupOperations = new Set<Promise<boolean>>();
   private readonly issuedPdfPickAuthorities = new Set<PdfPickAuthority>();
   private nextAbandonedCleanupEpoch = 0;
   private currentAbandonedCleanupEpoch: number | null = null;
   private readonly abandonedCleanupOperations = new Map<number, Promise<boolean>>();
+  private readonly abandonedCleanupFences = new Map<number, Promise<void>>();
+  private abandonedCleanupFenceTail: Promise<void> = Promise.resolve();
   private abandonedCleanupTail: Promise<void> = Promise.resolve();
   private readonly privacyRecoveries = new Map<number, Promise<boolean>>();
   private disposalPrivacyReadiness: AnalysisState['privacyReadiness'] | null = null;
@@ -454,7 +455,7 @@ export class AnalysisCoordinator {
       const results = await Promise.all([...this.preReadyPdfCleanupOperations]);
       if (results.some(clean => !clean)) ready = false;
     }
-    if (this.cleanupFailures.size > 0) ready = false;
+    if (this.currentAbandonedCleanupEpoch !== null) ready = false;
     if (!this.mounted) return;
     this.dispatch(ready
       ? { type: 'initializationReady' }
@@ -514,7 +515,7 @@ export class AnalysisCoordinator {
             generation,
             error: validationError(),
             consumeSource: false,
-            cleanupPending: this.cleanupFailures.size > 0,
+            cleanupPending: this.currentAbandonedCleanupEpoch !== null,
           });
         }
       }
@@ -714,8 +715,7 @@ export class AnalysisCoordinator {
       return;
     }
     const cleaned = await this.cleanupClaim(discarded.claim);
-    if (!cleaned) {
-      this.pickerCleanupFailures.set(discarded.claim.lease, discarded.claim);
+    if (!cleaned && this.mounted && this.state.privacyReadiness !== 'blocked') {
       this.blockPrivacy();
     }
   }
@@ -761,9 +761,7 @@ export class AnalysisCoordinator {
   private refreshDisposedState(): void {
     if (this.mounted) return;
     const baseline = this.disposalPrivacyReadiness ?? this.state.privacyReadiness;
-    const cleanupPending = this.currentAbandonedCleanupEpoch !== null ||
-      this.pickerCleanupFailures.size > 0 ||
-      this.cleanupFailures.size > 0;
+    const cleanupPending = this.currentAbandonedCleanupEpoch !== null;
     const privacyReadiness = cleanupPending ? 'blocked' : baseline;
     const blocked = privacyReadiness === 'blocked';
     this.state = {
@@ -778,9 +776,33 @@ export class AnalysisCoordinator {
     };
   }
 
-  private markAbandonedCleanupRequired(): number {
+  private markAbandonedCleanupRequired(
+    exactCleanupFence?: Promise<void>,
+  ): number {
+    const supersededEpoch = this.currentAbandonedCleanupEpoch;
+    if (
+      supersededEpoch !== null &&
+      !this.abandonedCleanupOperations.has(supersededEpoch)
+    ) {
+      this.abandonedCleanupFences.delete(supersededEpoch);
+    }
     this.nextAbandonedCleanupEpoch += 1;
     this.currentAbandonedCleanupEpoch = this.nextAbandonedCleanupEpoch;
+    const exactCleanupFences = [...this.inFlightExactCleanupFences];
+    if (
+      exactCleanupFence !== undefined &&
+      !exactCleanupFences.includes(exactCleanupFence)
+    ) {
+      exactCleanupFences.push(exactCleanupFence);
+    }
+    this.abandonedCleanupFenceTail = Promise.all([
+      this.abandonedCleanupFenceTail,
+      Promise.all(exactCleanupFences),
+    ]).then(() => undefined, () => undefined);
+    this.abandonedCleanupFences.set(
+      this.nextAbandonedCleanupEpoch,
+      this.abandonedCleanupFenceTail,
+    );
     return this.nextAbandonedCleanupEpoch;
   }
 
@@ -790,6 +812,14 @@ export class AnalysisCoordinator {
     const prior = this.abandonedCleanupTail;
     const operation = (async () => {
       await prior;
+      const exactCleanupFence = this.abandonedCleanupFences.get(epoch);
+      if (exactCleanupFence !== undefined) {
+        try {
+          await this.boundedOperation(() => exactCleanupFence);
+        } catch {
+          return false;
+        }
+      }
       let verified = false;
       try {
         const receipt = await this.boundedCleanup(() => this.tempFiles.cleanupAbandoned());
@@ -799,6 +829,8 @@ export class AnalysisCoordinator {
       }
       if (!verified || this.currentAbandonedCleanupEpoch !== epoch) return false;
       this.currentAbandonedCleanupEpoch = null;
+      this.abandonedCleanupFences.clear();
+      this.abandonedCleanupFenceTail = Promise.resolve();
       return true;
     })();
     this.abandonedCleanupOperations.set(epoch, operation);
@@ -807,6 +839,9 @@ export class AnalysisCoordinator {
     void operation.finally(() => {
       if (this.abandonedCleanupOperations.get(epoch) === operation) {
         this.abandonedCleanupOperations.delete(epoch);
+      }
+      if (this.currentAbandonedCleanupEpoch !== epoch) {
+        this.abandonedCleanupFences.delete(epoch);
       }
     }).catch(() => undefined);
     return operation;
@@ -832,30 +867,14 @@ export class AnalysisCoordinator {
       !this.mounted ||
       this.state.privacyReadiness !== 'blocked' ||
       !this.state.cleanupPending ||
-      (
-        this.currentAbandonedCleanupEpoch === null &&
-        this.pickerCleanupFailures.size === 0 &&
-        this.cleanupFailures.size === 0
-      )
+      this.currentAbandonedCleanupEpoch === null
     ) return false;
     await this.mutationTail;
     if (!this.mounted || this.state.privacyReadiness !== 'blocked') return false;
-    const failedClaims = new Map<TempFileLease, PdfClaim>();
-    for (const claim of this.pickerCleanupFailures.values()) {
-      failedClaims.set(claim.lease, claim);
-    }
-    for (const claim of this.pdfClaims.values()) {
-      if (this.cleanupFailures.has(claim.lease)) failedClaims.set(claim.lease, claim);
-    }
-    for (const claim of failedClaims.values()) {
-      await this.cleanupClaim(claim);
-    }
     if (capturedEpoch !== null) await this.cleanupAbandonedEpoch(capturedEpoch);
     if (
       !this.mounted ||
-      this.currentAbandonedCleanupEpoch !== null ||
-      this.pickerCleanupFailures.size > 0 ||
-      this.cleanupFailures.size > 0
+      this.currentAbandonedCleanupEpoch !== null
     ) return false;
     this.dispatch({ type: 'privacyRecovered', generation: this.generation });
     const recoveredState = this.getState();
@@ -949,7 +968,7 @@ export class AnalysisCoordinator {
               generation,
               error: privacyError(),
               consumeSource: false,
-              cleanupPending: !incomingClean || this.cleanupFailures.size > 0,
+              cleanupPending: !incomingClean || this.currentAbandonedCleanupEpoch !== null,
             });
           }
           return;
@@ -967,7 +986,7 @@ export class AnalysisCoordinator {
                 generation,
                 error: privacyError(),
                 consumeSource: false,
-                cleanupPending: !incomingClean || this.cleanupFailures.size > 0,
+                cleanupPending: !incomingClean || this.currentAbandonedCleanupEpoch !== null,
               });
             }
             return;
@@ -982,7 +1001,7 @@ export class AnalysisCoordinator {
             generation,
             error: incomingClean ? validationError() : privacyError(),
             consumeSource: previousSource?.kind !== 'pdf' || previousConsumed,
-            cleanupPending: !incomingClean || this.cleanupFailures.size > 0,
+            cleanupPending: !incomingClean || this.currentAbandonedCleanupEpoch !== null,
           });
           return;
         }
@@ -998,7 +1017,7 @@ export class AnalysisCoordinator {
             generation,
             error: incomingClean ? validationError() : privacyError(),
             consumeSource: previousSource?.kind !== 'pdf' || previousConsumed,
-            cleanupPending: !incomingClean || this.cleanupFailures.size > 0,
+            cleanupPending: !incomingClean || this.currentAbandonedCleanupEpoch !== null,
           });
           return;
         }
@@ -1082,7 +1101,6 @@ export class AnalysisCoordinator {
           wasConsentRequired;
         const deletionAlreadyProved = sourceClaim === null || !this.isPdfClaimCurrent(sourceClaim);
         const mustConsume = activationConsumed || leftPreNetwork || deletionAlreadyProved ||
-          (sourceClaim !== null && this.cleanupFailures.has(sourceClaim.lease)) ||
           this.state.cleanupPending;
         if (mustConsume) {
           consumeSource = deletionAlreadyProved ||
@@ -1100,7 +1118,7 @@ export class AnalysisCoordinator {
           generation,
           error: validationError(),
           consumeSource,
-          cleanupPending: this.cleanupFailures.size > 0,
+          cleanupPending: this.currentAbandonedCleanupEpoch !== null,
         });
         return;
       }
@@ -1321,7 +1339,7 @@ export class AnalysisCoordinator {
       this.state.privacyReadiness !== 'ready' ||
       this.state.mutation !== 'none'
     ) return Promise.resolve();
-    if (this.state.cleanupPending || this.cleanupFailures.size > 0) {
+    if (this.state.cleanupPending || this.currentAbandonedCleanupEpoch !== null) {
       this.dispatch({
         type: 'analysisFailed',
         generation: this.generation,
@@ -1653,10 +1671,16 @@ export class AnalysisCoordinator {
     this.revokeVisionDraftAuthorities();
     this.lifecycleEpoch += 1;
     this.dispatch({ type: 'lifecycleInvalidated', lifecycleEpoch: this.lifecycleEpoch });
+    const retainedScanRequiredPdf =
+      this.state.mutation === 'none' &&
+      this.state.status === 'failed' &&
+      this.state.error?.code === 'scan_required' &&
+      this.state.source?.kind === 'pdf';
     if (
       this.state.mutation === 'selecting' ||
       this.state.mutation === 'editing' ||
-      this.state.mutation === 'extracting'
+      this.state.mutation === 'extracting' ||
+      retainedScanRequiredPdf
     ) {
       await this.reset();
       return;
@@ -1704,7 +1728,7 @@ export class AnalysisCoordinator {
     if (visionExtraction !== null) await visionExtraction.promise;
     if (privacyRecoveries.length > 0) await Promise.all(privacyRecoveries);
     if (this.initialization !== null) await this.initialization;
-    await this.cleanupAllOwned(true);
+    await this.cleanupAllOwned();
     const abandonedEpoch = this.currentAbandonedCleanupEpoch;
     if (abandonedEpoch !== null) await this.cleanupAbandonedEpoch(abandonedEpoch);
     this.active = null;
@@ -1741,16 +1765,10 @@ export class AnalysisCoordinator {
     return clean;
   }
 
-  private async cleanupAllOwned(includePickerFailures = false): Promise<boolean> {
+  private async cleanupAllOwned(): Promise<boolean> {
     let clean = true;
     const claims = [...this.pdfClaims.values()];
-    if (includePickerFailures) {
-      for (const claim of this.pickerCleanupFailures.values()) {
-        if (!claims.some(candidate => candidate.lease === claim.lease)) claims.push(claim);
-      }
-    }
     for (const claim of claims) {
-      if (!includePickerFailures && this.pickerCleanupFailures.has(claim.lease)) continue;
       if (!(await this.cleanupClaim(claim))) clean = false;
     }
     return clean;
@@ -1770,42 +1788,72 @@ export class AnalysisCoordinator {
   }
 
   private async performCleanupClaim(claim: PdfClaim): Promise<boolean> {
+    const exactCleanup = Promise.resolve().then(() =>
+      this.tempFiles.cleanupRequest(claim.requestId, claim.lease));
+    const exactCleanupFence = exactCleanup.then(
+      () => undefined,
+      () => undefined,
+    );
+    this.inFlightExactCleanupFences.add(exactCleanupFence);
+    void exactCleanupFence.finally(() => {
+      this.inFlightExactCleanupFences.delete(exactCleanupFence);
+    });
     try {
-      const receipt = await this.boundedCleanup(() =>
-        this.tempFiles.cleanupRequest(claim.requestId, claim.lease));
+      const receipt = await this.boundedCleanup(() => exactCleanup);
       if (isStaleLeaseReceipt(receipt) && this.isPdfClaimProvenStale(claim)) {
-        this.cleanupFailures.delete(claim.lease);
-        this.pickerCleanupFailures.delete(claim.lease);
         return true;
       }
       if (!isVerifiedCleanupReceipt(receipt)) {
-        this.cleanupFailures.add(claim.lease);
-        return false;
+        return this.transferCleanupToAbandoned(claim, exactCleanupFence);
       }
-      this.cleanupFailures.delete(claim.lease);
-      this.pickerCleanupFailures.delete(claim.lease);
-      const current = this.pdfClaims.get(claim.requestId);
-      if (current?.lease === claim.lease && current.epoch === claim.epoch) {
-        this.pdfClaims.delete(claim.requestId);
-        this.ownedPdfRequestIds.delete(claim.requestId);
-        if (this.committedPdfClaim === current) this.committedPdfClaim = null;
-      }
+      this.retirePdfClaim(claim);
       return true;
     } catch {
-      this.cleanupFailures.add(claim.lease);
-      return false;
+      return this.transferCleanupToAbandoned(claim, exactCleanupFence);
     }
   }
 
+  private retirePdfClaim(claim: PdfClaim): void {
+    const current = this.pdfClaims.get(claim.requestId);
+    if (current?.lease === claim.lease && current.epoch === claim.epoch) {
+      this.pdfClaims.delete(claim.requestId);
+      this.ownedPdfRequestIds.delete(claim.requestId);
+      if (this.committedPdfClaim === current) this.committedPdfClaim = null;
+    }
+  }
+
+  private transferCleanupToAbandoned(
+    claim: PdfClaim,
+    exactCleanupFence: Promise<void>,
+  ): false {
+    const source = this.state.source;
+    const consumeSource = source?.kind === 'pdf' &&
+      source.requestId === claim.requestId &&
+      source.uri === claim.uri &&
+      source.lease === claim.lease;
+    this.retirePdfClaim(claim);
+    this.markAbandonedCleanupRequired(exactCleanupFence);
+    if (this.mounted) {
+      this.blockPrivacy(consumeSource);
+    } else {
+      this.refreshDisposedState();
+    }
+    return false;
+  }
+
   private boundedCleanup(operation: () => Promise<CleanupReceipt>): Promise<CleanupReceipt> {
-    return new Promise<CleanupReceipt>((resolve, reject) => {
+    return this.boundedOperation(operation);
+  }
+
+  private boundedOperation<T>(operation: () => Promise<T>): Promise<T> {
+    return new Promise<T>((resolve, reject) => {
       let settled = false;
       const timeout = setTimeout(() => {
         if (settled) return;
         settled = true;
         reject(new CleanupTimeout());
       }, this.cleanupTimeoutMs);
-      let promise: Promise<CleanupReceipt>;
+      let promise: Promise<T>;
       try {
         promise = operation();
       } catch (error) {

@@ -226,9 +226,8 @@ describe('AnalysisProvider in-memory lifecycle', () => {
         authority,
         'abandoned_cleanup_required',
       ).finally(() => { settled = true; });
-      await Promise.resolve();
+      await waitFor(() => expect(tempFiles.cleanupAbandoned).toHaveBeenCalledTimes(2));
       expect(settled).toBe(false);
-      expect(tempFiles.cleanupAbandoned).toHaveBeenCalledTimes(2);
 
       lateCleanup.resolve({ attempted: 1, deleted: 1, failed: 0, refused: 0 });
       await failure;
@@ -272,14 +271,14 @@ describe('AnalysisProvider in-memory lifecycle', () => {
       authority,
       'abandoned_cleanup_required',
     ).finally(() => { failureSettled = true; });
-    await Promise.resolve();
+    for (let turn = 0; turn < 8; turn += 1) await Promise.resolve();
 
     expect(failureSettled).toBe(false);
-    expect(tempFiles.cleanupAbandoned).toHaveBeenCalledTimes(2);
-    lateCleanup.resolve({ attempted: 1, deleted: 1, failed: 0, refused: 0 });
-    await failure;
+    expect(tempFiles.cleanupAbandoned).toHaveBeenCalledTimes(1);
     exactCleanup.resolve({ attempted: 1, deleted: 1, failed: 0, refused: 0 });
-    await disposal;
+    await waitFor(() => expect(tempFiles.cleanupAbandoned).toHaveBeenCalledTimes(2));
+    lateCleanup.resolve({ attempted: 1, deleted: 1, failed: 0, refused: 0 });
+    await Promise.all([failure, disposal]);
 
     expect(notifications).toHaveLength(notificationsBeforeFailure);
   });

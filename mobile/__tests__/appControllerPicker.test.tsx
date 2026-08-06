@@ -566,11 +566,14 @@ describe('native picker operation authority', () => {
     await harness.close();
   });
 
-  it('only explicit exact-lease recovery clears a stale-picker privacy block', async () => {
+  it('only explicit abandoned recovery clears a terminal stale-picker cleanup block', async () => {
     const pending = deferred<PickedPdfForDisplay | null>();
-    const cleanupRequest = jest.fn()
-      .mockResolvedValueOnce({ attempted: 1, deleted: 0, failed: 1, refused: 0 })
-      .mockResolvedValueOnce(CLEAN);
+    const cleanupRequest = jest.fn(async () => ({
+      attempted: 1,
+      deleted: 0,
+      failed: 1,
+      refused: 0,
+    }));
     const harness = await controllerHarness({
       pickPdfForDisplay: jest.fn(() => pending.promise),
       cleanupRequest,
@@ -589,8 +592,8 @@ describe('native picker operation authority', () => {
     expect(recovered).toBe(true);
     expect(cleanupRequest.mock.calls).toEqual([
       [REQUEST_A, LEASE_A],
-      [REQUEST_A, LEASE_A],
     ]);
+    expect(harness.cleanupAbandoned).toHaveBeenCalledTimes(2);
     expect(harness.coordinator.getState()).toMatchObject({
       status: 'idle',
       privacyReadiness: 'ready',
