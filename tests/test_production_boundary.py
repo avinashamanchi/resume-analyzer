@@ -769,6 +769,7 @@ def test_retention_verifier_allows_request_local_sensitive_parsing(tmp_path: Pat
 
     assert result.returncode == 0, result.stderr
     assert result.stdout == "Sensitive-retention verification passed.\n"
+    assert result.stdout == "Sensitive-retention verification passed.\n"
     assert canary not in result.stdout + result.stderr
 
 
@@ -1966,6 +1967,285 @@ def test_retention_verifier_allows_proven_safe_higher_order_controls(
 
     assert result.returncode == 0, result.stderr
     assert result.stdout == "Sensitive-retention verification passed.\n"
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        (
+            "def extract():\n    return request.data\n"
+            "def persist(reader):\n"
+            "    alias = reader\n"
+            "    redis_client.set('report', alias())\n"
+            "persist(extract)\n"
+        ),
+        (
+            "def extract():\n    return request.data\n"
+            "def persist(reader):\n"
+            "    callbacks = [reader]\n"
+            "    logger.info(callbacks[0]())\n"
+            "persist(extract)\n"
+        ),
+        (
+            "def extract():\n    return request.data\n"
+            "def persist(reader):\n"
+            "    redis_client.set('report', reader.__call__())\n"
+            "persist(extract)\n"
+        ),
+        (
+            "def extract():\n    return request.data\n"
+            "def persist(reader):\n"
+            "    logger.info(reader())\n"
+            "def forward(callback):\n"
+            "    persist(callback)\n"
+            "forward(extract)\n"
+        ),
+        (
+            "def extract():\n    return request.data\n"
+            "class Store:\n"
+            "    def persist(self, reader):\n"
+            "        redis_client.set('report', reader())\n"
+            "store = Store()\n"
+            "store.persist(extract)\n"
+        ),
+        (
+            "def extract():\n    return request.data\n"
+            "class Store:\n"
+            "    def __init__(self, reader):\n"
+            "        logger.info(reader())\n"
+            "Store(extract)\n"
+        ),
+        (
+            "def extract():\n    return request.data\n"
+            "class Store:\n"
+            "    def __call__(self, reader):\n"
+            "        redis_client.set('report', reader())\n"
+            "store = Store()\n"
+            "store(extract)\n"
+        ),
+        (
+            "def extract():\n    return request.data\n"
+            "persist = lambda reader: logger.info(reader())\n"
+            "persist(extract)\n"
+        ),
+        (
+            "def extract():\n    return request.data\n"
+            "def persist(*readers):\n"
+            "    redis_client.set('report', readers[0]())\n"
+            "persist(*(extract,))\n"
+        ),
+        (
+            "def extract():\n    return request.data\n"
+            "def persist(**readers):\n"
+            "    logger.info(readers['primary']())\n"
+            "persist(**{'primary': extract})\n"
+        ),
+        (
+            "def extract():\n    return request.data\n"
+            "def persist(reader):\n"
+            "    logger.info(reader())\n"
+            "callbacks = (extract,)\n"
+            "persist(*callbacks)\n"
+        ),
+    ],
+)
+def test_retention_verifier_rejects_executed_callback_sink_summaries(
+    tmp_path: Path,
+    content: str,
+):
+    repository = _tracked_repo(tmp_path, {"server/app.py": content})
+
+    result = _retention_verifier(repository)
+
+    assert result.returncode == 1
+    assert "content-" in result.stderr
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        (
+            "def persist(reader):\n"
+            "    unused = reader\n"
+            "    logger.info('safe')\n"
+            "persist(lambda: b'safe')\n"
+        ),
+        (
+            "def persist(reader):\n"
+            "    redis_client.set('report', reader())\n"
+            "persist(lambda: b'safe')\n"
+        ),
+        (
+            "def persist(reader):\n"
+            "    redis_client.set('report', reader())\n"
+            "callbacks = (lambda: b'safe',)\n"
+            "persist(*callbacks)\n"
+        ),
+        "logger.info(lambda: request.data)\n",
+        "logger.info((request.data for _ in range(1)))\n",
+        (
+            "import external_package as external\n"
+            "name = 'callback'\n"
+            "logger.info(getattr(external, name)())\n"
+        ),
+    ],
+)
+def test_retention_verifier_allows_unused_safe_and_deferred_callbacks(
+    tmp_path: Path,
+    content: str,
+):
+    repository = _tracked_repo(tmp_path, {"server/app.py": content})
+
+    result = _retention_verifier(repository)
+
+    assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        (
+            "def extract():\n    return request.data\n"
+            "safe = lambda: b'safe'\n"
+            "def choose(flag):\n"
+            "    if flag:\n        return extract\n"
+            "    return safe\n"
+            "logger.info(choose(True)())\n"
+        ),
+        (
+            "def extract():\n    return request.data\n"
+            "safe = lambda: b'safe'\n"
+            "def choose(flag):\n"
+            "    if flag:\n        return safe\n"
+            "    return extract\n"
+            "redis_client.set('report', choose(False)())\n"
+        ),
+        (
+            "def extract():\n    return request.data\n"
+            "def identity(callback):\n    return callback\n"
+            "logger.info(identity(extract)())\n"
+        ),
+        (
+            "import functools\n"
+            "def extract():\n    return request.data\n"
+            "def wrap(callback):\n    return functools.partial(callback)\n"
+            "def again(callback):\n    return wrap(callback)\n"
+            "redis_client.set('report', again(extract)())\n"
+        ),
+        "logger.info([item for item in (request.data,)])\n",
+        "logger.info(list(item for item in (request.data,)))\n",
+        "(lambda: logger.info(request.data))()\n",
+    ],
+)
+def test_retention_verifier_rejects_callable_return_lattices_and_eager_bodies(
+    tmp_path: Path,
+    content: str,
+):
+    repository = _tracked_repo(tmp_path, {"server/app.py": content})
+
+    result = _retention_verifier(repository)
+
+    assert result.returncode == 1
+    assert "content-" in result.stderr
+
+
+def test_retention_verifier_allows_all_safe_callable_return_lattice(tmp_path: Path):
+    repository = _tracked_repo(
+        tmp_path,
+        {
+            "server/app.py": (
+                "safe_one = lambda: b'one'\n"
+                "safe_two = lambda: b'two'\n"
+                "def choose(flag):\n"
+                "    if flag:\n        return safe_one\n"
+                "    return safe_two\n"
+                "logger.info(choose(True)())\n"
+            )
+        },
+    )
+
+    result = _retention_verifier(repository)
+
+    assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.parametrize(
+    "files",
+    [
+        {
+            "server/app.py": (
+                "class Reader:\n"
+                "    def read(self):\n        return request.data\n"
+                "reader = Reader()\n"
+                "name = 'read'\n"
+                "logger.info(getattr(reader, name)())\n"
+            )
+        },
+        {
+            "server/app.py": (
+                "class Reader:\n"
+                "    @staticmethod\n"
+                "    def read():\n        return request.data\n"
+                "logger.info(Reader.__dict__['read']())\n"
+            )
+        },
+        {
+            "server/helpers.py": "def extract():\n    return request.data\n",
+            "server/app.py": (
+                "import server.helpers as helpers\n"
+                "reader = vars(helpers)['extract']\n"
+                "redis_client.set('report', reader())\n"
+            ),
+        },
+        {
+            "server/app.py": (
+                "def extract():\n    return request.data\n"
+                "class Reader:\n"
+                "    read = staticmethod(extract)\n"
+                "logger.info(Reader.read())\n"
+            )
+        },
+        {
+            "server/app.py": (
+                "class Reader:\n"
+                "    read = classmethod(lambda cls: request.data)\n"
+                "redis_client.set('report', Reader.read())\n"
+            )
+        },
+        {
+            "server/helpers.py": "def extract():\n    return request.data\n",
+            "server/reexport.py": (
+                "from server.helpers import extract as imported\n"
+                "extract, safe = imported, (lambda: b'safe')\n"
+            ),
+            "server/app.py": (
+                "from server.reexport import extract\n"
+                "logger.info(extract())\n"
+            ),
+        },
+        {
+            "server/helpers.py": "def extract():\n    return request.data\n",
+            "server/reexport.py": (
+                "import server.helpers\n"
+                "extract = server.helpers.extract\n"
+            ),
+            "server/app.py": (
+                "from server.reexport import extract\n"
+                "redis_client.set('report', extract())\n"
+            ),
+        },
+    ],
+)
+def test_retention_verifier_rejects_dynamic_class_and_catalog_flows(
+    tmp_path: Path,
+    files: dict[str, str],
+):
+    repository = _tracked_repo(tmp_path, files)
+
+    result = _retention_verifier(repository)
+
+    assert result.returncode == 1
+    assert "content-" in result.stderr
 
 
 def test_release_docs_and_ci_cover_required_unverified_boundaries():

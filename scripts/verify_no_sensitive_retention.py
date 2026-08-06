@@ -151,6 +151,20 @@ SHELVE_RECEIVER_PATTERN = re.compile(r"(?:^|_)(?:shelf|shelve)(?:_|$)", re.IGNOR
 
 AccessPath = tuple[str, ...]
 WILDCARD_SUBSCRIPT_COMPONENT = "key:*"
+PARAMETER_IDENTITY_PREFIX = "$project-parameter$"
+
+
+def _parameter_identity(owner: str, name: str) -> str:
+    return f"{PARAMETER_IDENTITY_PREFIX}{owner}${name}"
+
+
+def _parameter_details(identity: str) -> tuple[str, str] | None:
+    if not identity.startswith(PARAMETER_IDENTITY_PREFIX):
+        return None
+    owner, separator, name = identity.removeprefix(PARAMETER_IDENTITY_PREFIX).rpartition(
+        "$"
+    )
+    return (owner, name) if separator else None
 
 
 def _dotted_name(node: ast.AST) -> str | None:
@@ -231,7 +245,7 @@ class PythonRetentionVisitor(ast.NodeVisitor):
         tainted_functions: set[str] | None = None,
         request_functions: set[str] | None = None,
         safe_functions: set[str] | None = None,
-        callable_returns: dict[str, str] | None = None,
+        callable_returns: dict[str, set[str]] | None = None,
         *,
         module_name: str = "app",
         project_modules: set[str] | None = None,
@@ -245,6 +259,8 @@ class PythonRetentionVisitor(ast.NodeVisitor):
         callable_parameter_sinks: dict[str, dict[str, set[str]]] | None = None,
         callable_parameters: dict[str, tuple[str, ...]] | None = None,
         callable_defaults: dict[str, dict[str, str]] | None = None,
+        callable_variadics: dict[str, tuple[str | None, str | None]] | None = None,
+        class_member_bindings: dict[str, str] | None = None,
     ) -> None:
         self.findings: set[str] = set()
         self._tainted_paths: set[AccessPath] = set()
@@ -260,7 +276,10 @@ class PythonRetentionVisitor(ast.NodeVisitor):
         self.tainted_functions: set[str] = set(tainted_functions or ())
         self.request_functions: set[str] = set(request_functions or ())
         self.safe_functions: set[str] = set(safe_functions or ())
-        self.callable_returns: dict[str, str] = dict(callable_returns or {})
+        self.callable_returns: dict[str, set[str]] = {
+            identity: set(returns)
+            for identity, returns in (callable_returns or {}).items()
+        }
         self._module_name = module_name
         self._project_modules = set(project_modules or ())
         self._project_callables = set(project_callables or ())
@@ -280,11 +299,14 @@ class PythonRetentionVisitor(ast.NodeVisitor):
             identity: dict(defaults)
             for identity, defaults in (callable_defaults or {}).items()
         }
+        self.callable_variadics = dict(callable_variadics or {})
+        self._class_member_bindings = dict(class_member_bindings or {})
         self._function_stack: list[str] = []
         self._parameter_stack: list[set[str]] = []
         self._scope_stack: list[str] = []
         self._function_return_states: dict[str, set[str]] = {}
         self._callable_transforms: dict[AccessPath, str] = {}
+        self._bound_instances: set[AccessPath] = set()
         for name, identity in (initial_callables or {}).items():
             path = (name,)
             self._bound_paths.add(path)
@@ -306,6 +328,12 @@ class PythonRetentionVisitor(ast.NodeVisitor):
         path = _access_path(node)
         if path is not None and path in self._callable_aliases:
             return self._callable_aliases[path]
+        if path is not None:
+            for pattern, identity in self._callable_aliases.items():
+                if WILDCARD_SUBSCRIPT_COMPONENT in pattern and _path_matches(
+                    pattern, path
+                ):
+                    return identity
         canonical_member = self._canonical_module_member(node)
         if canonical_member is not None:
             resolved = self._public_callables.get(canonical_member)
@@ -318,6 +346,10 @@ class PythonRetentionVisitor(ast.NodeVisitor):
             else:
                 receiver_identity = self._callable_identity(node.value)
             if receiver_identity is not None:
+                if node.attr == "__call__" and _parameter_details(
+                    receiver_identity
+                ) is not None:
+                    return receiver_identity
                 member = self._class_members.get((receiver_identity, node.attr))
                 if member is not None:
                     return member
@@ -330,6 +362,46 @@ class PythonRetentionVisitor(ast.NodeVisitor):
             id(node), f"{prefix}<lambda>@{node.lineno}:{node.col_offset}"
         )
         self._project_callables.add(identity)
+        positional = (*node.args.posonlyargs, *node.args.args)
+        self.callable_parameters[identity] = tuple(
+            argument.arg for argument in (*positional, *node.args.kwonlyargs)
+        )
+        self.callable_variadics[identity] = (
+            node.args.vararg.arg if node.args.vararg is not None else None,
+            node.args.kwarg.arg if node.args.kwarg is not None else None,
+        )
+        parameter_names = {
+            argument.arg
+            for argument in (
+                *positional,
+                *node.args.kwonlyargs,
+            )
+        }
+        if node.args.vararg is not None:
+            parameter_names.add(node.args.vararg.arg)
+        if node.args.kwarg is not None:
+            parameter_names.add(node.args.kwarg.arg)
+        for candidate in ast.walk(node.body):
+            if not isinstance(candidate, ast.Call):
+                continue
+            sink_kind = self._sink_kind(candidate.func)
+            if sink_kind is None:
+                continue
+            values = (
+                *candidate.args,
+                *(keyword.value for keyword in candidate.keywords),
+            )
+            for value in values:
+                for callback_call in ast.walk(value):
+                    if not isinstance(callback_call, ast.Call):
+                        continue
+                    callback = callback_call.func
+                    if isinstance(callback, ast.Attribute) and callback.attr == "__call__":
+                        callback = callback.value
+                    path = _access_path(callback)
+                    if path is not None and path[0] in parameter_names:
+                        summaries = self.callable_parameter_sinks.setdefault(identity, {})
+                        summaries.setdefault(path[0], set()).add(sink_kind)
         if self._expression_is_request_object(node.body):
             self.request_functions.add(identity)
         if self._expression_is_tainted(node.body):
@@ -365,11 +437,15 @@ class PythonRetentionVisitor(ast.NodeVisitor):
         dotted = canonical or _dotted_name(node)
         if dotted == "getattr" and path not in self._bound_paths:
             return "getattr"
+        if dotted == "vars" and path not in self._bound_paths:
+            return "vars"
         return {
             "builtins.getattr": "getattr",
             "functools.partial": "partial",
             "typing.cast": "cast",
             "staticmethod": "staticmethod",
+            "classmethod": "classmethod",
+            "builtins.vars": "vars",
         }.get(dotted)
 
     def _unknown_project_callable(self, node: ast.AST, kind: str) -> str:
@@ -422,12 +498,44 @@ class PythonRetentionVisitor(ast.NodeVisitor):
                     if resolved is not None:
                         return resolved
                 return self._unknown_project_callable(node, "module-lookup")
+            owner = self._callable_identity(node.value.value)
+            if owner in self._class_identities:
+                if isinstance(node.slice, ast.Constant) and isinstance(
+                    node.slice.value, str
+                ):
+                    resolved = self._class_members.get((owner, node.slice.value))
+                    if resolved is not None:
+                        return resolved
+                return self._unknown_project_callable(node, "class-lookup")
+        if (
+            isinstance(node, ast.Subscript)
+            and isinstance(node.value, ast.Call)
+            and self._callable_transform_kind(node.value.func) == "vars"
+            and node.value.args
+        ):
+            owner_node = node.value.args[0]
+            module_path = _access_path(owner_node)
+            module = self._module_aliases.get(module_path) if module_path else None
+            owner = self._callable_identity(owner_node)
+            if isinstance(node.slice, ast.Constant) and isinstance(
+                node.slice.value, str
+            ):
+                if module in self._project_modules:
+                    resolved = self._module_exports.get(module, {}).get(node.slice.value)
+                    if resolved is not None:
+                        return resolved
+                if owner in self._class_identities:
+                    resolved = self._class_members.get((owner, node.slice.value))
+                    if resolved is not None:
+                        return resolved
+            if module in self._project_modules or owner in self._class_identities:
+                return self._unknown_project_callable(node, "vars-lookup")
         identity = self._callable_identity(node)
         if identity is not None:
             return identity
         if isinstance(node, ast.Call):
             transform = self._callable_transform_kind(node.func)
-            if transform in {"partial", "staticmethod"} and node.args:
+            if transform in {"classmethod", "partial", "staticmethod"} and node.args:
                 return self._resolve_callable_value(node.args[0])
             if transform == "cast" and node.args:
                 return self._resolve_callable_value(node.args[-1])
@@ -445,10 +553,28 @@ class PythonRetentionVisitor(ast.NodeVisitor):
                 module = self._module_aliases.get(module_path) if module_path else None
                 if module in self._project_modules:
                     return self._unknown_project_callable(node, "getattr")
+                owner = self._callable_identity(node.args[0])
+                if owner in self._class_identities:
+                    return self._unknown_project_callable(node, "getattr")
             called = self._callable_identity(node.func)
             if called is not None:
                 if called in self.callable_returns:
-                    return self.callable_returns[called]
+                    target_identity, bound_receiver = self._call_target(node)
+                    target_identity = target_identity or called
+                    bindings = self._callable_bindings(
+                        node, target_identity, bound_receiver
+                    )
+                    resolved_returns: list[str] = []
+                    for returned in self.callable_returns[called]:
+                        details = _parameter_details(returned)
+                        if details is not None and details[0] == called:
+                            if details[1] in bindings:
+                                resolved_returns.append(bindings[details[1]])
+                        else:
+                            resolved_returns.append(returned)
+                    return self._merged_callable_identity(
+                        node, resolved_returns, "callable-return"
+                    )
                 if called in self._class_identities:
                     return called
         return None
@@ -525,6 +651,8 @@ class PythonRetentionVisitor(ast.NodeVisitor):
     def _expression_is_tainted(self, node: ast.AST | None) -> bool:
         if node is None:
             return False
+        if isinstance(node, (ast.GeneratorExp, ast.Lambda)):
+            return False
 
         path = _access_path(node)
         if path is not None:
@@ -542,6 +670,24 @@ class PythonRetentionVisitor(ast.NodeVisitor):
         if isinstance(node, ast.Call):
             if self._call_returns_tainted(node):
                 return True
+            if (
+                isinstance(node.func, ast.Name)
+                and node.func.id in {"all", "any", "list", "set", "sorted", "sum", "tuple"}
+                and (node.func.id,) not in self._bound_paths
+            ):
+                for value in node.args:
+                    if isinstance(value, ast.GeneratorExp) and (
+                        self._expression_is_tainted(value.elt)
+                        or any(
+                            self._expression_is_tainted(generator.iter)
+                            or any(
+                                self._expression_is_tainted(condition)
+                                for condition in generator.ifs
+                            )
+                            for generator in value.generators
+                        )
+                    ):
+                        return True
             lookup_path = _call_lookup_path(node)
             if lookup_path is not None:
                 return (
@@ -770,6 +916,11 @@ class PythonRetentionVisitor(ast.NodeVisitor):
             for candidate in self._bound_paths
             if not _path_is_prefix(path, candidate)
         }
+        self._bound_instances = {
+            candidate
+            for candidate in self._bound_instances
+            if not _path_is_prefix(path, candidate)
+        }
         if len(path) == 1:
             self._flask_module_aliases.discard(path[0])
             self._path_constructor_aliases.discard(path[0])
@@ -834,9 +985,16 @@ class PythonRetentionVisitor(ast.NodeVisitor):
             self._callable_factories[target] = factory_kind
         if source is not None and source in self._module_aliases:
             self._module_aliases[target] = self._module_aliases[source]
+        if source is not None and source in self._bound_instances:
+            self._bound_instances.add(target)
         callable_identity = self._resolve_callable_value(value)
         if callable_identity is not None:
             self._callable_aliases[target] = callable_identity
+            if (
+                isinstance(value, ast.Call)
+                and callable_identity in self._class_identities
+            ):
+                self._bound_instances.add(target)
         transform_kind = self._callable_transform_kind(value)
         if transform_kind is not None:
             self._callable_transforms[target] = transform_kind
@@ -900,6 +1058,10 @@ class PythonRetentionVisitor(ast.NodeVisitor):
         self.callable_parameters[identity] = tuple(
             argument.arg for argument in parameter_order
         )
+        self.callable_variadics[identity] = (
+            node.args.vararg.arg if node.args.vararg is not None else None,
+            node.args.kwarg.arg if node.args.kwarg is not None else None,
+        )
         defaults: dict[str, str] = {}
         positional_defaults = zip(
             positional[-len(node.args.defaults) :] if node.args.defaults else (),
@@ -926,6 +1088,7 @@ class PythonRetentionVisitor(ast.NodeVisitor):
         previous_transforms = self._callable_transforms
         previous_modules = self._module_aliases
         previous_bound_paths = self._bound_paths
+        previous_bound_instances = self._bound_instances
         previous_flask_aliases = self._flask_module_aliases
         previous_path_aliases = self._path_constructor_aliases
         parameter_names = {
@@ -949,14 +1112,25 @@ class PythonRetentionVisitor(ast.NodeVisitor):
         self._callable_transforms = dict(previous_transforms)
         self._module_aliases = dict(previous_modules)
         self._bound_paths = set(previous_bound_paths)
+        self._bound_instances = set(previous_bound_instances)
         self._flask_module_aliases = set(previous_flask_aliases)
         self._path_constructor_aliases = set(previous_path_aliases)
         for name in parameter_names:
             path = (name,)
             self._clear_target(path)
             self._bound_paths.add(path)
+            token = _parameter_identity(identity, name)
+            self._callable_aliases[path] = token
             if name == "request":
                 self._request_paths.add(path)
+        if node.args.vararg is not None:
+            self._callable_aliases[
+                (node.args.vararg.arg, WILDCARD_SUBSCRIPT_COMPONENT)
+            ] = _parameter_identity(identity, node.args.vararg.arg)
+        if node.args.kwarg is not None:
+            self._callable_aliases[
+                (node.args.kwarg.arg, WILDCARD_SUBSCRIPT_COMPONENT)
+            ] = _parameter_identity(identity, node.args.kwarg.arg)
         self._tainted_paths.update(
             (name,) for name in parameter_names if SENSITIVE_NAME_PATTERN.search(name)
         )
@@ -981,6 +1155,7 @@ class PythonRetentionVisitor(ast.NodeVisitor):
         self._callable_transforms = previous_transforms
         self._module_aliases = previous_modules
         self._bound_paths = previous_bound_paths
+        self._bound_instances = previous_bound_instances
         self._flask_module_aliases = previous_flask_aliases
         self._path_constructor_aliases = previous_path_aliases
 
@@ -1016,6 +1191,7 @@ class PythonRetentionVisitor(ast.NodeVisitor):
         previous_transforms = self._callable_transforms
         previous_modules = self._module_aliases
         previous_bound_paths = self._bound_paths
+        previous_bound_instances = self._bound_instances
         previous_flask_aliases = self._flask_module_aliases
         previous_path_aliases = self._path_constructor_aliases
         self._tainted_paths = set(previous_taint)
@@ -1027,6 +1203,7 @@ class PythonRetentionVisitor(ast.NodeVisitor):
         self._callable_transforms = dict(previous_transforms)
         self._module_aliases = dict(previous_modules)
         self._bound_paths = set(previous_bound_paths)
+        self._bound_instances = set(previous_bound_instances)
         self._flask_module_aliases = set(previous_flask_aliases)
         self._path_constructor_aliases = set(previous_path_aliases)
         self._scope_stack.append(f"{node.name}@{node.lineno}")
@@ -1042,6 +1219,7 @@ class PythonRetentionVisitor(ast.NodeVisitor):
         self._callable_transforms = previous_transforms
         self._module_aliases = previous_modules
         self._bound_paths = previous_bound_paths
+        self._bound_instances = previous_bound_instances
         self._flask_module_aliases = previous_flask_aliases
         self._path_constructor_aliases = previous_path_aliases
 
@@ -1084,7 +1262,9 @@ class PythonRetentionVisitor(ast.NodeVisitor):
                 states.add("tainted")
             callable_identity = self._resolve_callable_value(node.value)
             if callable_identity is not None:
-                self.callable_returns[identity] = callable_identity
+                self.callable_returns.setdefault(identity, set()).add(
+                    callable_identity
+                )
                 states.add("callable")
             elif self._expression_is_demonstrably_safe(node.value):
                 states.add("safe")
@@ -1170,26 +1350,191 @@ class PythonRetentionVisitor(ast.NodeVisitor):
             for path in _assigned_paths(target):
                 self._clear_target(path)
 
+    def visit_Lambda(self, node: ast.Lambda) -> None:
+        self._register_lambda(node)
+
+    def visit_GeneratorExp(self, node: ast.GeneratorExp) -> None:
+        # Generator bodies do not execute merely because the generator is created.
+        return
+
     def _record_parameter_sink_calls(
         self, value: ast.AST, sink_kind: str
     ) -> None:
         if not self._function_stack or not self._parameter_stack:
             return
         identity = self._function_stack[-1]
-        parameter_names = self._parameter_stack[-1]
         for candidate in ast.walk(value):
-            if (
-                isinstance(candidate, ast.Call)
-                and isinstance(candidate.func, ast.Name)
-                and candidate.func.id in parameter_names
-            ):
+            if not isinstance(candidate, ast.Call):
+                continue
+            callable_identity = self._resolve_callable_value(candidate.func)
+            details = (
+                _parameter_details(callable_identity)
+                if callable_identity is not None
+                else None
+            )
+            if details is not None and details[0] == identity:
                 parameter_sinks = self.callable_parameter_sinks.setdefault(
                     identity, {}
                 )
-                parameter_sinks.setdefault(candidate.func.id, set()).add(sink_kind)
+                parameter_sinks.setdefault(details[1], set()).add(sink_kind)
+
+    def _call_target(self, node: ast.Call) -> tuple[str | None, bool]:
+        identity = self._callable_identity(node.func)
+        if identity is None:
+            return None, False
+        func_path = _access_path(node.func)
+        if identity in self._class_identities:
+            instance_call = func_path is not None and func_path in self._bound_instances
+            member_name = "__call__" if instance_call else "__init__"
+            return self._class_members.get((identity, member_name)), True
+        if isinstance(node.func, ast.Attribute):
+            binding = self._class_member_bindings.get(identity, "instance")
+            receiver_path = _access_path(node.func.value)
+            receiver_is_instance = (
+                receiver_path is not None and receiver_path in self._bound_instances
+            )
+            return identity, binding == "class" or (
+                binding == "instance" and receiver_is_instance
+            )
+        return identity, False
+
+    def _expanded_call_values(
+        self, node: ast.Call
+    ) -> tuple[list[ast.AST], dict[str, ast.AST], bool, bool]:
+        positional: list[ast.AST] = []
+        unknown_star = False
+        for value in node.args:
+            if isinstance(value, ast.Starred):
+                if isinstance(value.value, (ast.List, ast.Tuple)):
+                    positional.extend(value.value.elts)
+                else:
+                    unknown_star = True
+            else:
+                positional.append(value)
+        keywords: dict[str, ast.AST] = {}
+        unknown_kwargs = False
+        for keyword in node.keywords:
+            if keyword.arg is not None:
+                keywords[keyword.arg] = keyword.value
+            elif isinstance(keyword.value, ast.Dict):
+                for key, value in zip(
+                    keyword.value.keys, keyword.value.values, strict=True
+                ):
+                    if isinstance(key, ast.Constant) and isinstance(key.value, str):
+                        keywords[key.value] = value
+                    else:
+                        unknown_kwargs = True
+            else:
+                unknown_kwargs = True
+        return positional, keywords, unknown_star, unknown_kwargs
+
+    def _container_callable_identities(self, node: ast.AST) -> list[str]:
+        if isinstance(node, (ast.List, ast.Set, ast.Tuple)):
+            return [
+                resolved
+                for value in node.elts
+                if (resolved := self._resolve_callable_value(value)) is not None
+            ]
+        if isinstance(node, ast.Dict):
+            return [
+                resolved
+                for value in node.values
+                if (resolved := self._resolve_callable_value(value)) is not None
+            ]
+        path = _access_path(node)
+        if path is None:
+            return []
+        return [
+            identity
+            for candidate, identity in self._callable_aliases.items()
+            if _path_is_prefix(path, candidate) and len(candidate) > len(path)
+        ]
+
+    def _callable_bindings(
+        self, node: ast.Call, identity: str, bound_receiver: bool
+    ) -> dict[str, str]:
+        parameters = list(self.callable_parameters.get(identity, ()))
+        if bound_receiver and parameters:
+            parameters = parameters[1:]
+        positional, keywords, unknown_star, unknown_kwargs = (
+            self._expanded_call_values(node)
+        )
+        starred_identities: list[str] = []
+        for value in node.args:
+            if isinstance(value, ast.Starred) and not isinstance(
+                value.value, (ast.List, ast.Tuple)
+            ):
+                starred_identities.extend(
+                    self._container_callable_identities(value.value)
+                )
+        if unknown_star and not starred_identities:
+            starred_identities.append(
+                self._unknown_project_callable(node, "star-args")
+            )
+        starred_binding = self._merged_callable_identity(
+            node, starred_identities, "star-args"
+        )
+        bindings: dict[str, str] = {}
+        consumed_names: set[str] = set()
+        for name, value in zip(parameters, positional):
+            consumed_names.add(name)
+            if (resolved := self._resolve_callable_value(value)) is not None:
+                bindings[name] = resolved
+        for name, value in keywords.items():
+            if name in parameters:
+                consumed_names.add(name)
+                if (resolved := self._resolve_callable_value(value)) is not None:
+                    bindings[name] = resolved
+        for name, default in self.callable_defaults.get(identity, {}).items():
+            if name not in consumed_names:
+                bindings[name] = default
+        if starred_binding is not None:
+            for name in parameters:
+                if name not in consumed_names and name not in bindings:
+                    bindings[name] = starred_binding
+        vararg, kwarg = self.callable_variadics.get(identity, (None, None))
+        remaining = positional[len(parameters) :]
+        if vararg is not None:
+            identities = [
+                resolved
+                for value in remaining
+                if (resolved := self._resolve_callable_value(value)) is not None
+            ]
+            identities.extend(starred_identities)
+            merged = self._merged_callable_identity(node, identities, "star-args")
+            if merged is not None:
+                bindings[vararg] = merged
+        if kwarg is not None:
+            extra_keywords = {
+                name: value for name, value in keywords.items() if name not in parameters
+            }
+            identities = [
+                resolved
+                for value in extra_keywords.values()
+                if (resolved := self._resolve_callable_value(value)) is not None
+            ]
+            expanded_kwargs: list[str] = []
+            for keyword in node.keywords:
+                if keyword.arg is None and not isinstance(keyword.value, ast.Dict):
+                    expanded_kwargs.extend(
+                        self._container_callable_identities(keyword.value)
+                    )
+            if unknown_kwargs and not expanded_kwargs:
+                expanded_kwargs.append(
+                    self._unknown_project_callable(node, "star-kwargs")
+                )
+            identities.extend(expanded_kwargs)
+            merged = self._merged_callable_identity(node, identities, "star-kwargs")
+            if merged is not None:
+                bindings[kwarg] = merged
+            if merged is not None:
+                for name in parameters:
+                    if name not in consumed_names and name not in bindings:
+                        bindings[name] = merged
+        return bindings
 
     def _check_parameterized_call(self, node: ast.Call) -> None:
-        identity = self._callable_identity(node.func)
+        identity, bound_receiver = self._call_target(node)
         parameter_sinks = (
             self.callable_parameter_sinks.get(identity, {})
             if identity is not None
@@ -1197,20 +1542,22 @@ class PythonRetentionVisitor(ast.NodeVisitor):
         )
         if not parameter_sinks or identity is None:
             return
-        parameters = self.callable_parameters.get(identity, ())
-        supplied: dict[str, ast.AST] = dict(zip(parameters, node.args))
-        supplied.update(
-            (keyword.arg, keyword.value)
-            for keyword in node.keywords
-            if keyword.arg is not None
-        )
-        defaults = self.callable_defaults.get(identity, {})
+        bindings = self._callable_bindings(node, identity, bound_receiver)
         for name, sink_kinds in parameter_sinks.items():
-            callable_identity = (
-                self._resolve_callable_value(supplied[name])
-                if name in supplied
-                else defaults.get(name)
+            callable_identity = bindings.get(name)
+            details = (
+                _parameter_details(callable_identity)
+                if callable_identity is not None
+                else None
             )
+            if details is not None and self._function_stack:
+                owner, parameter = details
+                if owner == self._function_stack[-1]:
+                    parameter_summaries = self.callable_parameter_sinks.setdefault(
+                        owner, {}
+                    )
+                    parameter_summaries.setdefault(parameter, set()).update(sink_kinds)
+                continue
             if (
                 callable_identity is not None
                 and callable_identity in self._project_callables
@@ -1219,6 +1566,20 @@ class PythonRetentionVisitor(ast.NodeVisitor):
                 self.findings.update(sink_kinds)
 
     def visit_Call(self, node: ast.Call) -> None:
+        if isinstance(node.func, ast.Lambda):
+            self.visit(node.func.body)
+        if (
+            isinstance(node.func, ast.Name)
+            and node.func.id in {"all", "any", "list", "set", "sorted", "sum", "tuple"}
+            and (node.func.id,) not in self._bound_paths
+        ):
+            for value in node.args:
+                if isinstance(value, ast.GeneratorExp):
+                    self.visit(value.elt)
+                    for generator in value.generators:
+                        self.visit(generator.iter)
+                        for condition in generator.ifs:
+                            self.visit(condition)
         self._check_parameterized_call(node)
         factory_kind = self._callable_factory_kind(node.func)
         if factory_kind in {"database", "shelve"}:
@@ -1323,6 +1684,7 @@ def _definition_catalog(
     set[str],
     set[str],
     dict[str, dict[int, str]],
+    dict[str, str],
 ]:
     exports: dict[str, dict[str, str]] = {
         module: {} for module in modules_by_path.values()
@@ -1334,8 +1696,10 @@ def _definition_catalog(
     identities_by_path: dict[str, dict[int, str]] = {
         path: {} for path in parsed_modules
     }
+    class_member_bindings: dict[str, str] = {}
 
     class_bases: list[tuple[str, str, tuple[ast.expr, ...]]] = []
+    class_assignments: list[tuple[str, str, ast.Assign | ast.AnnAssign]] = []
     project_module_aliases: dict[str, dict[str, str]] = {
         module: {} for module in modules_by_path.values()
     }
@@ -1347,7 +1711,11 @@ def _definition_catalog(
                     if alias.name in exports:
                         project_module_aliases[module][
                             alias.asname or alias.name.split(".", 1)[0]
-                        ] = alias.name
+                        ] = (
+                            alias.name
+                            if alias.asname
+                            else alias.name.split(".", 1)[0]
+                        )
 
     def register_lambda(
         relative_path: str, node: ast.Lambda, scope: tuple[str, ...]
@@ -1364,12 +1732,20 @@ def _definition_catalog(
             return node
         if (
             isinstance(node, ast.Call)
-            and _dotted_name(node.func) == "staticmethod"
+            and _dotted_name(node.func) in {"classmethod", "staticmethod"}
             and node.args
             and isinstance(node.args[0], ast.Lambda)
         ):
             return node.args[0]
         return None
+
+    def binding_kind(node: ast.AST | None) -> str:
+        if isinstance(node, ast.Call):
+            if _dotted_name(node.func) == "staticmethod":
+                return "static"
+            if _dotted_name(node.func) == "classmethod":
+                return "class"
+        return "instance"
 
     def register(
         relative_path: str,
@@ -1390,7 +1766,17 @@ def _definition_catalog(
                 child_identity = register(relative_path, child, child_scope)
                 if isinstance(node, ast.ClassDef):
                     class_members[(identity, child.name)] = child_identity
+                    decorators = {
+                        _dotted_name(decorator) for decorator in child.decorator_list
+                    }
+                    class_member_bindings[child_identity] = (
+                        "static"
+                        if "staticmethod" in decorators
+                        else "class" if "classmethod" in decorators else "instance"
+                    )
             elif isinstance(child, (ast.Assign, ast.AnnAssign)):
+                if isinstance(node, ast.ClassDef):
+                    class_assignments.append((identity, module, child))
                 value = assigned_lambda(child.value)
                 if value is None:
                     continue
@@ -1399,6 +1785,9 @@ def _definition_catalog(
                 for target in targets:
                     if isinstance(target, ast.Name) and isinstance(node, ast.ClassDef):
                         class_members[(identity, target.id)] = lambda_identity
+                        class_member_bindings[lambda_identity] = binding_kind(
+                            child.value
+                        )
         return identity
 
     for relative_path, parsed in parsed_modules.items():
@@ -1430,12 +1819,41 @@ def _definition_catalog(
             dotted = _dotted_name(value)
             if dotted is None:
                 return None
-            root, separator, members = dotted.partition(".")
-            source_module = module_aliases.get(root)
-            if source_module is None or not separator or "." in members:
+            components = dotted.split(".")
+            source_root = module_aliases.get(components[0])
+            if source_root is None:
+                owner = exports[module].get(components[0])
+                if owner is not None and len(components) == 2:
+                    return class_members.get((owner, components[1]))
                 return None
-            return exports.get(source_module, {}).get(members)
+            full = ".".join((source_root, *components[1:]))
+            for source_module in sorted(exports, key=len, reverse=True):
+                prefix = f"{source_module}."
+                if full.startswith(prefix) and "." not in full.removeprefix(prefix):
+                    return exports[source_module].get(full.removeprefix(prefix))
         return None
+
+    def resolve_assignment_bindings(
+        module: str,
+        target: ast.AST,
+        value: ast.AST,
+        module_aliases: dict[str, str],
+    ) -> dict[str, str]:
+        if (
+            isinstance(target, (ast.List, ast.Tuple))
+            and isinstance(value, (ast.List, ast.Tuple))
+            and len(target.elts) == len(value.elts)
+        ):
+            resolved: dict[str, str] = {}
+            for destination, item in zip(target.elts, value.elts, strict=True):
+                resolved.update(
+                    resolve_assignment_bindings(
+                        module, destination, item, module_aliases
+                    )
+                )
+            return resolved
+        identity = resolve_catalog_value(module, value, module_aliases)
+        return {target.id: identity} if isinstance(target, ast.Name) and identity else {}
 
     for _ in range(len(parsed_modules) + len(class_identities) + 2):
         changed = False
@@ -1448,7 +1866,11 @@ def _definition_catalog(
                         if alias.name in exports:
                             module_aliases[
                                 alias.asname or alias.name.split(".", 1)[0]
-                            ] = alias.name
+                            ] = (
+                                alias.name
+                                if alias.asname
+                                else alias.name.split(".", 1)[0]
+                            )
                     continue
                 imported: dict[str, str] = {}
                 if isinstance(node, ast.ImportFrom):
@@ -1471,23 +1893,49 @@ def _definition_catalog(
                             imported[alias.asname or alias.name] = identity
                 elif isinstance(node, (ast.Assign, ast.AnnAssign)):
                     value = node.value
-                    identity = resolve_catalog_value(module, value, module_aliases)
-                    if identity is not None:
-                        targets = (
-                            node.targets if isinstance(node, ast.Assign) else [node.target]
-                        )
+                    targets = (
+                        node.targets if isinstance(node, ast.Assign) else [node.target]
+                    )
+                    for target in targets:
                         imported.update(
-                            {
-                                target.id: identity
-                                for target in targets
-                                if isinstance(target, ast.Name)
-                            }
+                            resolve_assignment_bindings(
+                                module, target, value, module_aliases
+                            )
                         )
                 for name, identity in imported.items():
                     if exports[module].get(name) != identity:
                         exports[module][name] = identity
                         public_callables[f"{module}.{name}"] = identity
                         changed = True
+
+        for class_identity, module, assignment in class_assignments:
+            value = assignment.value
+            if (
+                isinstance(value, ast.Call)
+                and binding_kind(value) in {"class", "static"}
+                and value.args
+            ):
+                value = value.args[0]
+            member_identity = resolve_catalog_value(
+                module, value, project_module_aliases[module]
+            )
+            if member_identity is None:
+                continue
+            targets = (
+                assignment.targets
+                if isinstance(assignment, ast.Assign)
+                else [assignment.target]
+            )
+            for target in targets:
+                if not isinstance(target, ast.Name):
+                    continue
+                key = (class_identity, target.id)
+                if class_members.get(key) != member_identity:
+                    class_members[key] = member_identity
+                    class_member_bindings[member_identity] = binding_kind(
+                        assignment.value
+                    )
+                    changed = True
 
         for class_identity, module, bases in class_bases:
             for base in bases:
@@ -1513,6 +1961,7 @@ def _definition_catalog(
         class_identities,
         project_callables,
         identities_by_path,
+        class_member_bindings,
     )
 
 
@@ -1536,14 +1985,16 @@ def python_project_findings(contents: dict[str, str]) -> dict[str, set[str]]:
         class_identities,
         project_callables,
         identities_by_path,
+        class_member_bindings,
     ) = _definition_catalog(parsed_modules, modules_by_path)
     tainted_functions: set[str] = set()
     request_functions: set[str] = set()
     safe_functions: set[str] = set()
-    callable_returns: dict[str, str] = {}
+    callable_returns: dict[str, set[str]] = {}
     callable_parameter_sinks: dict[str, dict[str, set[str]]] = {}
     callable_parameters: dict[str, tuple[str, ...]] = {}
     callable_defaults: dict[str, dict[str, str]] = {}
+    callable_variadics: dict[str, tuple[str | None, str | None]] = {}
     function_count = sum(
         isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
         for parsed in parsed_modules.values()
@@ -1554,7 +2005,10 @@ def python_project_findings(contents: dict[str, str]) -> dict[str, set[str]]:
         discovered_tainted = set(tainted_functions)
         discovered_request = set(request_functions)
         discovered_safe = set(safe_functions)
-        discovered_callable_returns = dict(callable_returns)
+        discovered_callable_returns = {
+            identity: set(returns)
+            for identity, returns in callable_returns.items()
+        }
         discovered_parameter_sinks = {
             identity: {name: set(kinds) for name, kinds in parameters.items()}
             for identity, parameters in callable_parameter_sinks.items()
@@ -1564,6 +2018,7 @@ def python_project_findings(contents: dict[str, str]) -> dict[str, set[str]]:
             identity: dict(defaults)
             for identity, defaults in callable_defaults.items()
         }
+        discovered_variadics = dict(callable_variadics)
         iteration_findings = {relative_path: set() for relative_path in contents}
         for relative_path, parsed in parsed_modules.items():
             module_name = modules_by_path[relative_path]
@@ -1584,19 +2039,23 @@ def python_project_findings(contents: dict[str, str]) -> dict[str, set[str]]:
                 callable_parameter_sinks=callable_parameter_sinks,
                 callable_parameters=callable_parameters,
                 callable_defaults=callable_defaults,
+                callable_variadics=callable_variadics,
+                class_member_bindings=class_member_bindings,
             )
             visitor.visit(parsed)
             iteration_findings[relative_path].update(visitor.findings)
             discovered_tainted.update(visitor.tainted_functions)
             discovered_request.update(visitor.request_functions)
             discovered_safe.update(visitor.safe_functions)
-            discovered_callable_returns.update(visitor.callable_returns)
+            for identity, returns in visitor.callable_returns.items():
+                discovered_callable_returns.setdefault(identity, set()).update(returns)
             for identity, parameters in visitor.callable_parameter_sinks.items():
                 target_parameters = discovered_parameter_sinks.setdefault(identity, {})
                 for name, kinds in parameters.items():
                     target_parameters.setdefault(name, set()).update(kinds)
             discovered_parameters.update(visitor.callable_parameters)
             discovered_defaults.update(visitor.callable_defaults)
+            discovered_variadics.update(visitor.callable_variadics)
             project_callables.update(visitor._project_callables)
         if (
             discovered_tainted == tainted_functions
@@ -1606,6 +2065,7 @@ def python_project_findings(contents: dict[str, str]) -> dict[str, set[str]]:
             and discovered_parameter_sinks == callable_parameter_sinks
             and discovered_parameters == callable_parameters
             and discovered_defaults == callable_defaults
+            and discovered_variadics == callable_variadics
         ):
             for relative_path, rules in iteration_findings.items():
                 findings[relative_path].update(rules)
@@ -1617,6 +2077,7 @@ def python_project_findings(contents: dict[str, str]) -> dict[str, set[str]]:
         callable_parameter_sinks = discovered_parameter_sinks
         callable_parameters = discovered_parameters
         callable_defaults = discovered_defaults
+        callable_variadics = discovered_variadics
     else:
         for relative_path, rules in iteration_findings.items():
             findings[relative_path].update(rules)
@@ -1678,6 +2139,10 @@ def main() -> int:
         ) and relative_path.endswith(".py"):
             production_contents[relative_path] = content
         for rule_name, pattern, applies in RULES:
+            if rule_name == "request-content-log" and relative_path.endswith(".py"):
+                # The Python analyzer distinguishes executed content from deferred
+                # lambda and generator bodies; the line regex cannot do so safely.
+                continue
             if applies(relative_path) and pattern.search(content):
                 findings.append((relative_path, rule_name))
 
