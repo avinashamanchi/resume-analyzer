@@ -510,6 +510,7 @@ describe('Results accessibility gates', () => {
       fireEvent.press(view.getByRole('button', { name: 'Delete saved report' }));
     });
     await waitFor(() => view.getByRole('button', { name: 'Confirm delete report' }));
+    expect(view.getByText(/Restoring an existing backup may restore reports deleted from the active app/i)).toBeTruthy();
     const confirmDelete = pressHandler(view, 'Confirm delete report');
     announce.mockClear();
 

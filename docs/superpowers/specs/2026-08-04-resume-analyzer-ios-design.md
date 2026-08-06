@@ -36,8 +36,8 @@ compatibility with every ATS.
 - Deterministic, versioned resume-readiness checks.
 - Bounded AI feedback: strengths, improvements, keyword gaps, rewritten
   bullets, summary, and recruiter-style commentary.
-- App-local result history, which may participate in encrypted iOS backups, without retaining raw PDFs, extracted resume text,
-  filenames, or job descriptions.
+- App-local result history without retaining raw PDFs, extracted resume text,
+  filenames, or job descriptions. Saved reports may be included in iPhone or iPad backups stored in iCloud or on a Mac or PC. iCloud backups are always encrypted, but iCloud Backup is end-to-end encrypted only when Advanced Data Protection is enabled. Computer backups are not encrypted by default; encryption depends on the user enabling Encrypt local backup. Restoring an existing backup may restore reports deleted from the active app.
 - Delete one result or all local history.
 - Explicit PDF report export and iOS share sheet.
 - Offline access to previously saved reports and pasted-draft preservation.

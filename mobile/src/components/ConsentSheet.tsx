@@ -54,7 +54,7 @@ export function ConsentSheet({
                 If cleanup cannot be verified, Resume.AI does not show the analysis as successful and blocks future analysis until cleanup succeeds. Cleanup cannot undo processing already completed by the Resume.AI server or Groq.
               </Text>
               <Text style={uiStyles.muted}>
-                Reports use Resume.AI’s local SQLite store only when you choose Save locally. Depending on your settings, encrypted device or iCloud backups may include them.
+                Reports use Resume.AI’s local SQLite store only when you choose Save locally. Saved reports may be included in iPhone or iPad backups stored in iCloud or on a Mac or PC. iCloud backups are always encrypted, but iCloud Backup is end-to-end encrypted only when Advanced Data Protection is enabled. Computer backups are not encrypted by default; encryption depends on the user enabling Encrypt local backup. Restoring an existing backup may restore reports deleted from the active app.
               </Text>
             </ScrollView>
             <View testID="consent-actions" style={styles.actions}>

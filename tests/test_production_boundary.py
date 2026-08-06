@@ -442,6 +442,40 @@ def test_secret_scanner_rejects_ambiguous_multiple_gunicorn_commands(
     assert "unsafe-gunicorn-access-log" in result.stderr
 
 
+@pytest.mark.parametrize(
+    "second_command",
+    (
+        "/venv/bin/gunicorn app:second",
+        "uv run gunicorn app:second",
+    ),
+)
+def test_secret_scanner_counts_wrapped_or_path_gunicorn_invocations(
+    tmp_path: Path,
+    second_command: str,
+):
+    safe_flags = (
+        "--access-logfile /dev/null --error-logfile - --log-level warning "
+        "--logger-class server.gunicorn_logger.ContentFreeGunicornLogger"
+    )
+    repository = _tracked_repo(
+        tmp_path,
+        {
+            "render.yaml": (
+                "services:\n"
+                "  - type: web\n"
+                f"    startCommand: gunicorn app:first {safe_flags}\n"
+                "  - type: web\n"
+                f"    startCommand: {second_command}\n"
+            )
+        },
+    )
+
+    result = _scanner(repository)
+
+    assert result.returncode == 1
+    assert "unsafe-gunicorn-access-log" in result.stderr
+
+
 def test_secret_scanner_rejects_two_invocations_in_one_command_scalar(
     tmp_path: Path,
 ):
@@ -488,7 +522,44 @@ def test_secret_scanner_accepts_one_folded_content_free_gunicorn_command(
     assert result.returncode == 0, result.stderr
 
 
-def test_secret_scanner_rejects_literal_gunicorn_command_blocks(tmp_path: Path):
+def test_secret_scanner_accepts_a_continued_plain_render_command(tmp_path: Path):
+    repository = _tracked_repo(
+        tmp_path,
+        {
+            "render.yaml": (
+                "services:\n"
+                "  - type: web\n"
+                "    startCommand: gunicorn 'server.app:create_app()' --workers 2\n"
+                "      --access-logfile /dev/null --error-logfile - --log-level warning\n"
+                "      --logger-class server.gunicorn_logger.ContentFreeGunicornLogger\n"
+            )
+        },
+    )
+
+    result = _scanner(repository)
+
+    assert result.returncode == 0, result.stderr
+
+
+def test_secret_scanner_accepts_one_safe_literal_block_command(tmp_path: Path):
+    repository = _tracked_repo(
+        tmp_path,
+        {
+            "render.yaml": (
+                "services:\n"
+                "  - type: web\n"
+                "    startCommand: |-\n"
+                "      gunicorn 'server.app:create_app()' --workers 2 --access-logfile /dev/null --error-logfile - --log-level warning --logger-class server.gunicorn_logger.ContentFreeGunicornLogger\n"
+            )
+        },
+    )
+
+    result = _scanner(repository)
+
+    assert result.returncode == 0, result.stderr
+
+
+def test_secret_scanner_rejects_unsafe_literal_gunicorn_command_blocks(tmp_path: Path):
     repository = _tracked_repo(
         tmp_path,
         {
@@ -507,6 +578,80 @@ def test_secret_scanner_rejects_literal_gunicorn_command_blocks(tmp_path: Path):
 
     assert result.returncode == 1
     assert "unsafe-gunicorn-access-log" in result.stderr
+
+
+def test_secret_scanner_rejects_second_gunicorn_on_plain_scalar_continuation(
+    tmp_path: Path,
+):
+    safe_flags = (
+        "--access-logfile /dev/null --error-logfile - --log-level warning "
+        "--logger-class server.gunicorn_logger.ContentFreeGunicornLogger"
+    )
+    repository = _tracked_repo(
+        tmp_path,
+        {
+            "render.yaml": (
+                "services:\n"
+                "  - type: web\n"
+                f"    startCommand: gunicorn app:first {safe_flags}\n"
+                "      && gunicorn app:second\n"
+            )
+        },
+    )
+
+    result = _scanner(repository)
+
+    assert result.returncode == 1
+    assert "unsafe-gunicorn-access-log" in result.stderr
+
+
+def test_secret_scanner_ignores_gunicorn_decoys_outside_start_command(
+    tmp_path: Path,
+):
+    safe_flags = (
+        "--access-logfile /dev/null --error-logfile - --log-level warning "
+        "--logger-class server.gunicorn_logger.ContentFreeGunicornLogger"
+    )
+    repository = _tracked_repo(
+        tmp_path,
+        {
+            "render.yaml": (
+                "services:\n"
+                "  - type: web\n"
+                f"    startCommand: gunicorn app:first {safe_flags}\n"
+                "    envVars:\n"
+                "      - key: DECOY_COMMAND\n"
+                "        value: gunicorn app:unsafe --access-logfile -\n"
+            )
+        },
+    )
+
+    result = _scanner(repository)
+
+    assert result.returncode == 0, result.stderr
+
+
+def test_secret_scanner_fails_closed_on_invalid_render_yaml_without_echoing(
+    tmp_path: Path,
+):
+    canary = "private-yaml-parser-canary"
+    repository = _tracked_repo(
+        tmp_path,
+        {
+            "render.yaml": (
+                "services:\n"
+                "  - type: web\n"
+                "    startCommand: [gunicorn app:app\n"
+                f"    privateValue: {canary}\n"
+            )
+        },
+    )
+
+    result = _scanner(repository)
+
+    assert result.returncode == 1
+    assert "render-yaml-parse-failed" in result.stderr
+    assert canary not in result.stdout + result.stderr
 
 
 def test_retention_verifier_allows_request_local_sensitive_parsing(tmp_path: Path):
@@ -640,6 +785,30 @@ def test_retention_verifier_rejects_durable_content_and_body_logging_without_ech
             "server/store.py",
             "from flask import request as incoming\nbody = incoming.get_json()\nlogger.info(body)",
         ),
+        (
+            "server/store.py",
+            "import flask as f\nvalue = f.request.get_json()\nlogger.info(value)",
+        ),
+        (
+            "server/store.py",
+            "import flask as f\nincoming = f.request\nvalue = incoming.get_json()\nlogger.info(value)",
+        ),
+        (
+            "server/store.py",
+            "class Holder:\n    pass\nholder = Holder()\nholder.value = request.get_json()\nlogger.info(holder.value)",
+        ),
+        (
+            "server/store.py",
+            "bucket = {}\nbucket['entry'] = request.data\nlogger.info(bucket['entry'])",
+        ),
+        (
+            "server/store.py",
+            "def read_request():\n    return request.get_json()\nvalue = read_request()\nlogger.info(value)",
+        ),
+        (
+            "app.py",
+            "import flask as f\ndef read_request():\n    return f.request.get_json()\ndef retain():\n    value = read_request()\n    def emit():\n        logger.info(value)\n    emit()",
+        ),
     ],
 )
 def test_retention_verifier_tracks_multiline_aliases_into_prohibited_sinks(
@@ -676,16 +845,45 @@ def test_release_docs_and_ci_cover_required_unverified_boundaries():
         "no hiring guarantee",
         "not professional, legal, or employment advice",
         "https://github.com/avinashamanchi/resume-analyzer/issues",
-        "encrypted device or iCloud backups",
+        "iPhone or iPad backups",
+        "stored in iCloud or on a Mac or PC",
+        "iCloud backups are always encrypted",
+        "Computer backups are not encrypted by default",
+        "Encrypt local backup",
+        "Restoring an existing backup may restore reports deleted from the active app",
         "backup and restore behavior is UNVERIFIED",
     ):
         assert disclosure in combined
 
+    backup_disclosure_paths = (
+        *required_docs,
+        ROOT / "static" / "index.html",
+        ROOT / "static" / "privacy.html",
+        ROOT / "static" / "support.html",
+        ROOT / "docs" / "superpowers" / "specs" / "2026-08-04-resume-analyzer-ios-design.md",
+    )
+    for path in backup_disclosure_paths:
+        disclosure = path.read_text()
+        for required_phrase in (
+            "iPhone or iPad backups",
+            "iCloud",
+            "Mac or PC",
+            "not encrypted by default",
+            "Encrypt local backup",
+            "Restoring an existing backup may restore reports deleted from the active app",
+        ):
+            assert required_phrase in disclosure, path
+
     release_plan = (
         ROOT / "docs" / "superpowers" / "plans" / "2026-08-04-resume-analyzer-ios.md"
     ).read_text()
-    assert "encrypted device and iCloud backup/restore" in release_plan
-    assert "deletion behavior across existing backups" in release_plan
+    for task_17_observation in (
+        "unencrypted computer backup/restore",
+        "encrypted computer backup/restore",
+        "iCloud backup/restore",
+        "deletion and restoration behavior from existing backups",
+    ):
+        assert task_17_observation in release_plan
 
     workflow = (ROOT / ".github" / "workflows" / "verify.yml").read_text()
     for command in (

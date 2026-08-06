@@ -16,7 +16,7 @@ export default function PrivacyScreen() {
       <Card>
         <Text style={uiStyles.sectionTitle}>What stays local</Text>
         <Text style={uiStyles.body}>Reports use Resume.AI’s local SQLite store only when you choose Save locally. Saved reports contain scores and feedback—not the source resume, filename, job description, or request identifiers.</Text>
-        <Text style={uiStyles.body}>Depending on your iOS and backup settings, iOS may include saved reports in encrypted device or iCloud backups. Deleting active app data does not guarantee removal from an existing backup.</Text>
+        <Text style={uiStyles.body}>Saved reports may be included in iPhone or iPad backups stored in iCloud or on a Mac or PC. iCloud backups are always encrypted, but iCloud Backup is end-to-end encrypted only when Advanced Data Protection is enabled. Computer backups are not encrypted by default; encryption depends on the user enabling Encrypt local backup. Restoring an existing backup may restore reports deleted from the active app.</Text>
         <Text style={uiStyles.body}>Vision OCR stays on this iPhone until you review the text and consent. The app server keeps no report or content history.</Text>
       </Card>
       <Card>

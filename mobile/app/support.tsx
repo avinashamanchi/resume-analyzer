@@ -32,6 +32,10 @@ export default function SupportScreen() {
         <Text style={uiStyles.sectionTitle}>Feedback limits</Text>
         <Text style={uiStyles.muted}>Resume.AI provides deterministic readiness feedback and AI coaching. It is not an exact ATS or employment prediction, offers no hiring guarantee, and is not professional, legal, or employment advice.</Text>
       </Card>
+      <Card>
+        <Text style={uiStyles.sectionTitle}>Saved-report backups</Text>
+        <Text style={uiStyles.muted}>Saved reports may be included in iPhone or iPad backups stored in iCloud or on a Mac or PC. iCloud backups are always encrypted, but iCloud Backup is end-to-end encrypted only when Advanced Data Protection is enabled. Computer backups are not encrypted by default; encryption depends on the user enabling Encrypt local backup. Restoring an existing backup may restore reports deleted from the active app.</Text>
+      </Card>
       {error ? <Text accessibilityRole="alert" style={uiStyles.muted}>Public support could not be opened.</Text> : null}
     </Screen>
   );

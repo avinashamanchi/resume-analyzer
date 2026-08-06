@@ -129,6 +129,8 @@ describe('native Analyze and Results flows', () => {
     expect(view.getByText(/The selected PDF is uploaded and processed before temporary cleanup runs/i)).toBeTruthy();
     expect(view.getByText(/does not show the analysis as successful and blocks future analysis/i)).toBeTruthy();
     expect(view.getByText(/Cleanup cannot undo processing already completed by the Resume\.AI server or Groq/i)).toBeTruthy();
+    expect(view.getByText(/Computer backups are not encrypted by default.*Encrypt local backup/i)).toBeTruthy();
+    expect(view.getByText(/Restoring an existing backup may restore reports deleted from the active app/i)).toBeTruthy();
     expect(view.queryByText(/cleanup.*blocks processing if it cannot complete/i)).toBeNull();
     expect(view.queryByText(/writing power bullets|optimizing|percent/i)).toBeNull();
   });

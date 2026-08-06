@@ -2,13 +2,13 @@
 
 Last reviewed: August 6, 2026. This is a pre-release draft. The public service URL and live provider settings must be verified before release.
 
-Provider terms reviewed: [Groq Your Data](https://console.groq.com/docs/your-data), [Render logging](https://render.com/docs/logging), and [Render privacy](https://render.com/privacy) with its [July 2026 policy update](https://render.com/privacy-update).
+Provider terms reviewed: [Groq Your Data](https://console.groq.com/docs/your-data), [Render logging](https://render.com/docs/logging), and [Render privacy](https://render.com/privacy) with its [July 2026 policy update](https://render.com/privacy-update). Backup statements were checked against Apple's [backup-method comparison](https://support.apple.com/en-bh/108771), [encrypted computer-backup guidance](https://support.apple.com/en-ie/108353), and [iCloud data-security overview](https://support.apple.com/en-ie/102651).
 
 ## Data flow
 
 Selected standard PDFs are transiently sent to the Resume.AI server hosted on Render for text extraction. Raw PDF bytes are never sent to Groq. Reviewed, pasted, or extracted resume text and any optional job description are sent to Groq only after consent. On iOS, Vision OCR stays on-device until the user explicitly reviews the recognized text and consents to analysis.
 
-The app server keeps no report or content history. Browser report history is not kept. Optional iOS reports use the app's local SQLite store; saved reports contain feedback and scores, not the source resume, PDF, filename, job description, installation token, or request identifier. Depending on user and iOS settings, the local store may be included in encrypted device or iCloud backups. Users can delete records from the active local store in Settings, but that does not guarantee removal from an existing backup. Shipping-binary backup and restore behavior is UNVERIFIED and remains a Task 17 release gate.
+The app server keeps no report or content history. Browser report history is not kept. Optional iOS reports use the app's local SQLite store; saved reports contain feedback and scores, not the source resume, PDF, filename, job description, installation token, or request identifier. Saved reports may be included in iPhone or iPad backups stored in iCloud or on a Mac or PC. iCloud backups are always encrypted, but iCloud Backup is end-to-end encrypted only when Advanced Data Protection is enabled. Computer backups are not encrypted by default; encryption depends on the user enabling Encrypt local backup. Users can delete records from the active local store in Settings. Restoring an existing backup may restore reports deleted from the active app. Shipping-binary backup and restore behavior is UNVERIFIED and remains a Task 17 release gate.
 
 Resume.AI uses an installation security identifier and a coarse pseudonymous rate-limit key to protect the service. They are not used for advertising, analytics, cross-app tracking, or user profiling. There are no ads or third-party analytics.
 

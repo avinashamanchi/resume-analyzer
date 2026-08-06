@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
-import { resolve, relative, sep } from 'node:path';
+import { dirname, resolve, relative, sep } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 function parseRepository(arguments_) {
   const index = arguments_.indexOf('--repo');
@@ -49,33 +50,37 @@ const productionRules = [
   ['request-body-log', /(?:log(?:ger|ging)?|print)\s*\.?(?:info|debug|warning|error)?\s*\([^\n]*request\.(?:get_json|data|form|files|body)/i],
 ];
 
-function renderStartCommands(content) {
-  const lines = content.split(/\r?\n/);
-  const commands = [];
-  for (let index = 0; index < lines.length; index += 1) {
-    const match = /^(\s*)startCommand:\s*(.*)$/.exec(lines[index]);
-    if (match === null) continue;
-    const fieldIndent = match[1].length;
-    const scalar = match[2].trim();
-    if (!/^[>|][+-]?$/.test(scalar)) {
-      commands.push(scalar);
-      continue;
-    }
-    const folded = [];
-    while (index + 1 < lines.length) {
-      const next = lines[index + 1];
-      if (!next.trim()) {
-        index += 1;
-        continue;
-      }
-      const indentation = /^\s*/.exec(next)?.[0].length ?? 0;
-      if (indentation <= fieldIndent) break;
-      folded.push(next.trim());
-      index += 1;
-    }
-    commands.push(folded.join(' '));
+const scannerRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+const commandParser = resolve(scannerRoot, 'scripts', 'parse_render_commands.py');
+const pythonExecutable = resolve(
+  scannerRoot,
+  '.venv',
+  process.platform === 'win32' ? 'Scripts/python.exe' : 'bin/python',
+);
+
+function parsedCommands(mode, content) {
+  const result = spawnSync(pythonExecutable, [commandParser, mode], {
+    cwd: scannerRoot,
+    encoding: 'utf8',
+    input: content,
+    maxBuffer: 1024 * 1024,
+    stdio: ['pipe', 'pipe', 'pipe'],
+  });
+  if (result.status !== 0 || result.error !== undefined) return null;
+  try {
+    const records = JSON.parse(result.stdout);
+    if (!Array.isArray(records)) return null;
+    if (records.some(record => (
+      typeof record !== 'object' ||
+      record === null ||
+      typeof record.hasInternalLineBreak !== 'boolean' ||
+      !Array.isArray(record.tokens) ||
+      record.tokens.some(token => typeof token !== 'string')
+    ))) return null;
+    return records;
+  } catch {
+    return null;
   }
-  return commands;
 }
 
 function procfileWebCommands(content) {
@@ -94,44 +99,64 @@ function procfileWebCommands(content) {
   return commands;
 }
 
-function hasUnsafeGunicornCommand(path, content) {
-  if (
-    path === 'render.yaml' &&
-    content.includes('gunicorn') &&
-    /^\s*startCommand:\s*\|[+-]?\s*$/m.test(content)
-  ) {
-    return true;
+function optionValues(tokens, option) {
+  const values = [];
+  for (let index = 0; index < tokens.length; index += 1) {
+    const token = tokens[index];
+    if (token === option) {
+      values.push(tokens[index + 1]);
+    } else if (token.startsWith(`${option}=`)) {
+      values.push(token.slice(option.length + 1));
+    }
   }
-  const extracted = path === 'Procfile'
-    ? procfileWebCommands(content)
-    : renderStartCommands(content);
-  const commands = extracted.filter(command => /(?:^|\s)gunicorn(?:\s|$)/.test(command));
-  const invocationCount = commands.reduce(
-    (count, command) => count + [...command.matchAll(/(?:^|\s)gunicorn(?:\s|$)/g)].length,
+  return values;
+}
+
+function isGunicornExecutable(token) {
+  const basename = token.replaceAll('\\', '/').split('/').at(-1);
+  return basename === 'gunicorn' || basename === 'gunicorn.exe';
+}
+
+function gunicornSafety(path, content) {
+  const records = path === 'render.yaml'
+    ? parsedCommands('render', content)
+    : parsedCommands('commands', JSON.stringify(procfileWebCommands(content)));
+  if (records === null) {
+    return { parseFailed: true, unsafe: true };
+  }
+  const gunicornRecords = records.filter(record => (
+    record.tokens.some(isGunicornExecutable)
+  ));
+  const invocationCount = gunicornRecords.reduce(
+    (count, record) => count + record.tokens.filter(isGunicornExecutable).length,
     0,
   );
-  if (content.includes('gunicorn') && invocationCount !== 1) return true;
-  return commands.some(command => {
-    const normalized = command.replace(/\s+/g, ' ').trim();
-    const accessLogValues = [
-      ...normalized.matchAll(/--access-logfile(?:=|\s+)(\S+)/g),
-    ].map(match => match[1]);
-    const loggerClassValues = [
-      ...normalized.matchAll(/--logger-class(?:=|\s+)(\S+)/g),
-    ].map(match => match[1]);
-    const logLevelValues = [
-      ...normalized.matchAll(/--log-level(?:=|\s+)(\S+)/g),
-    ].map(match => match[1]);
-    return (
+  if (invocationCount === 0) return { parseFailed: false, unsafe: false };
+  if (invocationCount !== 1) return { parseFailed: false, unsafe: true };
+  const command = gunicornRecords[0];
+  const accessLogValues = optionValues(command.tokens, '--access-logfile');
+  const loggerClassValues = optionValues(command.tokens, '--logger-class');
+  const logLevelValues = optionValues(command.tokens, '--log-level');
+  const hasShellControl = command.tokens.some(token => (
+    ['&&', '||', ';', '&', '|', '<', '>', '(', ')'].includes(token) ||
+    token.startsWith('#') ||
+    token.includes('`') ||
+    token.includes('$(')
+  ));
+  return {
+    parseFailed: false,
+    unsafe: (
+      command.hasInternalLineBreak ||
+      hasShellControl ||
       accessLogValues.length !== 1 ||
       accessLogValues[0] !== '/dev/null' ||
-      normalized.includes('--access-logformat') ||
+      command.tokens.some(token => token === '--access-logformat' || token.startsWith('--access-logformat=')) ||
       logLevelValues.length !== 1 ||
       logLevelValues[0] !== 'warning' ||
       loggerClassValues.length !== 1 ||
       loggerClassValues[0] !== 'server.gunicorn_logger.ContentFreeGunicornLogger'
-    );
-  });
+    ),
+  };
 }
 
 function violationsFor(path, content) {
@@ -156,7 +181,10 @@ function violationsFor(path, content) {
     violations.push('production-placeholder-secret');
   }
   if (path === 'Procfile' || path === 'render.yaml') {
-    if (hasUnsafeGunicornCommand(path, content)) {
+    const safety = gunicornSafety(path, content);
+    if (safety.parseFailed && path === 'render.yaml') {
+      violations.push('render-yaml-parse-failed');
+    } else if (safety.unsafe) {
       violations.push('unsafe-gunicorn-access-log');
     }
   }

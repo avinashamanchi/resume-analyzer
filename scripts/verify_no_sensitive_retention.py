@@ -132,26 +132,64 @@ def _assigned_names(node: ast.AST) -> set[str]:
         return {node.id}
     if isinstance(node, (ast.List, ast.Tuple)):
         return set().union(*(_assigned_names(element) for element in node.elts))
+    if isinstance(node, ast.Attribute):
+        return _assigned_names(node.value)
+    if isinstance(node, ast.Subscript):
+        return _assigned_names(node.value)
+    return set()
+
+
+def _assigned_paths(node: ast.AST) -> set[str]:
+    dotted = _dotted_name(node)
+    if dotted is not None:
+        return {dotted}
+    if isinstance(node, (ast.List, ast.Tuple)):
+        return set().union(*(_assigned_paths(element) for element in node.elts))
+    if isinstance(node, ast.Subscript):
+        return _assigned_paths(node.value)
     return set()
 
 
 class PythonRetentionVisitor(ast.NodeVisitor):
     """Conservatively follow request content into logs and durable sinks."""
 
-    def __init__(self) -> None:
+    def __init__(self, tainted_functions: set[str] | None = None) -> None:
         self.findings: set[str] = set()
         self._tainted_names: set[str] = set()
         self._sink_aliases: dict[str, str] = {}
         self._request_aliases: set[str] = {"request"}
+        self._flask_module_aliases: set[str] = {"flask"}
+        self.tainted_functions: set[str] = set(tainted_functions or ())
+        self._function_stack: list[str] = []
+
+    def _name_is_request_object(self, dotted: str | None) -> bool:
+        return dotted is not None and (
+            dotted in self._request_aliases
+            or any(
+                dotted == f"{module_alias}.request"
+                for module_alias in self._flask_module_aliases
+            )
+        )
 
     def _expression_is_request_object(self, node: ast.AST | None) -> bool:
         dotted = _dotted_name(node) if node is not None else None
-        return dotted in self._request_aliases
+        return self._name_is_request_object(dotted)
+
+    def _call_returns_tainted(self, node: ast.Call) -> bool:
+        dotted = _dotted_name(node.func)
+        if dotted is None:
+            return False
+        return (
+            dotted in self.tainted_functions
+            or dotted.rsplit(".", maxsplit=1)[-1] in self.tainted_functions
+        )
 
     def _expression_is_tainted(self, node: ast.AST | None) -> bool:
         if node is None:
             return False
         for child in ast.walk(node):
+            if isinstance(child, ast.Call) and self._call_returns_tainted(child):
+                return True
             if isinstance(child, ast.Name) and (
                 child.id in self._tainted_names
                 or SENSITIVE_NAME_PATTERN.search(child.id)
@@ -163,11 +201,15 @@ class PythonRetentionVisitor(ast.NodeVisitor):
             dotted = _dotted_name(child)
             if dotted is not None:
                 parts = dotted.split(".")
-                if (
-                    parts[0] in self._request_aliases
-                    and any(part in REQUEST_SOURCE_MEMBERS for part in parts[1:])
-                ):
-                    return True
+                for index in range(1, len(parts)):
+                    if (
+                        self._name_is_request_object(".".join(parts[:index]))
+                        and any(
+                            part in REQUEST_SOURCE_MEMBERS
+                            for part in parts[index:]
+                        )
+                    ):
+                        return True
         return False
 
     def _sink_kind(self, node: ast.AST) -> str | None:
@@ -187,6 +229,7 @@ class PythonRetentionVisitor(ast.NodeVisitor):
         previous_taint = self._tainted_names
         previous_aliases = self._sink_aliases
         previous_request_aliases = self._request_aliases
+        previous_flask_aliases = self._flask_module_aliases
         parameter_names = {
             argument.arg
             for argument in (
@@ -205,11 +248,15 @@ class PythonRetentionVisitor(ast.NodeVisitor):
         )
         self._sink_aliases = dict(previous_aliases)
         self._request_aliases = set(previous_request_aliases)
+        self._flask_module_aliases = set(previous_flask_aliases)
+        self._function_stack.append(node.name)
         for statement in node.body:
             self.visit(statement)
+        self._function_stack.pop()
         self._tainted_names = previous_taint
         self._sink_aliases = previous_aliases
         self._request_aliases = previous_request_aliases
+        self._flask_module_aliases = previous_flask_aliases
 
     def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
         self._visit_function_scope(node)
@@ -220,13 +267,14 @@ class PythonRetentionVisitor(ast.NodeVisitor):
     def visit_Assign(self, node: ast.Assign) -> None:
         self.visit(node.value)
         names = set().union(*(_assigned_names(target) for target in node.targets))
+        paths = set().union(*(_assigned_paths(target) for target in node.targets))
         if self._expression_is_tainted(node.value):
             self._tainted_names.update(names)
         if self._expression_is_request_object(node.value):
-            self._request_aliases.update(names)
+            self._request_aliases.update(paths)
         sink_kind = self._sink_kind(node.value)
         if sink_kind is not None:
-            self._sink_aliases.update({name: sink_kind for name in names})
+            self._sink_aliases.update({path: sink_kind for path in paths})
         if isinstance(node.value, ast.Call) and _dotted_name(node.value.func) == "open":
             if _open_call_writes(node.value):
                 self.findings.add("new-server-retention-store")
@@ -236,13 +284,14 @@ class PythonRetentionVisitor(ast.NodeVisitor):
             return
         self.visit(node.value)
         names = _assigned_names(node.target)
+        paths = _assigned_paths(node.target)
         if self._expression_is_tainted(node.value):
             self._tainted_names.update(names)
         if self._expression_is_request_object(node.value):
-            self._request_aliases.update(names)
+            self._request_aliases.update(paths)
         sink_kind = self._sink_kind(node.value)
         if sink_kind is not None:
-            self._sink_aliases.update({name: sink_kind for name in names})
+            self._sink_aliases.update({path: sink_kind for path in paths})
         if isinstance(node.value, ast.Call) and _dotted_name(node.value.func) == "open":
             if _open_call_writes(node.value):
                 self.findings.add("new-server-retention-store")
@@ -252,7 +301,20 @@ class PythonRetentionVisitor(ast.NodeVisitor):
         if self._expression_is_tainted(node.value):
             self._tainted_names.update(_assigned_names(node.target))
         if self._expression_is_request_object(node.value):
-            self._request_aliases.update(_assigned_names(node.target))
+            self._request_aliases.update(_assigned_paths(node.target))
+
+    def visit_Return(self, node: ast.Return) -> None:
+        if self._function_stack and self._expression_is_tainted(node.value):
+            self.tainted_functions.add(self._function_stack[-1])
+        if node.value is not None:
+            self.visit(node.value)
+
+    def visit_Import(self, node: ast.Import) -> None:
+        self._flask_module_aliases.update(
+            alias.asname or alias.name
+            for alias in node.names
+            if alias.name == "flask"
+        )
 
     def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
         if node.module == "flask":
@@ -307,9 +369,20 @@ def python_findings(content: str) -> set[str]:
         parsed = ast.parse(content)
     except (SyntaxError, ValueError):
         return {"unparseable-production-python"}
-    visitor = PythonRetentionVisitor()
-    visitor.visit(parsed)
-    return visitor.findings
+    tainted_functions: set[str] = set()
+    findings: set[str] = set()
+    function_count = sum(
+        isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        for node in ast.walk(parsed)
+    )
+    for _ in range(function_count + 1):
+        visitor = PythonRetentionVisitor(tainted_functions)
+        visitor.visit(parsed)
+        findings.update(visitor.findings)
+        if visitor.tainted_functions <= tainted_functions:
+            break
+        tainted_functions.update(visitor.tainted_functions)
+    return findings
 
 
 def tracked_files(root: Path) -> list[str]:

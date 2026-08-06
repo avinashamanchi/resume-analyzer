@@ -64,7 +64,7 @@ export default function SettingsScreen() {
       <Card>
         <Text style={uiStyles.sectionTitle}>How data moves</Text>
         <Text style={uiStyles.body}>Reports are optional and use Resume.AI’s app-local report store. Resume and job input is transient.</Text>
-        <Text style={uiStyles.muted}>Depending on your iOS and backup settings, encrypted device or iCloud backups may include saved reports. Deleting active app data does not guarantee removal from an existing backup.</Text>
+        <Text style={uiStyles.muted}>Saved reports may be included in iPhone or iPad backups stored in iCloud or on a Mac or PC. iCloud backups are always encrypted, but iCloud Backup is end-to-end encrypted only when Advanced Data Protection is enabled. Computer backups are not encrypted by default; encryption depends on the user enabling Encrypt local backup. Restoring an existing backup may restore reports deleted from the active app.</Text>
         <Text style={uiStyles.muted}>After consent, Resume.AI’s server extracts supported PDFs and sends resume text and optional job-description text to Groq for feedback.</Text>
         <Text style={uiStyles.muted}>Groq retains usage metadata and may retain inference content for up to 30 days; this project’s Zero Data Retention setting is unverified. Render application logs are retained for 7, 14, or 30 days by plan, while app-controlled logs are content-free.</Text>
       </Card>
@@ -101,7 +101,7 @@ export default function SettingsScreen() {
       {confirmingDeleteAll ? (
         <Card style={styles.dangerCard}>
           <Text accessibilityRole="header" style={uiStyles.sectionTitle}>Delete every saved report?</Text>
-          <Text accessibilityRole="alert" style={uiStyles.muted}>This deletes all reports from the active local store and verifies abandoned temporary-file cleanup. It does not remove reports from an existing device or iCloud backup.</Text>
+          <Text accessibilityRole="alert" style={uiStyles.muted}>This deletes all reports from the active local store and verifies abandoned temporary-file cleanup. Restoring an existing backup may restore reports deleted from the active app.</Text>
           <AppButton label="Keep local reports" onPress={() => setConfirmingDeleteAll(false)} tone="quiet" />
           <AppButton label="Confirm delete all" onPress={() => { void deleteAll(); }} tone="danger" />
         </Card>

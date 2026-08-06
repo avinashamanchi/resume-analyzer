@@ -446,7 +446,7 @@ function ResultsScreenContent({
           testID="delete-result-modal">
           <Card style={styles.deleteCard}>
             <Text accessibilityRole="header" style={uiStyles.sectionTitle}>Delete this local report?</Text>
-            <Text style={uiStyles.muted}>This removes the active local record. An existing device or iCloud backup may still contain it.</Text>
+            <Text style={uiStyles.muted}>This removes the active local record. Restoring an existing backup may restore reports deleted from the active app.</Text>
             {deleteError !== null ? (
               <Text
                 ref={deleteErrorRef}
@@ -467,7 +467,7 @@ function ResultsScreenContent({
             <AppButton
               label={deleting ? 'Deleting local report…' : 'Confirm delete report'}
               accessibilityLabel="Confirm delete report"
-              accessibilityHint="Deletes this bounded report from active local history; an existing backup may still contain it."
+              accessibilityHint="Deletes this bounded report from active local history. Restoring an existing backup may restore it."
               onPress={() => { void deleteReport(); }}
               disabled={deleting}
               tone="danger"

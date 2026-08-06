@@ -2,7 +2,7 @@
 
 Last reviewed: August 6, 2026. Do not submit these answers until Task 17 verifies the shipping binary, production URL, provider configuration, and App Store Connect fields.
 
-Evidence reviewed: https://console.groq.com/docs/your-data, https://render.com/docs/logging, https://render.com/privacy, and https://render.com/privacy-update.
+Evidence reviewed: https://console.groq.com/docs/your-data, https://render.com/docs/logging, https://render.com/privacy, https://render.com/privacy-update, https://support.apple.com/en-bh/108771, https://support.apple.com/en-ie/108353, and https://support.apple.com/en-ie/102651.
 
 ## Data used for app functionality
 
@@ -10,7 +10,7 @@ Evidence reviewed: https://console.groq.com/docs/your-data, https://render.com/d
 - Identifiers: an installation security identifier and coarse pseudonymous rate-limit key protect the service. They are not linked to an account and are not used for advertising or tracking.
 - Diagnostics: app-controlled logs contain only an app request ID, coarse status class, coarse response-size bucket, and bounded latency. They contain no resume text, job text, PDF, filename, token, IP address, header, cookie, authorization value, or body.
 
-The app server keeps no report or content history. Browser history is not kept. Optional iOS reports use the app's local SQLite store and omit source content and identifiers. Depending on user and iOS settings, saved reports may be included in encrypted device or iCloud backups. Deleting active app data does not guarantee removal from an existing backup. Shipping-binary backup and restore behavior is UNVERIFIED and blocks final App Store answers until Task 17 observes it.
+The app server keeps no report or content history. Browser history is not kept. Optional iOS reports use the app's local SQLite store and omit source content and identifiers. Saved reports may be included in iPhone or iPad backups stored in iCloud or on a Mac or PC. iCloud backups are always encrypted, but iCloud Backup is end-to-end encrypted only when Advanced Data Protection is enabled. Computer backups are not encrypted by default; encryption depends on the user enabling Encrypt local backup. Restoring an existing backup may restore reports deleted from the active app. Shipping-binary backup and restore behavior is UNVERIFIED and blocks final App Store answers until Task 17 observes it.
 
 ## Third-party processing and retention
 

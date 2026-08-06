@@ -1464,7 +1464,7 @@ job description, consent, cancel, results, save/history, delete, export/share,
 offline history, 200% text, VoiceOver, Reduce Motion, and 320×568 scroll.
 Device checks add Vision OCR, SecureStore reinstall behavior, background/kill,
 network transitions, temp-file cleanup, icon, splash, native permissions,
-encrypted device and iCloud backup/restore behavior, and deletion behavior across existing backups.
+and explicit observation of unencrypted computer backup/restore, encrypted computer backup/restore, iCloud backup/restore, and deletion and restoration behavior from existing backups. The checklist must record whether saved reports enter iPhone or iPad backups stored in iCloud or on a Mac or PC. iCloud backups are always encrypted, but iCloud Backup is end-to-end encrypted only when Advanced Data Protection is enabled. Computer backups are not encrypted by default; encryption depends on the user enabling Encrypt local backup. Restoring an existing backup may restore reports deleted from the active app.
 
 - [ ] **Step 2: Start Expo Go on LAN and run only supported checks**
 
