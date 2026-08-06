@@ -80,12 +80,24 @@ function pressHandler(view: Awaited<ReturnType<typeof render>>, label: string): 
   if (typeof button.props.onClick !== 'function') {
     throw new Error(`Missing press handler for ${label}.`);
   }
-  return () => button.props.onClick({
+  const onClick = button.props.onClick;
+  return () => onClick({
     currentTarget: button,
     target: button,
     nativeEvent: {},
     stopPropagation: jest.fn(),
   });
+}
+
+function retainedPressHandler(view: Awaited<ReturnType<typeof render>>, label: string): () => void {
+  const button = view.getByRole('button', { name: label });
+  const responder = button.props.onStartShouldSetResponder;
+  const config = responder?.testOnly_pressabilityConfig?.();
+  const onPress = config?.onPress;
+  if (typeof onPress !== 'function') {
+    throw new Error(`Missing retained press handler for ${label}.`);
+  }
+  return () => onPress({});
 }
 
 describe('Results accessibility gates', () => {
@@ -209,6 +221,108 @@ describe('Results accessibility gates', () => {
     expect(app.actions.shareSummary).toHaveBeenCalledTimes(1);
     expect(pdf.value.export).not.toHaveBeenCalled();
     expect(pdf.value.share).not.toHaveBeenCalled();
+  });
+
+  it('rejects a retained report-A text handler invoked after routing to report B', async () => {
+    const app = context();
+    app.history.get.mockImplementation(async (analysisId: string) => (
+      analysisId === REPORT_A_ID ? report : reportB
+    ));
+    const pdf = exporter();
+    const view = await render(
+      <AppControllerProvider value={app}>
+        <ResultsScreen exporter={pdf.value} />
+      </AppControllerProvider>,
+    );
+    await waitFor(() => view.getByRole('button', { name: 'Share text summary' }));
+    const retainedTextShare = retainedPressHandler(view, 'Share text summary');
+
+    mockAnalysisId = REPORT_B_ID;
+    await view.rerender(
+      <AppControllerProvider value={app}>
+        <ResultsScreen exporter={pdf.value} />
+      </AppControllerProvider>,
+    );
+    await waitFor(() => expect(view.getByText('Second report summary.')).toBeTruthy());
+    await act(async () => {
+      retainedTextShare();
+      await Promise.resolve();
+    });
+
+    expect(app.actions.shareSummary).not.toHaveBeenCalled();
+  });
+
+  it('rejects a retained report-A PDF handler invoked after routing to report B', async () => {
+    const app = context();
+    app.history.get.mockImplementation(async (analysisId: string) => (
+      analysisId === REPORT_A_ID ? report : reportB
+    ));
+    const pdf = exporter();
+    const view = await render(
+      <AppControllerProvider value={app}>
+        <ResultsScreen exporter={pdf.value} />
+      </AppControllerProvider>,
+    );
+    await waitFor(() => view.getByRole('button', { name: 'Share report' }));
+    const retainedPdfShare = retainedPressHandler(view, 'Share report');
+
+    mockAnalysisId = REPORT_B_ID;
+    await view.rerender(
+      <AppControllerProvider value={app}>
+        <ResultsScreen exporter={pdf.value} />
+      </AppControllerProvider>,
+    );
+    await waitFor(() => expect(view.getByText('Second report summary.')).toBeTruthy());
+    await act(async () => {
+      retainedPdfShare();
+      await Promise.resolve();
+    });
+
+    expect(pdf.value.export).not.toHaveBeenCalled();
+    expect(pdf.value.share).not.toHaveBeenCalled();
+    expect(pdf.value.discard).not.toHaveBeenCalled();
+  });
+
+  it('rejects a retained text handler invoked after unmount', async () => {
+    const app = context();
+    const pdf = exporter();
+    const view = await render(
+      <AppControllerProvider value={app}>
+        <ResultsScreen exporter={pdf.value} />
+      </AppControllerProvider>,
+    );
+    await waitFor(() => view.getByRole('button', { name: 'Share text summary' }));
+    const retainedTextShare = retainedPressHandler(view, 'Share text summary');
+
+    await view.unmount();
+    await act(async () => {
+      retainedTextShare();
+      await Promise.resolve();
+    });
+
+    expect(app.actions.shareSummary).not.toHaveBeenCalled();
+  });
+
+  it('rejects a retained PDF handler invoked after unmount', async () => {
+    const app = context();
+    const pdf = exporter();
+    const view = await render(
+      <AppControllerProvider value={app}>
+        <ResultsScreen exporter={pdf.value} />
+      </AppControllerProvider>,
+    );
+    await waitFor(() => view.getByRole('button', { name: 'Share report' }));
+    const retainedPdfShare = retainedPressHandler(view, 'Share report');
+
+    await view.unmount();
+    await act(async () => {
+      retainedPdfShare();
+      await Promise.resolve();
+    });
+
+    expect(pdf.value.export).not.toHaveBeenCalled();
+    expect(pdf.value.share).not.toHaveBeenCalled();
+    expect(pdf.value.discard).not.toHaveBeenCalled();
   });
 
   it('hides the prior report and discards its late PDF when the route changes', async () => {

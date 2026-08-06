@@ -136,6 +136,39 @@ describe('native report exporter', () => {
     expect(html).not.toContain('assigns structure up to 30 points');
   });
 
+  it('renders only 30/40/30 component rows when no job description was scored', async () => {
+    const { exporter, print } = exporterHarness();
+    await exporter.export(fixtureReport({
+      score: {
+        ...validFixture.score,
+        readinessScore: 85,
+        components: { structure: 30, impact: 30, readability: 25, keywords: null },
+      } as ReportRecord['score'],
+    }));
+
+    const html = print.printToFileAsync.mock.calls[0][0].html;
+    expect(html).toContain('<th scope="row">Structure</th><td>30/30</td>');
+    expect(html).toContain('<th scope="row">Impact</th><td>30/40</td>');
+    expect(html).toContain('<th scope="row">Readability</th><td>25/30</td>');
+    expect(html).not.toContain('<th scope="row">Keywords</th>');
+    expect(html).not.toContain('<th scope="row">Impact</th><td>30/30</td>');
+    expect(html).not.toContain('<th scope="row">Readability</th><td>25/20</td>');
+  });
+
+  it('renders 25/30/20/25 component rows when a job description was scored', async () => {
+    const { exporter, print } = exporterHarness();
+    await exporter.export(fixtureReport());
+
+    const html = print.printToFileAsync.mock.calls[0][0].html;
+    expect(html).toContain('<th scope="row">Structure</th><td>25/25</td>');
+    expect(html).toContain('<th scope="row">Impact</th><td>25/30</td>');
+    expect(html).toContain('<th scope="row">Readability</th><td>20/20</td>');
+    expect(html).toContain('<th scope="row">Keywords</th><td>15/25</td>');
+    expect(html).not.toContain('<th scope="row">Structure</th><td>25/30</td>');
+    expect(html).not.toContain('<th scope="row">Impact</th><td>25/40</td>');
+    expect(html).not.toContain('<th scope="row">Readability</th><td>20/30</td>');
+  });
+
   it('opens sharing only from share and deletes after completion or cancellation', async () => {
     const { exporter, sharing, files } = exporterHarness();
     const receipt = await exporter.export(fixtureReport());

@@ -31,6 +31,14 @@ type LoadedReport = Readonly<{
 
 type ReceiptNotice = Readonly<{ sequence: number; routeEpoch: number; message: string }>;
 
+type ShareAuthority = Readonly<{
+  token: symbol;
+  kind: 'text' | 'pdf';
+  analysisId: string;
+  routeEpoch: number;
+  report: LoadedReport;
+}>;
+
 function analysisFromDisplay(value: DisplayReport): AnalysisResponse | null {
   const direct = AnalysisResponseSchema.safeParse(value);
   if (direct.success) return direct.data;
@@ -95,7 +103,10 @@ export function ResultsScreen({
     routeAuthority.current = { analysisId: id, epoch: routeAuthority.current.epoch + 1 };
   }
   const routeEpoch = routeAuthority.current.epoch;
-  const shareAuthority = useRef<symbol | null>(null);
+  const currentReport = loaded && loadedId === id ? loadedReport : null;
+  const currentReportRef = useRef<LoadedReport | null>(currentReport);
+  currentReportRef.current = currentReport;
+  const shareAuthority = useRef<ShareAuthority | null>(null);
   const headingRef = useRef<View | null>(null);
   const receiptRef = useRef<Text | null>(null);
   const deleteErrorRef = useRef<Text | null>(null);
@@ -110,22 +121,43 @@ export function ResultsScreen({
     setReceipt({ sequence: receiptSequence.current, routeEpoch, message });
   };
 
-  const routeIsCurrent = (analysisId: string | undefined, epoch: number): boolean => (
+  const routeIsCurrent = (authority: ShareAuthority): boolean => (
     mounted.current &&
-    routeAuthority.current.analysisId === analysisId &&
-    routeAuthority.current.epoch === epoch
+    routeAuthority.current.analysisId === authority.analysisId &&
+    routeAuthority.current.epoch === authority.routeEpoch &&
+    currentReportRef.current === authority.report
   );
 
-  const beginShare = (kind: 'text' | 'pdf'): symbol | null => {
-    if (shareAuthority.current !== null) return null;
-    const authority = Symbol('results-share');
+  const beginShare = (
+    kind: 'text' | 'pdf',
+    analysisId: string | undefined,
+    epoch: number,
+    report: LoadedReport,
+  ): ShareAuthority | null => {
+    if (
+      !mounted.current ||
+      typeof analysisId !== 'string' ||
+      routeAuthority.current.analysisId !== analysisId ||
+      routeAuthority.current.epoch !== epoch ||
+      currentReportRef.current !== report ||
+      report.result.analysisId !== analysisId ||
+      report.exportRecord.id !== analysisId ||
+      shareAuthority.current !== null
+    ) return null;
+    const authority = Object.freeze({
+      token: Symbol('results-share'),
+      kind,
+      analysisId,
+      routeEpoch: epoch,
+      report,
+    });
     shareAuthority.current = authority;
     setSharing(true);
     setPreparingPdf(kind === 'pdf');
     return authority;
   };
 
-  const finishShare = (authority: symbol): void => {
+  const finishShare = (authority: ShareAuthority): void => {
     if (shareAuthority.current !== authority) return;
     shareAuthority.current = null;
     if (mounted.current) {
@@ -179,7 +211,7 @@ export function ResultsScreen({
   if (!loaded || loadedId !== id) {
     return <Screen><Eyebrow>Resume.AI</Eyebrow><Title>Opening report…</Title></Screen>;
   }
-  if (loadedReport === null) {
+  if (currentReport === null) {
     return (
       <Screen>
         <Eyebrow>Local report</Eyebrow>
@@ -194,7 +226,7 @@ export function ResultsScreen({
     );
   }
 
-  const { result, exportRecord } = loadedReport;
+  const { result, exportRecord } = currentReport;
 
   const save = async () => {
     const savedReport = await history.saveCurrent();
@@ -206,38 +238,34 @@ export function ResultsScreen({
   };
 
   const shareText = async () => {
-    const authority = beginShare('text');
+    const authority = beginShare('text', id, routeEpoch, currentReport);
     if (authority === null) return;
-    const actionId = id;
-    const actionEpoch = routeEpoch;
     try {
       await actions.shareSummary(result);
-      if (routeIsCurrent(actionId, actionEpoch)) publishReceipt('Text share sheet closed.');
+      if (routeIsCurrent(authority)) publishReceipt('Text share sheet closed.');
     } catch {
-      if (routeIsCurrent(actionId, actionEpoch)) publishReceipt('The text summary was not shared.');
+      if (routeIsCurrent(authority)) publishReceipt('The text summary was not shared.');
     } finally {
       finishShare(authority);
     }
   };
 
   const sharePdf = async () => {
-    const authority = beginShare('pdf');
+    const authority = beginShare('pdf', id, routeEpoch, currentReport);
     if (authority === null) return;
-    const actionId = id;
-    const actionEpoch = routeEpoch;
     publishReceipt('Preparing a PDF report…');
     try {
       const exportReceipt = await exporter.export(exportRecord);
-      if (!routeIsCurrent(actionId, actionEpoch)) {
+      if (!routeIsCurrent(authority)) {
         await exporter.discard(exportReceipt);
         return;
       }
       await exporter.share(exportReceipt);
-      if (routeIsCurrent(actionId, actionEpoch)) {
+      if (routeIsCurrent(authority)) {
         publishReceipt('Share sheet closed. The temporary PDF was removed.');
       }
     } catch (error) {
-      if (!routeIsCurrent(actionId, actionEpoch)) return;
+      if (!routeIsCurrent(authority)) return;
       publishReceipt(
         error instanceof ReportExportError && error.code === 'cleanup_failed'
           ? 'The temporary PDF could not be verified as removed. Reopen this report to retry cleanup.'

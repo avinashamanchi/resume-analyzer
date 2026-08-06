@@ -21,6 +21,18 @@ function component(label: string, value: number | null, maximum: number): string
 
 export function buildReportHtml(report: ReportRecord): string {
   const hasKeywords = report.score.components.keywords !== null;
+  const componentRows = hasKeywords
+    ? [
+      component('Structure', report.score.components.structure, 25),
+      component('Impact', report.score.components.impact, 30),
+      component('Readability', report.score.components.readability, 20),
+      component('Keywords', report.score.components.keywords, 25),
+    ]
+    : [
+      component('Structure', report.score.components.structure, 30),
+      component('Impact', report.score.components.impact, 40),
+      component('Readability', report.score.components.readability, 30),
+    ];
   const methodology = hasKeywords
     ? `The deterministic ${escapeReportHtml(report.score.scoreVersion)} method assigns structure up to 25 points, impact up to 30 points, readability up to 20 points, and keyword alignment up to 25 points. These components total at most 100 points.`
     : `The deterministic ${escapeReportHtml(report.score.scoreVersion)} method assigns structure up to 30 points, impact up to 40 points, and readability up to 30 points. No job-description component is included in this score.`;
@@ -62,10 +74,7 @@ export function buildReportHtml(report: ReportRecord): string {
       <h2 id="score-heading">Resume readiness score</h2>
       <p><span class="score">${report.score.readinessScore}/100</span><span class="label">${escapeReportHtml(report.score.label)}</span></p>
       <table aria-label="Score components"><tbody>
-        ${component('Structure', report.score.components.structure, 30)}
-        ${component('Impact', report.score.components.impact, 40)}
-        ${component('Readability', report.score.components.readability, 30)}
-        ${component('Keywords', report.score.components.keywords, 25)}
+        ${componentRows.join('\n        ')}
       </tbody></table>
       ${list(report.score.explanations, 'No score explanations were returned.')}
     </section>
