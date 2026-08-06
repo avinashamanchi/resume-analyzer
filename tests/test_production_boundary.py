@@ -1252,6 +1252,170 @@ def test_retention_verifier_allows_local_stream_and_callable_aliases(
     assert content not in result.stdout + result.stderr
 
 
+@pytest.mark.parametrize(
+    ("relative_path", "content"),
+    [
+        (
+            "server/aliased_sys_module.py",
+            "import sys as runtime\n"
+            "runtime_alias = runtime\n"
+            "out = runtime_alias.stderr\n"
+            "forwarded = out\n"
+            "forwarded.write(request.data)",
+        ),
+        (
+            "server/aliased_io_module.py",
+            "import io as streams\n"
+            "stream_module = streams\n"
+            "open_file = stream_module.open\n"
+            "factory = open_file\n"
+            "factory('report.bin', 'wb').write(request.data)",
+        ),
+        (
+            "server/aliased_shelve_module.py",
+            "import shelve as storage\n"
+            "storage_module = storage\n"
+            "open_store = storage_module.open\n"
+            "factory = open_store\n"
+            "store = factory('reports')\n"
+            "store['body'] = request.get_json()",
+        ),
+        (
+            "server/builtins_open.py",
+            "import builtins\n"
+            "open_file = builtins.open\n"
+            "open_file('report.bin', 'wb').write(request.data)",
+        ),
+        (
+            "server/imported_builtin_open.py",
+            "from builtins import open as real_open\n"
+            "open_file = real_open\n"
+            "output = open_file('report.bin', 'wb')\n"
+            "output.write(request.data)",
+        ),
+    ],
+)
+def test_retention_verifier_rejects_module_and_builtin_factory_aliases(
+    tmp_path: Path,
+    relative_path: str,
+    content: str,
+):
+    repository = _tracked_repo(tmp_path, {relative_path: content + "\n"})
+
+    result = _retention_verifier(repository)
+
+    assert result.returncode == 1
+    assert "Sensitive-retention verification failed" in result.stderr
+    assert content not in result.stdout + result.stderr
+
+
+@pytest.mark.parametrize(
+    ("relative_path", "content"),
+    [
+        (
+            "server/local_module_like.py",
+            "import io\n"
+            "class Runtime:\n"
+            "    def __init__(self):\n"
+            "        self.stderr = io.BytesIO()\n"
+            "runtime = Runtime()\n"
+            "out = runtime.stderr\n"
+            "out.write(request.data)",
+        ),
+        (
+            "server/overwritten_module_alias.py",
+            "import io\n"
+            "import sys as runtime\n"
+            "class Runtime:\n"
+            "    def __init__(self):\n"
+            "        self.stderr = io.BytesIO()\n"
+            "runtime = Runtime()\n"
+            "runtime.stderr.write(request.data)",
+        ),
+        (
+            "server/local_open_function.py",
+            "import io\n"
+            "def open(*_args):\n"
+            "    return io.BytesIO()\n"
+            "output = open('report.bin', 'wb')\n"
+            "output.write(request.data)",
+        ),
+        (
+            "server/reassigned_open.py",
+            "import io\n"
+            "def memory_open(*_args):\n"
+            "    return io.BytesIO()\n"
+            "open = memory_open\n"
+            "output = open('report.bin', 'wb')\n"
+            "output.write(request.data)",
+        ),
+        (
+            "server/redefined_file_factory.py",
+            "import io\n"
+            "open_file = io.open\n"
+            "def open_file(*_args):\n"
+            "    return io.BytesIO()\n"
+            "output = open_file('report.bin', 'wb')\n"
+            "output.write(request.data)",
+        ),
+        (
+            "server/redefined_path_factory.py",
+            "from pathlib import Path\n"
+            "OutputPath = Path\n"
+            "class OutputPath:\n"
+            "    def __init__(self, _path):\n"
+            "        pass\n"
+            "    def write_bytes(self, value):\n"
+            "        return len(value)\n"
+            "OutputPath('report.bin').write_bytes(request.data)",
+        ),
+        (
+            "server/overwritten_durable_alias.py",
+            "import io\n"
+            "open_file = io.open\n"
+            "def memory_open(*_args):\n"
+            "    return io.BytesIO()\n"
+            "open_file = memory_open\n"
+            "output = open_file('report.bin', 'wb')\n"
+            "output.write(request.data)",
+        ),
+        (
+            "server/import_rebinds_factory.py",
+            "import io\n"
+            "open_file = io.open\n"
+            "from io import BytesIO as open_file\n"
+            "output = open_file()\n"
+            "output.write(request.data)",
+        ),
+        (
+            "server/parameter_shadows_open.py",
+            "def write_locally(open):\n"
+            "    output = open('report.bin', 'wb')\n"
+            "    output.write(request.data)",
+        ),
+        (
+            "server/import_shadows_module_alias.py",
+            "import io\n"
+            "import sys as runtime\n"
+            "from types import SimpleNamespace as runtime\n"
+            "runtime(stderr=io.BytesIO()).stderr.write(request.data)",
+        ),
+    ],
+)
+def test_retention_verifier_allows_shadowed_factories_and_module_like_objects(
+    tmp_path: Path,
+    relative_path: str,
+    content: str,
+):
+    repository = _tracked_repo(tmp_path, {relative_path: content + "\n"})
+
+    result = _retention_verifier(repository)
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "Sensitive-retention verification passed.\n"
+    assert content not in result.stdout + result.stderr
+
+
 def test_retention_verifier_accepts_current_server_patterns():
     result = _retention_verifier(ROOT)
 

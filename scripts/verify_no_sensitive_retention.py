@@ -138,15 +138,6 @@ LOCAL_RECEIVER_CONSTRUCTORS = frozenset(
         "set",
     }
 )
-FILE_OPEN_CALLS = frozenset({"io.open", "open"})
-NEW_STORE_CALLS = frozenset(
-    {
-        "create_engine",
-        "shelve.open",
-        "sqlalchemy.create_engine",
-        "sqlite3.connect",
-    }
-)
 SENSITIVE_NAME_PATTERN = re.compile(
     r"(?:resume_text|job_description|filename|pdf_base64)",
     re.IGNORECASE,
@@ -246,6 +237,8 @@ class PythonRetentionVisitor(ast.NodeVisitor):
         self._request_paths: set[AccessPath] = {("request",)}
         self._durable_receivers: dict[AccessPath, str] = {}
         self._callable_factories: dict[AccessPath, str] = {}
+        self._module_aliases: dict[AccessPath, str] = {}
+        self._bound_paths: set[AccessPath] = set()
         self._flask_module_aliases: set[str] = {"flask"}
         self._path_constructor_aliases: set[str] = {"Path"}
         self.tainted_functions: set[str] = set(tainted_functions or ())
@@ -373,10 +366,11 @@ class PythonRetentionVisitor(ast.NodeVisitor):
             return None
         if path in self._durable_receivers:
             return self._durable_receivers[path]
-        if path in {
-            ("sys", "attr:stderr"),
-            ("sys", "attr:stdout"),
-        }:
+        if (
+            len(path) >= 2
+            and self._module_aliases.get(path[:-1]) == "sys"
+            and path[-1] in {"attr:stderr", "attr:stdout"}
+        ):
             return "output"
         identifier = _path_identifier(path)
         if REDIS_RECEIVER_PATTERN.search(identifier):
@@ -389,16 +383,28 @@ class PythonRetentionVisitor(ast.NodeVisitor):
             return "shelve"
         return None
 
+    def _canonical_module_member(self, node: ast.AST) -> str | None:
+        path = _access_path(node)
+        if path is None or len(path) < 2 or not path[-1].startswith("attr:"):
+            return None
+        module = self._module_aliases.get(path[:-1])
+        if module is None:
+            return None
+        return f"{module}.{path[-1].removeprefix('attr:')}"
+
     def _callable_factory_kind(self, node: ast.AST | None) -> str | None:
         if node is None:
             return None
         path = _access_path(node)
         if path is not None and path in self._callable_factories:
             return self._callable_factories[path]
-        dotted = _dotted_name(node)
-        if dotted in FILE_OPEN_CALLS:
+        canonical_member = self._canonical_module_member(node)
+        dotted = canonical_member or _dotted_name(node)
+        if dotted == "open":
+            return "file" if path not in self._bound_paths else None
+        if canonical_member in {"builtins.open", "io.open"}:
             return "file"
-        if dotted == "shelve.open":
+        if canonical_member == "shelve.open":
             return "shelve"
         if dotted in {"sqlite3.connect", "create_engine", "sqlalchemy.create_engine"}:
             return "database"
@@ -437,22 +443,6 @@ class PythonRetentionVisitor(ast.NodeVisitor):
             return "file" if _open_call_writes(node) else None
         if factory_kind is not None:
             return factory_kind
-        dotted = _dotted_name(node.func)
-        if dotted in {"sqlite3.connect", "create_engine", "sqlalchemy.create_engine"}:
-            return "database"
-        if dotted == "shelve.open":
-            return "shelve"
-        if dotted in FILE_OPEN_CALLS and _open_call_writes(node):
-            return "file"
-        final_name = dotted.rsplit(".", maxsplit=1)[-1] if dotted else None
-        if final_name in LOCAL_RECEIVER_CONSTRUCTORS:
-            return "local"
-        if final_name in {"Redis", "StrictRedis"}:
-            return "redis"
-        if dotted is not None and dotted.rsplit(".", maxsplit=1)[-1] in (
-            self._path_constructor_aliases
-        ):
-            return "path"
         if isinstance(node.func, ast.Attribute):
             receiver_kind = self._expression_durable_kind(node.func.value)
             if receiver_kind == "redis" and node.func.attr in {"from_url", "pipeline"}:
@@ -481,12 +471,6 @@ class PythonRetentionVisitor(ast.NodeVisitor):
         if dotted == "print" or final_name in LOG_METHODS:
             return "request-content-log"
         if isinstance(node, ast.Attribute):
-            receiver_name = _dotted_name(node.value)
-            if (
-                node.attr in FILE_PERSISTENCE_METHODS
-                and receiver_name in {"sys.stderr", "sys.stdout"}
-            ):
-                return "request-content-log"
             receiver_kind = self._expression_durable_kind(node.value)
             methods_by_kind = {
                 "database": DATABASE_PERSISTENCE_METHODS,
@@ -531,7 +515,18 @@ class PythonRetentionVisitor(ast.NodeVisitor):
             for candidate, kind in self._callable_factories.items()
             if not _path_is_prefix(path, candidate)
         }
+        self._module_aliases = {
+            candidate: module
+            for candidate, module in self._module_aliases.items()
+            if not _path_is_prefix(path, candidate)
+        }
+        self._bound_paths = {
+            candidate
+            for candidate in self._bound_paths
+            if not _path_is_prefix(path, candidate)
+        }
         if len(path) == 1:
+            self._flask_module_aliases.discard(path[0])
             self._path_constructor_aliases.discard(path[0])
 
     def _copy_taint_paths(self, target: AccessPath, source: AccessPath) -> bool:
@@ -592,6 +587,8 @@ class PythonRetentionVisitor(ast.NodeVisitor):
         factory_kind = self._callable_factory_kind(value)
         if factory_kind is not None:
             self._callable_factories[target] = factory_kind
+        if source is not None and source in self._module_aliases:
+            self._module_aliases[target] = self._module_aliases[source]
         sink_kind = self._sink_kind(value)
         if sink_kind is not None:
             self._sink_aliases[target] = sink_kind
@@ -614,6 +611,19 @@ class PythonRetentionVisitor(ast.NodeVisitor):
         for path in _assigned_paths(target):
             self._clear_target(path)
             self._propagate_value(path, value)
+            self._bound_paths.add(path)
+
+    def _bind_local_callable(self, name: str) -> None:
+        path = (name,)
+        self._clear_target(path)
+        self._bound_paths.add(path)
+        self._callable_factories[path] = "local"
+
+    def _bind_import(self, name: str) -> AccessPath:
+        path = (name,)
+        self._clear_target(path)
+        self._bound_paths.add(path)
+        return path
 
     def _record_durable_subscript_assignment(
         self, target: ast.AST, value: ast.AST
@@ -631,6 +641,8 @@ class PythonRetentionVisitor(ast.NodeVisitor):
         previous_request_paths = self._request_paths
         previous_receivers = self._durable_receivers
         previous_factories = self._callable_factories
+        previous_modules = self._module_aliases
+        previous_bound_paths = self._bound_paths
         previous_flask_aliases = self._flask_module_aliases
         previous_path_aliases = self._path_constructor_aliases
         parameter_names = {
@@ -646,15 +658,23 @@ class PythonRetentionVisitor(ast.NodeVisitor):
         if node.args.kwarg is not None:
             parameter_names.add(node.args.kwarg.arg)
         self._tainted_paths = set(previous_taint)
-        self._tainted_paths.update(
-            (name,) for name in parameter_names if SENSITIVE_NAME_PATTERN.search(name)
-        )
         self._sink_aliases = dict(previous_aliases)
         self._request_paths = set(previous_request_paths)
         self._durable_receivers = dict(previous_receivers)
         self._callable_factories = dict(previous_factories)
+        self._module_aliases = dict(previous_modules)
+        self._bound_paths = set(previous_bound_paths)
         self._flask_module_aliases = set(previous_flask_aliases)
         self._path_constructor_aliases = set(previous_path_aliases)
+        for name in parameter_names:
+            path = (name,)
+            self._clear_target(path)
+            self._bound_paths.add(path)
+            if name == "request":
+                self._request_paths.add(path)
+        self._tainted_paths.update(
+            (name,) for name in parameter_names if SENSITIVE_NAME_PATTERN.search(name)
+        )
         self._function_stack.append(node.name)
         for statement in node.body:
             self.visit(statement)
@@ -664,14 +684,54 @@ class PythonRetentionVisitor(ast.NodeVisitor):
         self._request_paths = previous_request_paths
         self._durable_receivers = previous_receivers
         self._callable_factories = previous_factories
+        self._module_aliases = previous_modules
+        self._bound_paths = previous_bound_paths
         self._flask_module_aliases = previous_flask_aliases
         self._path_constructor_aliases = previous_path_aliases
 
     def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+        self._bind_local_callable(node.name)
         self._visit_function_scope(node)
 
     def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+        self._bind_local_callable(node.name)
         self._visit_function_scope(node)
+
+    def visit_ClassDef(self, node: ast.ClassDef) -> None:
+        for expression in (*node.decorator_list, *node.bases):
+            self.visit(expression)
+        for keyword in node.keywords:
+            self.visit(keyword.value)
+        self._bind_local_callable(node.name)
+        previous_taint = self._tainted_paths
+        previous_aliases = self._sink_aliases
+        previous_request_paths = self._request_paths
+        previous_receivers = self._durable_receivers
+        previous_factories = self._callable_factories
+        previous_modules = self._module_aliases
+        previous_bound_paths = self._bound_paths
+        previous_flask_aliases = self._flask_module_aliases
+        previous_path_aliases = self._path_constructor_aliases
+        self._tainted_paths = set(previous_taint)
+        self._sink_aliases = dict(previous_aliases)
+        self._request_paths = set(previous_request_paths)
+        self._durable_receivers = dict(previous_receivers)
+        self._callable_factories = dict(previous_factories)
+        self._module_aliases = dict(previous_modules)
+        self._bound_paths = set(previous_bound_paths)
+        self._flask_module_aliases = set(previous_flask_aliases)
+        self._path_constructor_aliases = set(previous_path_aliases)
+        for statement in node.body:
+            self.visit(statement)
+        self._tainted_paths = previous_taint
+        self._sink_aliases = previous_aliases
+        self._request_paths = previous_request_paths
+        self._durable_receivers = previous_receivers
+        self._callable_factories = previous_factories
+        self._module_aliases = previous_modules
+        self._bound_paths = previous_bound_paths
+        self._flask_module_aliases = previous_flask_aliases
+        self._path_constructor_aliases = previous_path_aliases
 
     def visit_Assign(self, node: ast.Assign) -> None:
         self.visit(node.value)
@@ -698,6 +758,7 @@ class PythonRetentionVisitor(ast.NodeVisitor):
             self._clear_target(path)
             if target_tainted or value_tainted:
                 self._tainted_paths.add(path)
+            self._bound_paths.add(path)
 
     def visit_Return(self, node: ast.Return) -> None:
         if self._function_stack and self._expression_is_tainted(node.value):
@@ -708,50 +769,32 @@ class PythonRetentionVisitor(ast.NodeVisitor):
             self.visit(node.value)
 
     def visit_Import(self, node: ast.Import) -> None:
-        self._flask_module_aliases.update(
-            alias.asname or alias.name
-            for alias in node.names
-            if alias.name == "flask"
-        )
+        tracked_modules = {"builtins", "io", "shelve", "sys"}
+        for alias in node.names:
+            target_name = alias.asname or alias.name.split(".", maxsplit=1)[0]
+            target = self._bind_import(target_name)
+            if alias.name in tracked_modules:
+                self._module_aliases[target] = alias.name
+            if alias.name == "flask":
+                self._flask_module_aliases.add(target_name)
 
     def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
-        if node.module == "flask":
-            self._request_paths.update(
-                ((alias.asname or alias.name),)
-                for alias in node.names
-                if alias.name == "request"
-            )
-        if node.module == "pathlib":
-            self._callable_factories.update(
-                {
-                    ((alias.asname or alias.name),): "path"
-                    for alias in node.names
-                    if alias.name == "Path"
-                }
-            )
-        if node.module == "sys":
-            self._durable_receivers.update(
-                {
-                    ((alias.asname or alias.name),): "output"
-                    for alias in node.names
-                    if alias.name in {"stderr", "stdout"}
-                }
-            )
-        if node.module == "shelve":
-            self._callable_factories.update(
-                {
-                    ((alias.asname or alias.name),): "shelve"
-                    for alias in node.names
-                    if alias.name == "open"
-                }
-            )
-        if node.module == "io":
-            for alias in node.names:
-                target = ((alias.asname or alias.name),)
-                if alias.name == "open":
-                    self._callable_factories[target] = "file"
-                elif alias.name in LOCAL_RECEIVER_CONSTRUCTORS:
-                    self._callable_factories[target] = "local"
+        for alias in node.names:
+            if alias.name == "*":
+                continue
+            target = self._bind_import(alias.asname or alias.name)
+            if node.module == "flask" and alias.name == "request":
+                self._request_paths.add(target)
+            elif node.module == "pathlib" and alias.name == "Path":
+                self._callable_factories[target] = "path"
+            elif node.module == "sys" and alias.name in {"stderr", "stdout"}:
+                self._durable_receivers[target] = "output"
+            elif node.module == "shelve" and alias.name == "open":
+                self._callable_factories[target] = "shelve"
+            elif node.module in {"builtins", "io"} and alias.name == "open":
+                self._callable_factories[target] = "file"
+            elif node.module == "io" and alias.name in LOCAL_RECEIVER_CONSTRUCTORS:
+                self._callable_factories[target] = "local"
 
     def _visit_with(self, node: ast.With | ast.AsyncWith) -> None:
         for item in node.items:
@@ -773,10 +816,7 @@ class PythonRetentionVisitor(ast.NodeVisitor):
                 self._clear_target(path)
 
     def visit_Call(self, node: ast.Call) -> None:
-        dotted = _dotted_name(node.func)
         factory_kind = self._callable_factory_kind(node.func)
-        if dotted in NEW_STORE_CALLS:
-            self.findings.add("new-server-retention-store")
         if factory_kind in {"database", "shelve"}:
             self.findings.add("new-server-retention-store")
         if factory_kind == "file" and _open_call_writes(node):
