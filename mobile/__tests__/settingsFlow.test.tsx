@@ -84,8 +84,9 @@ describe('native Settings, privacy, and support flows', () => {
     expect(privacy.getByText(/coarse pseudonymous rate-limit key/i)).toBeTruthy();
     await act(async () => { privacy.unmount(); });
     const support = await render(<AppControllerProvider value={context}><SupportScreen /></AppControllerProvider>);
+    expect(support.getByText('Self-help')).toBeTruthy();
     expect(support.getByText(/Interactive support is not yet available/i)).toBeTruthy();
-    expect(support.queryByText(/Open a repository issue|public issue tracker/i)).toBeNull();
+    expect(support.queryByText(/Public support|Open public support|Helpful details|Include the app version|Open a repository issue|public issue tracker/i)).toBeNull();
     expect(support.getByText(/not an exact ATS or employment prediction/i)).toBeTruthy();
     expect(support.getByText(/no hiring guarantee/i)).toBeTruthy();
     expect(support.getByText(/not professional, legal, or employment advice/i)).toBeTruthy();
@@ -94,7 +95,7 @@ describe('native Settings, privacy, and support flows', () => {
     expect(support.getByText(/Restoring an existing backup may restore reports deleted from the active app/i)).toBeTruthy();
     expect(support.getByText(/Generated feedback and bullet drafts may quote, transform, or restate names, contact information, resume content, or job-description content/i)).toBeTruthy();
     expect(support.getByText(/Review generated feedback before saving, sharing, or allowing it to enter device backups/i)).toBeTruthy();
-    await act(async () => { fireEvent.press(support.getByRole('button', { name: 'Open public support' })); });
+    await act(async () => { fireEvent.press(support.getByRole('button', { name: 'Open troubleshooting page' })); });
     expect(context.actions.openSupport).toHaveBeenCalledTimes(1);
   });
 });

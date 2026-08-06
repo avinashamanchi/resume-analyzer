@@ -41,6 +41,7 @@ def test_web_client_uses_first_party_versioned_contract_and_safe_dom_apis():
     assert "textContent" in script
     assert "simulatedRecruiterComment" in script
     assert "readinessScore" in script
+    assert "Contact support" not in script
 
 
 def web_settings() -> Settings:
@@ -121,3 +122,5 @@ def test_every_public_web_page_has_exact_privacy_boundaries(web_client):
     support = web_client.get("/static/support.html").get_data(as_text=True)
     assert 'href="https://resume-analyzer-al3g.onrender.com/static/support.html"' in support
     assert 'rel="noreferrer"' in support
+    for intake_phrase in ("Request help", "Share only", "Contact support"):
+        assert intake_phrase not in support

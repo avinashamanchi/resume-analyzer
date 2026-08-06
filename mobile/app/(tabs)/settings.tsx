@@ -80,7 +80,7 @@ export default function SettingsScreen() {
         <Text style={uiStyles.sectionTitle}>Read before relying</Text>
         <Text style={uiStyles.muted}>Resume.AI cannot reproduce every applicant tracking system, promise interviews, or determine whether an employer will select you. Verify every AI suggestion.</Text>
         <AppButton label="Read privacy details" onPress={() => router.push('/privacy')} tone="quiet" />
-        <AppButton label="Get support" onPress={() => router.push('/support')} tone="quiet" />
+        <AppButton label="Open troubleshooting" onPress={() => router.push('/support')} tone="quiet" />
       </Card>
       <Card style={styles.dangerCard}>
         <Text style={uiStyles.sectionTitle}>Delete all local reports</Text>

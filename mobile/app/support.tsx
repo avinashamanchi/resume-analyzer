@@ -17,16 +17,16 @@ export default function SupportScreen() {
   };
   return (
     <Screen>
-      <Eyebrow>Public support</Eyebrow>
+      <Eyebrow>Self-help</Eyebrow>
       <Title>Troubleshoot without sharing private data.</Title>
       <Card>
         <Text style={uiStyles.sectionTitle}>First-party support page</Text>
         <Text style={uiStyles.body}>Interactive support is not yet available. Open the first-party page for content-free troubleshooting. Never send or publish a resume, job description, token, request identifier, filename, contact detail, or other private data.</Text>
-        <AppButton label="Open public support" onPress={() => { void openSupport(); }} />
+        <AppButton label="Open troubleshooting page" onPress={() => { void openSupport(); }} />
       </Card>
       <Card>
-        <Text style={uiStyles.sectionTitle}>Helpful details</Text>
-        <Text style={uiStyles.muted}>Include the app version, iOS version, what you tapped, and the stable error category shown on screen. Never include resume content.</Text>
+        <Text style={uiStyles.sectionTitle}>Local diagnostic checklist</Text>
+        <Text style={uiStyles.muted}>Keep a local note of the app version, iOS version, what you tapped, and the stable error category shown on screen. There is no intake channel to send it to. Never record resume content.</Text>
       </Card>
       <Card>
         <Text style={uiStyles.sectionTitle}>Feedback limits</Text>
@@ -39,7 +39,7 @@ export default function SupportScreen() {
         <Text style={uiStyles.muted}>Review generated feedback before saving, sharing, or allowing it to enter device backups.</Text>
         <Text style={uiStyles.muted}>Saved reports may be included in iPhone or iPad backups stored in iCloud or on a Mac or PC. iCloud backups are always encrypted, but iCloud Backup is end-to-end encrypted only when Advanced Data Protection is enabled. Computer backups are not encrypted by default; encryption depends on the user enabling Encrypt local backup. Restoring an existing backup may restore reports deleted from the active app.</Text>
       </Card>
-      {error ? <Text accessibilityRole="alert" style={uiStyles.muted}>Public support could not be opened.</Text> : null}
+      {error ? <Text accessibilityRole="alert" style={uiStyles.muted}>The troubleshooting page could not be opened.</Text> : null}
     </Screen>
   );
 }

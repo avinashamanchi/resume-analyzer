@@ -1879,6 +1879,10 @@ def test_committed_whitespace_gate_checks_pull_request_and_push_ranges(
     (repository / "report.txt").write_text("clean\ntrailing-space \n")
     assert _run("git", "add", "report.txt", cwd=repository).returncode == 0
     assert _run("git", "commit", "-qm", "bad whitespace", cwd=repository).returncode == 0
+    bad_head = _run("git", "rev-parse", "HEAD", cwd=repository).stdout.strip()
+    (repository / "unrelated.txt").write_text("clean tip\n")
+    assert _run("git", "add", "unrelated.txt", cwd=repository).returncode == 0
+    assert _run("git", "commit", "-qm", "clean unrelated tip", cwd=repository).returncode == 0
     head = _run("git", "rev-parse", "HEAD", cwd=repository).stdout.strip()
     script = str(ROOT / "scripts" / "check_committed_whitespace.py")
 
@@ -1920,6 +1924,7 @@ def test_committed_whitespace_gate_checks_pull_request_and_push_ranges(
     assert push.returncode == 1
     assert first_push.returncode == 1
 
+    assert bad_head != head
     (repository / "report.txt").write_text("clean\nwithout trailing whitespace\n")
     assert _run("git", "add", "report.txt", cwd=repository).returncode == 0
     assert _run("git", "commit", "-qm", "fix whitespace", cwd=repository).returncode == 0

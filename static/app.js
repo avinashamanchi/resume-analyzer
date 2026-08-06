@@ -25,7 +25,7 @@ const errorMessages = {
   ai_timeout: "The coaching service did not finish in time. You may submit again when ready.",
   ai_unavailable: "The coaching service is unavailable right now. You may submit again later.",
   invalid_ai_response: "The coaching result could not be validated. You may submit again later.",
-  service_misconfigured: "This service is not ready. Contact support if this continues.",
+  service_misconfigured: "This service is not ready. Use the self-help page and try again later.",
   service_unavailable: "The service is unavailable. You may submit again later."
 };
 

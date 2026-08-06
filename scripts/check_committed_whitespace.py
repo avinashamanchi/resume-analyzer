@@ -13,6 +13,19 @@ def _git_diff_check(*arguments: str) -> int:
     return result.returncode
 
 
+def _empty_tree() -> str:
+    result = subprocess.run(
+        ["git", "hash-object", "-t", "tree", "--stdin"],
+        input="",
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0 or not result.stdout.strip():
+        raise RuntimeError("Git could not resolve the empty tree")
+    return result.stdout.strip()
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--event-name", choices=("pull_request", "push"), required=True)
@@ -31,10 +44,9 @@ def main() -> int:
         )
     elif arguments.before and set(arguments.before) == {"0"}:
         committed_status = _git_diff_check(
-            "show",
+            "diff",
             "--check",
-            "--format=",
-            arguments.head,
+            f"{_empty_tree()}..{arguments.head}",
         )
     else:
         if not arguments.before:
