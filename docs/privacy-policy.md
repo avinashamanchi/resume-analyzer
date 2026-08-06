@@ -24,4 +24,4 @@ Resume.AI combines deterministic resume-readiness feedback with AI coaching. It 
 
 ## Support
 
-Public support is available at https://github.com/avinashamanchi/resume-analyzer/issues. Never post resumes, job descriptions, tokens, request identifiers, or other private identifiers in a public issue.
+The release-candidate first-party support page is https://resume-analyzer-al3g.onrender.com/static/support.html. Interactive support is not yet available. Anonymous live reachability is **UNVERIFIED** until an authorized production deployment, and failure to verify it blocks submission. Never send or publish resumes, job descriptions, tokens, request identifiers, or other private identifiers.

@@ -18,10 +18,10 @@ export default function SupportScreen() {
   return (
     <Screen>
       <Eyebrow>Public support</Eyebrow>
-      <Title>Tell us what happened.</Title>
+      <Title>Troubleshoot without sharing private data.</Title>
       <Card>
-        <Text style={uiStyles.sectionTitle}>Open a repository issue</Text>
-        <Text style={uiStyles.body}>Use the public issue tracker for product questions and reproducible bugs. Never post resumes, job descriptions, tokens, or private identifiers.</Text>
+        <Text style={uiStyles.sectionTitle}>First-party support page</Text>
+        <Text style={uiStyles.body}>Interactive support is not yet available. Open the first-party page for content-free troubleshooting. Never send or publish a resume, job description, token, request identifier, filename, contact detail, or other private data.</Text>
         <AppButton label="Open public support" onPress={() => { void openSupport(); }} />
       </Card>
       <Card>

@@ -1646,7 +1646,7 @@ def test_release_docs_and_ci_cover_required_unverified_boundaries():
         "not an exact ATS",
         "no hiring guarantee",
         "not professional, legal, or employment advice",
-        "https://github.com/avinashamanchi/resume-analyzer/issues",
+        "https://resume-analyzer-al3g.onrender.com/static/support.html",
         "iPhone or iPad backups",
         "stored in iCloud or on a Mac or PC",
         "iCloud backups are always encrypted",
@@ -1657,6 +1657,10 @@ def test_release_docs_and_ci_cover_required_unverified_boundaries():
         "Raw/original PDF bytes, filenames, resume-input fields, job-description-input fields, installation tokens, and request identifiers are not stored in local reports",
         "Generated feedback and bullet drafts may quote, transform, or restate names, contact information, resume content, or job-description content",
         "Review generated feedback before saving, sharing, or allowing it to enter device backups",
+        "Interactive support is not yet available",
+        "release candidate",
+        "anonymous live reachability",
+        "blocks submission",
     ):
         assert disclosure in combined
 
@@ -1704,7 +1708,7 @@ def test_release_docs_and_ci_cover_required_unverified_boundaries():
         "expo-doctor@latest",
         "expo export --platform ios",
         "npm audit --audit-level=high",
-        "git diff --check",
+        "python scripts/check_committed_whitespace.py",
     ):
         assert command in workflow
     assert "permissions:\n  contents: read" in workflow
@@ -1714,3 +1718,90 @@ def test_release_docs_and_ci_cover_required_unverified_boundaries():
     assert "continue-on-error" not in workflow
     assert "enable-cache: false" in workflow
     assert "cache: npm" not in workflow
+    parsed_workflow = yaml.safe_load(workflow)
+    checkout = parsed_workflow["jobs"]["verify"]["steps"][0]
+    assert checkout["with"]["fetch-depth"] == 0
+    whitespace_step = next(
+        step
+        for step in parsed_workflow["jobs"]["verify"]["steps"]
+        if step.get("name") == "Check committed patch whitespace"
+    )
+    assert "github.event_name" in whitespace_step["run"]
+    assert "github.event.before" in whitespace_step["run"]
+    assert "github.event.pull_request.base.sha" in whitespace_step["run"]
+    assert "github.sha" in whitespace_step["run"]
+
+
+def test_committed_whitespace_gate_checks_pull_request_and_push_ranges(
+    tmp_path: Path,
+):
+    repository = tmp_path / "whitespace-fixture"
+    repository.mkdir()
+    assert _run("git", "init", "-q", cwd=repository).returncode == 0
+    assert _run("git", "config", "user.name", "Fixture", cwd=repository).returncode == 0
+    assert _run("git", "config", "user.email", "fixture@example.invalid", cwd=repository).returncode == 0
+    (repository / "report.txt").write_text("clean\n")
+    assert _run("git", "add", "report.txt", cwd=repository).returncode == 0
+    assert _run("git", "commit", "-qm", "base", cwd=repository).returncode == 0
+    base = _run("git", "rev-parse", "HEAD", cwd=repository).stdout.strip()
+    (repository / "report.txt").write_text("clean\ntrailing-space \n")
+    assert _run("git", "add", "report.txt", cwd=repository).returncode == 0
+    assert _run("git", "commit", "-qm", "bad whitespace", cwd=repository).returncode == 0
+    head = _run("git", "rev-parse", "HEAD", cwd=repository).stdout.strip()
+    script = str(ROOT / "scripts" / "check_committed_whitespace.py")
+
+    pull_request = _run(
+        sys.executable,
+        script,
+        "--event-name",
+        "pull_request",
+        "--base",
+        base,
+        "--head",
+        head,
+        cwd=repository,
+    )
+    push = _run(
+        sys.executable,
+        script,
+        "--event-name",
+        "push",
+        "--before",
+        base,
+        "--head",
+        head,
+        cwd=repository,
+    )
+    first_push = _run(
+        sys.executable,
+        script,
+        "--event-name",
+        "push",
+        "--before",
+        "0" * 40,
+        "--head",
+        head,
+        cwd=repository,
+    )
+
+    assert pull_request.returncode == 1
+    assert push.returncode == 1
+    assert first_push.returncode == 1
+
+    (repository / "report.txt").write_text("clean\nwithout trailing whitespace\n")
+    assert _run("git", "add", "report.txt", cwd=repository).returncode == 0
+    assert _run("git", "commit", "-qm", "fix whitespace", cwd=repository).returncode == 0
+    fixed = _run("git", "rev-parse", "HEAD", cwd=repository).stdout.strip()
+    result = _run(
+        sys.executable,
+        script,
+        "--event-name",
+        "push",
+        "--before",
+        head,
+        "--head",
+        fixed,
+        cwd=repository,
+    )
+
+    assert result.returncode == 0, result.stderr

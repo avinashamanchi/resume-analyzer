@@ -1,6 +1,7 @@
 import { act, fireEvent, render, waitFor } from '@testing-library/react-native';
 import React from 'react';
 import { AccessibilityInfo, Keyboard, StyleSheet } from 'react-native';
+import * as Linking from 'expo-linking';
 
 declare const require: (id: string) => unknown;
 declare const __dirname: string;
@@ -34,6 +35,7 @@ jest.mock('expo-router', () => {
     useRouter: () => ({ push: jest.fn(), replace: mockReplace, back: jest.fn() }),
   };
 });
+jest.mock('expo-linking', () => ({ openURL: jest.fn(async () => undefined) }));
 
 const readyState: AnalysisState = {
   status: 'ready',
@@ -862,6 +864,16 @@ describe('native Analyze and Results flows', () => {
     expect(createRuntimeComposition('http://localhost:5000').services.serviceAvailable).toBe(false);
     expect(fetchSpy).not.toHaveBeenCalled();
     fetchSpy.mockRestore();
+  });
+
+  it('opens the first-party candidate support page', async () => {
+    const runtime = createRuntimeComposition('');
+
+    await runtime.services.openSupport();
+
+    expect(Linking.openURL).toHaveBeenCalledWith(
+      'https://resume-analyzer-al3g.onrender.com/static/support.html',
+    );
   });
 
   it('stacks bounded result sections and saves only on explicit action', async () => {

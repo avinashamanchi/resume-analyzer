@@ -8,6 +8,6 @@ No account is required. The server keeps no content or report history. Browser h
 
 Provider disclosure: Groq retains usage metadata and may retain inference content for up to 30 days for reliability and abuse prevention unless Zero Data Retention is enabled. Zero Data Retention is **UNVERIFIED** in the authoritative Groq console and blocks release. Render application logs are retained for 7, 14, or 30 days by plan. App-controlled logs are content-free, while Render may retain provider-side connection and HTTP request metadata, Device/IP Data, and IP-based geolocation under its own policy.
 
-Support: https://github.com/avinashamanchi/resume-analyzer/issues. Users are told never to post resumes, job descriptions, tokens, or private identifiers.
+Support release candidate: https://resume-analyzer-al3g.onrender.com/static/support.html. Interactive support is not yet available. Anonymous live reachability is **UNVERIFIED** until an authorized production deployment; failure to verify it blocks submission. Users are told never to send or publish resumes, job descriptions, tokens, request identifiers, or private identifiers.
 
 This metadata is not submitted. Production deployment, live provider settings, the public privacy URL, full Xcode/CocoaPods device builds, TestFlight, and App Store submission remain later release gates.

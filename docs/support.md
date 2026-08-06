@@ -1,8 +1,10 @@
 # Resume.AI support
 
-Use the public issue tracker: https://github.com/avinashamanchi/resume-analyzer/issues.
+Candidate first-party support page: https://resume-analyzer-al3g.onrender.com/static/support.html.
 
-Include the app version, operating-system version, the action you took, and the stable error category shown on screen. Never post resumes, job descriptions, tokens, request identifiers, filenames, contact information, or private identifiers. Public issues are visible to other people.
+Interactive support is not yet available. Use the candidate page for content-free troubleshooting only. Its anonymous live reachability is **UNVERIFIED** until an authorized production deployment; failure to verify it blocks submission.
+
+Keep the app version, operating-system version, the action you took, and the stable error category shown on screen for your own troubleshooting. Never send or publish resumes, job descriptions, tokens, request identifiers, filenames, contact information, or private identifiers.
 
 For files, use a readable, unencrypted PDF under 10 MB or paste no more than 30,000 characters. A job description is optional and limited to 20,000 characters. Scanned-PDF Vision OCR requires the iOS development build; it stays on-device until text is reviewed and consent is given.
 

@@ -84,10 +84,12 @@ describe('native Settings, privacy, and support flows', () => {
     expect(privacy.getByText(/coarse pseudonymous rate-limit key/i)).toBeTruthy();
     await act(async () => { privacy.unmount(); });
     const support = await render(<AppControllerProvider value={context}><SupportScreen /></AppControllerProvider>);
+    expect(support.getByText(/Interactive support is not yet available/i)).toBeTruthy();
+    expect(support.queryByText(/Open a repository issue|public issue tracker/i)).toBeNull();
     expect(support.getByText(/not an exact ATS or employment prediction/i)).toBeTruthy();
     expect(support.getByText(/no hiring guarantee/i)).toBeTruthy();
     expect(support.getByText(/not professional, legal, or employment advice/i)).toBeTruthy();
-    expect(support.getByText(/Never post resumes, job descriptions, tokens, or private identifiers/i)).toBeTruthy();
+    expect(support.getByText(/Never send or publish a resume, job description, token, request identifier, filename, contact detail, or other private data/i)).toBeTruthy();
     expect(support.getByText(/Computer backups are not encrypted by default.*Encrypt local backup/i)).toBeTruthy();
     expect(support.getByText(/Restoring an existing backup may restore reports deleted from the active app/i)).toBeTruthy();
     expect(support.getByText(/Generated feedback and bullet drafts may quote, transform, or restate names, contact information, resume content, or job-description content/i)).toBeTruthy();

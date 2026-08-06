@@ -87,7 +87,9 @@ def test_flask_serves_documented_first_party_web_assets(web_client, path, conten
     body = response.get_data(as_text=True)
     if path == "/static/support.html":
         assert body.count("https://") == 1
-        assert "https://github.com/avinashamanchi/resume-analyzer/issues" in body
+        assert "https://resume-analyzer-al3g.onrender.com/static/support.html" in body
+        assert "Interactive support is not yet available" in body
+        assert "Never send or publish a resume" in body
     else:
         assert "https://" not in body
 
@@ -117,5 +119,5 @@ def test_every_public_web_page_has_exact_privacy_boundaries(web_client):
             assert disclosure in text
 
     support = web_client.get("/static/support.html").get_data(as_text=True)
-    assert 'href="https://github.com/avinashamanchi/resume-analyzer/issues"' in support
+    assert 'href="https://resume-analyzer-al3g.onrender.com/static/support.html"' in support
     assert 'rel="noreferrer"' in support

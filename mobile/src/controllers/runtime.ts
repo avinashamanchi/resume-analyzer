@@ -13,7 +13,7 @@ import { InstallationTokenStore } from '../security/installationToken';
 import { ReportRepository } from '../storage/reportRepository';
 import type { AppServices } from './AppController';
 
-export const SUPPORT_URL = 'https://github.com/avinashamanchi/resume-analyzer/issues';
+export const SUPPORT_URL = 'https://resume-analyzer-al3g.onrender.com/static/support.html';
 
 class UnavailableApi implements AnalysisApiPort {
   async analyze(): Promise<never> {
