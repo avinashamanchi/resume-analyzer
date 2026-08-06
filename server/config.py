@@ -30,10 +30,13 @@ def _parse_boolean(value: str, *, name: str) -> bool:
 
 def _parse_deadline(environ: Mapping[str, str], name: str, default: float) -> float:
     raw_value = environ.get(name, str(default)).strip()
+    value: float | None = None
     try:
         value = float(raw_value)
-    except ValueError as error:
-        raise ConfigurationError(f"{name} must be a number") from error
+    except ValueError:
+        pass
+    if value is None:
+        raise ConfigurationError(f"{name} must be a number")
     if value <= 0 or not math.isfinite(value):
         raise ConfigurationError(f"{name} must be greater than zero")
     return value

@@ -49,6 +49,24 @@ def test_production_rejects_unsafe_settings(overrides: dict[str, str], message: 
         Settings.from_environ(production_environ(**overrides))
 
 
+@pytest.mark.parametrize(
+    "deadline_name",
+    ["PROVIDER_DEADLINE_SECONDS", "REQUEST_DEADLINE_SECONDS"],
+)
+def test_malformed_deadline_discards_private_value_and_parse_exception(
+    deadline_name: str,
+):
+    private_canary = "candidate-private-deadline"
+
+    with pytest.raises(ConfigurationError) as captured:
+        Settings.from_environ(production_environ(**{deadline_name: private_canary}))
+
+    assert str(captured.value) == f"{deadline_name} must be a number"
+    assert private_canary not in str(captured.value)
+    assert captured.value.__cause__ is None
+    assert captured.value.__context__ is None
+
+
 def test_development_settings_parse_origins_and_deadlines():
     settings = Settings.from_environ(
         {

@@ -155,12 +155,19 @@ def test_procfile_uses_bounded_gunicorn_with_access_logging_disabled():
 def test_render_blueprint_is_fail_closed_and_has_private_ephemeral_key_value():
     blueprint = (ROOT / "render.yaml").read_text()
     parsed_blueprint = yaml.load(blueprint, Loader=yaml.BaseLoader)
+    web_services = [
+        service
+        for service in parsed_blueprint["services"]
+        if service["type"] == "web"
+    ]
     key_values = [
         service
         for service in parsed_blueprint["services"]
         if service["type"] == "keyvalue"
     ]
     assert len(key_values) == 1
+    assert len(web_services) == 1
+    web_service = web_services[0]
     key_value = key_values[0]
 
     required_fragments = (
@@ -188,6 +195,92 @@ def test_render_blueprint_is_fail_closed_and_has_private_ephemeral_key_value():
     assert "access-logfile -" not in blueprint
     assert key_value["persistenceMode"] == "off"
     assert key_value["maxmemoryPolicy"] == "noeviction"
+    assert web_service["autoDeployTrigger"] == "off"
+    environment = {
+        entry["key"]: entry.get("value")
+        for entry in web_service["envVars"]
+    }
+    assert environment["GUNICORN_CMD_ARGS"] == ""
+
+
+def test_render_equivalent_gunicorn_environment_cannot_preload_or_restore_access_logs():
+    blueprint = yaml.safe_load((ROOT / "render.yaml").read_text())
+    web_service = next(
+        service for service in blueprint["services"] if service["type"] == "web"
+    )
+    arguments = shlex.split(web_service["startCommand"])
+    arguments[arguments.index("--bind") + 1] = "127.0.0.1:8765"
+    environment = os.environ.copy()
+    environment["GUNICORN_CMD_ARGS"] = (
+        "--preload --access-logfile - --bind=127.0.0.1:9999"
+    )
+    environment.update(
+        {
+            entry["key"]: entry["value"]
+            for entry in web_service["envVars"]
+            if "value" in entry
+        }
+    )
+    environment.update(
+        {
+            "GROQ_API_KEY": "synthetic-runtime-key",
+            "INSTALLATION_SIGNING_KEY": "x" * 64,
+            "REDIS_URL": "rediss://cache.internal:6380/0",
+        }
+    )
+
+    result = subprocess.run(
+        [*arguments, "--print-config"],
+        cwd=ROOT,
+        env=environment,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert re.search(r"^preload_app\s+= False$", result.stdout, re.MULTILINE)
+    assert re.search(r"^accesslog\s+= /dev/null$", result.stdout, re.MULTILINE)
+    assert re.search(r"^bind\s+= \['127.0.0.1:8765'\]$", result.stdout, re.MULTILINE)
+
+
+@pytest.mark.parametrize(
+    "deadline_name",
+    ["PROVIDER_DEADLINE_SECONDS", "REQUEST_DEADLINE_SECONDS"],
+)
+def test_real_gunicorn_startup_never_echoes_malformed_deadline(
+    deadline_name: str,
+):
+    private_canary = f"candidate-private-{deadline_name.casefold()}"
+    command = shlex.split(
+        (ROOT / "Procfile").read_text().strip().removeprefix("web: ")
+    )
+    environment = os.environ.copy()
+    environment.update(
+        {
+            "APP_ENV": "production",
+            "DEBUG": "false",
+            "GROQ_API_KEY": "synthetic-runtime-key",
+            "INSTALLATION_SIGNING_KEY": "x" * 64,
+            "REDIS_URL": "rediss://cache.internal:6380/0",
+            "ALLOWED_WEB_ORIGINS": "https://resume-ai.onrender.com",
+            "PROVIDER_DEADLINE_SECONDS": "8",
+            "REQUEST_DEADLINE_SECONDS": "10",
+            deadline_name: private_canary,
+        }
+    )
+
+    result = subprocess.run(
+        [*command, "--check-config"],
+        cwd=ROOT,
+        env=environment,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode != 0
+    assert private_canary not in result.stdout + result.stderr
 
 
 def test_real_gunicorn_parser_logs_never_emit_raw_request_material_or_client_ip():

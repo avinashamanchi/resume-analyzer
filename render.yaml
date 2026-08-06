@@ -4,6 +4,7 @@ services:
     runtime: python
     plan: starter
     region: oregon
+    autoDeployTrigger: off
     previews:
       generation: off
     buildCommand: uv sync --frozen --no-dev
@@ -19,6 +20,8 @@ services:
         value: production
       - key: DEBUG
         value: "false"
+      - key: GUNICORN_CMD_ARGS
+        value: ""
       - key: GROQ_API_KEY
         sync: false
       - key: GROQ_MODEL
