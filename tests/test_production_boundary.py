@@ -747,1419 +747,159 @@ def test_secret_scanner_fails_closed_on_invalid_render_yaml_without_echoing(
     assert canary not in result.stdout + result.stderr
 
 
-def test_retention_verifier_allows_request_local_sensitive_parsing(tmp_path: Path):
-    canary = "candidate-private-resume"
-    repository = _tracked_repo(
-        tmp_path,
-        {
-            "server/routes.py": (
-                "def analyze(request):\n"
-                "    resume_text = request.form['resume_text']\n"
-                "    job_description = request.form.get('job_description')\n"
-                "    return score(resume_text, job_description)\n"
-            ),
-            "static/app.js": (
-                "const resumeText = form.elements.namedItem('resume-text').value;\n"
-                "return fetch('/v1/analyses', { method: 'POST', body: resumeText });\n"
-            ),
-        },
-    )
+def _trusted_retention_files() -> dict[str, str]:
+    return {
+        relative_path: (ROOT / relative_path).read_text()
+        for relative_path in (
+            "server/app.py",
+            "server/gunicorn_logger.py",
+            "server/rate_limit.py",
+        )
+    }
+
+
+def test_architectural_retention_policy_accepts_only_current_trusted_boundaries(
+    tmp_path: Path,
+):
+    repository = _tracked_repo(tmp_path, _trusted_retention_files())
 
     result = _retention_verifier(repository)
 
     assert result.returncode == 0, result.stderr
     assert result.stdout == "Sensitive-retention verification passed.\n"
-    assert result.stdout == "Sensitive-retention verification passed.\n"
-    assert canary not in result.stdout + result.stderr
-
-
-def test_retention_verifier_allows_expiring_rate_limit_metadata(tmp_path: Path):
-    repository = _tracked_repo(
-        tmp_path,
-        {
-            "server/rate_limit.py": (
-                "def increment(redis_client, digest):\n"
-                "    return redis_client.set('rate:' + digest, 1, ex=60)\n"
-            )
-        },
-    )
-
-    result = _retention_verifier(repository)
-
-    assert result.returncode == 0, result.stderr
 
 
 @pytest.mark.parametrize(
-    ("relative_path", "content"),
+    ("relative_path", "old", "new"),
     [
         (
-            "server/models.py",
-            "db.execute('CREATE TABLE reports (resume_text TEXT)')",
-        ),
-        (
-            "server/store.py",
-            "redis_client.set('job_description', job_description)",
+            "server/rate_limit.py",
+            "                        transaction.execute()\n",
+            (
+                "                        transaction.set('extra', 'safe')\n"
+                "                        transaction.execute()\n"
+            ),
         ),
         (
             "server/app.py",
-            "logger.info(request.get_json())",
+            '            "status_class": f"{response.status_code // 100}xx",\n',
+            (
+                '            "status_class": f"{response.status_code // 100}xx",\n'
+                '            "extra": "safe",\n'
+            ),
         ),
         (
-            "static/app.js",
-            "localStorage.setItem('resume_history', resumeText)",
-        ),
-        (
-            "static/app.js",
-            "sessionStorage.setItem('resume_history', resumeText)",
-        ),
-        (
-            "server/history.py",
-            "connection = sqlite3.connect('reports.db')",
-        ),
-        (
-            "contracts/history.schema.json",
-            '{"properties":{"filename":{"type":"string"}}}',
+            "server/gunicorn_logger.py",
+            "    def access(\n",
+            (
+                "    def info(self, msg: object) -> None:\n"
+                "        super().info('safe')\n\n"
+                "    def access(\n"
+            ),
         ),
     ],
 )
-def test_retention_verifier_rejects_durable_content_and_body_logging_without_echoing(
+def test_architectural_retention_policy_rejects_trusted_boundary_mutations(
     tmp_path: Path,
     relative_path: str,
-    content: str,
+    old: str,
+    new: str,
 ):
-    repository = _tracked_repo(tmp_path, {relative_path: content + "\n"})
-
-    result = _retention_verifier(repository)
-
-    assert result.returncode == 1
-    assert "Sensitive-retention verification failed" in result.stderr
-    assert content not in result.stdout + result.stderr
-
-
-@pytest.mark.parametrize(
-    ("relative_path", "content"),
-    [
-        (
-            "server/app.py",
-            "payload = request.get_json()\nalias = payload\nlogger.info(\n    alias\n)",
-        ),
-        (
-            "app.py",
-            "body = request.data\nforwarded = body\nlogging.warning(\n    forwarded\n)",
-        ),
-        (
-            "server/store.py",
-            "body = request.data\nalias = body\nredis_client.set(\n    'report',\n    alias,\n)",
-        ),
-        (
-            "server/store.py",
-            "resume_text = request.form['resume_text']\nout = open('reports.txt', 'w')\nout.write(\n    resume_text\n)",
-        ),
-        (
-            "app.py",
-            "import sqlite3\nconnection = sqlite3.connect(\n    'reports.db'\n)",
-        ),
-        (
-            "server/store.py",
-            "from pathlib import Path\nPath('reports.json').write_text(\n    'safe-looking metadata'\n)",
-        ),
-        (
-            "server/store.py",
-            "from pathlib import Path\nout = Path('reports.json').open(\n    'w'\n)\nout.close()",
-        ),
-        (
-            "server/store.py",
-            "candidate = request.data\ndef retain_from_closure():\n    logger.info(candidate)",
-        ),
-        (
-            "server/store.py",
-            "req = request\nbody = req.get_json()\nlog(body)",
-        ),
-        (
-            "server/store.py",
-            "from flask import request as incoming\nbody = incoming.get_json()\nlogger.info(body)",
-        ),
-        (
-            "server/store.py",
-            "import flask as f\nvalue = f.request.get_json()\nlogger.info(value)",
-        ),
-        (
-            "server/store.py",
-            "import flask as f\nincoming = f.request\nvalue = incoming.get_json()\nlogger.info(value)",
-        ),
-        (
-            "server/store.py",
-            "class Holder:\n    pass\nholder = Holder()\nholder.value = request.get_json()\nlogger.info(holder.value)",
-        ),
-        (
-            "server/store.py",
-            "bucket = {}\nbucket['entry'] = request.data\nlogger.info(bucket['entry'])",
-        ),
-        (
-            "server/store.py",
-            "def read_request():\n    return request.get_json()\nvalue = read_request()\nlogger.info(value)",
-        ),
-        (
-            "app.py",
-            "import flask as f\ndef read_request():\n    return f.request.get_json()\ndef retain():\n    value = read_request()\n    def emit():\n        logger.info(value)\n    emit()",
-        ),
-    ],
-)
-def test_retention_verifier_tracks_multiline_aliases_into_prohibited_sinks(
-    tmp_path: Path,
-    relative_path: str,
-    content: str,
-):
-    repository = _tracked_repo(tmp_path, {relative_path: content + "\n"})
-
-    result = _retention_verifier(repository)
-
-    assert result.returncode == 1
-    assert "Sensitive-retention verification failed" in result.stderr
-    assert content not in result.stdout + result.stderr
-
-
-@pytest.mark.parametrize(
-    ("relative_path", "content"),
-    [
-        (
-            "server/helper_json.py",
-            "def active_request():\n"
-            "    return request\n"
-            "body = active_request().get_json()\n"
-            "logger.info(body)",
-        ),
-        (
-            "server/helper_data.py",
-            "import flask\n"
-            "def active_request():\n"
-            "    return flask.request\n"
-            "body = active_request().data\n"
-            "redis_client.set('report', body)",
-        ),
-        (
-            "server/helper_form.py",
-            "from flask import request as incoming\n"
-            "def active_request():\n"
-            "    return incoming\n"
-            "body = active_request().form\n"
-            "database.execute('INSERT INTO reports VALUES (?)', body)",
-        ),
-        (
-            "server/helper_files.py",
-            "def active_request():\n"
-            "    alias = request\n"
-            "    return alias\n"
-            "uploads = active_request().files\n"
-            "logging.warning(uploads)",
-        ),
-        (
-            "server/attribute_alias.py",
-            "class Holder:\n"
-            "    pass\n"
-            "holder = Holder()\n"
-            "holder.active = request\n"
-            "uploads = holder.active.files\n"
-            "db.execute('INSERT INTO reports VALUES (?)', uploads)",
-        ),
-        (
-            "server/subscript_alias.py",
-            "bucket = {}\n"
-            "bucket['active'] = request\n"
-            "body = bucket['active'].get_json()\n"
-            "logger.info(body)",
-        ),
-        (
-            "server/dict_alias.py",
-            "bucket = {'active': request}\n"
-            "body = bucket['active'].data\n"
-            "redis_client.hset('reports', 'body', body)",
-        ),
-        (
-            "server/list_alias.py",
-            "import flask as f\n"
-            "requests = [f.request]\n"
-            "body = requests[0].form\n"
-            "logger.error(body)",
-        ),
-        (
-            "server/fixed_point_helper.py",
-            "def outer_request():\n"
-            "    return inner_request()\n"
-            "def inner_request():\n"
-            "    return request\n"
-            "body = outer_request().data\n"
-            "logger.info(body)",
-        ),
-        (
-            "server/aggregate_log.py",
-            "class Holder:\n"
-            "    pass\n"
-            "holder = Holder()\n"
-            "holder.body = request.data\n"
-            "logger.info(holder)",
-        ),
-        (
-            "server/appended_request_alias.py",
-            "items = []\n"
-            "items.append(request)\n"
-            "body = items[0].data\n"
-            "logger.info(body)",
-        ),
-        (
-            "server/logged_ephemeral_buffer.py",
-            "import io\n"
-            "output = io.BytesIO()\n"
-            "output.write(request.data)\n"
-            "logger.info(output.getvalue())",
-        ),
-        (
-            "server/dict_get_alias.py",
-            "bucket = {'active': request}\n"
-            "uploads = bucket.get('active').files\n"
-            "log(uploads)",
-        ),
-        (
-            "server/stderr_log.py",
-            "import sys\n"
-            "body = request.data\n"
-            "sys.stderr.write(body)",
-        ),
-    ],
-)
-def test_retention_verifier_tracks_request_objects_through_helpers_and_containers(
-    tmp_path: Path,
-    relative_path: str,
-    content: str,
-):
-    repository = _tracked_repo(tmp_path, {relative_path: content + "\n"})
-
-    result = _retention_verifier(repository)
-
-    assert result.returncode == 1
-    assert "Sensitive-retention verification failed" in result.stderr
-    assert content not in result.stdout + result.stderr
-
-
-@pytest.mark.parametrize(
-    ("relative_path", "content"),
-    [
-        (
-            "server/attribute_sibling.py",
-            "class Holder:\n"
-            "    pass\n"
-            "holder = Holder()\n"
-            "holder.body = request.data\n"
-            "holder.status = 'ready'\n"
-            "logger.info(holder.status)",
-        ),
-        (
-            "server/subscript_sibling.py",
-            "holder = {}\n"
-            "holder['body'] = request.get_json()\n"
-            "holder['status'] = 'ready'\n"
-            "logger.info(holder['status'])",
-        ),
-        (
-            "server/ephemeral_buffers.py",
-            "import io\n"
-            "def parse(request):\n"
-            "    chunks = []\n"
-            "    chunks.append(request.data)\n"
-            "    buffered = bytearray()\n"
-            "    buffered.extend(request.data)\n"
-            "    buffered.append(request.data[0])\n"
-            "    output = io.BytesIO()\n"
-            "    output.write(request.data)\n"
-            "    return chunks, bytes(buffered), output.getvalue()",
-        ),
-        (
-            "server/current_parser_shapes.py",
-            "import io\n"
-            "def parse(request, stream):\n"
-            "    values = request.form.getlist('resume_text')\n"
-            "    opened_pages = []\n"
-            "    opened_pages.append(values[0])\n"
-            "    page_text = []\n"
-            "    page_text.append(values[0].strip())\n"
-            "    buffered = bytearray()\n"
-            "    chunk = stream.read(1024)\n"
-            "    buffered.extend(chunk)\n"
-            "    pdf_stream = io.BytesIO(bytes(buffered))\n"
-            "    pdf_stream.write(request.data)\n"
-            "    return opened_pages, page_text, pdf_stream.getvalue()",
-        ),
-        (
-            "server/local_queue.py",
-            "import queue\n"
-            "def parse(request):\n"
-            "    work_queue = queue.SimpleQueue()\n"
-            "    work_queue.put(request.data)\n"
-            "    return work_queue.get()",
-        ),
-        (
-            "server/dict_get_sibling.py",
-            "holder = {}\n"
-            "holder['body'] = request.data\n"
-            "holder['status'] = 'ready'\n"
-            "logger.info(holder.get('status'))",
-        ),
-        (
-            "server/local_list_named_redis.py",
-            "redis_chunks = []\n"
-            "redis_chunks.append(request.data)\n"
-            "return_value = len(redis_chunks)",
-        ),
-        (
-            "server/local_list_named_database.py",
-            "database_values = []\n"
-            "database_values.insert(0, request.data)\n"
-            "return_value = len(database_values)",
-        ),
-        (
-            "server/local_queue_named_database.py",
-            "import queue\n"
-            "database_queue = queue.SimpleQueue()\n"
-            "database_queue.put(request.data)\n"
-            "return_value = database_queue.qsize()",
-        ),
-        (
-            "server/local_bytearray_named_redis.py",
-            "redis_bytes = bytearray()\n"
-            "redis_bytes.append(request.data[0])\n"
-            "return_value = bytes(redis_bytes)",
-        ),
-    ],
-)
-def test_retention_verifier_allows_precise_siblings_and_ephemeral_accumulators(
-    tmp_path: Path,
-    relative_path: str,
-    content: str,
-):
-    repository = _tracked_repo(tmp_path, {relative_path: content + "\n"})
-
-    result = _retention_verifier(repository)
-
-    assert result.returncode == 0, result.stderr
-    assert result.stdout == "Sensitive-retention verification passed.\n"
-    assert content not in result.stdout + result.stderr
-
-
-@pytest.mark.parametrize(
-    ("relative_path", "content"),
-    [
-        (
-            "server/redis_store.py",
-            "body = request.data\n"
-            "cache = redis_client\n"
-            "cache.set('report', body)",
-        ),
-        (
-            "server/database_store.py",
-            "body = request.form\n"
-            "database.execute('INSERT INTO reports VALUES (?)', body)",
-        ),
-        (
-            "server/file_store.py",
-            "body = request.data\n"
-            "with open('report.bin', 'wb') as output:\n"
-            "    output.write(body)",
-        ),
-        (
-            "server/path_store.py",
-            "from pathlib import Path\n"
-            "body = request.data\n"
-            "Path('report.bin').write_bytes(body)",
-        ),
-        (
-            "server/shelve_store.py",
-            "import shelve\n"
-            "body = request.get_json()\n"
-            "store = shelve.open('reports')\n"
-            "store['body'] = body",
-        ),
-        (
-            "server/aliased_file_store.py",
-            "body = request.data\n"
-            "with open('report.bin', 'wb') as output:\n"
-            "    persist = output.write\n"
-            "    persist(body)",
-        ),
-        (
-            "server/aliased_path_store.py",
-            "from pathlib import Path as OutputPath\n"
-            "body = request.data\n"
-            "OutputPath('report.bin').write_bytes(body)",
-        ),
-        (
-            "server/aliased_database_store.py",
-            "body = request.form\n"
-            "persist = database.execute\n"
-            "persist('INSERT INTO reports VALUES (?)', body)",
-        ),
-        (
-            "server/io_file_store.py",
-            "import io\n"
-            "body = request.data\n"
-            "output = io.open('report.bin', 'wb')\n"
-            "output.write(body)",
-        ),
-    ],
-)
-def test_retention_verifier_rejects_known_durable_receivers(
-    tmp_path: Path,
-    relative_path: str,
-    content: str,
-):
-    repository = _tracked_repo(tmp_path, {relative_path: content + "\n"})
-
-    result = _retention_verifier(repository)
-
-    assert result.returncode == 1
-    assert "Sensitive-retention verification failed" in result.stderr
-    assert content not in result.stdout + result.stderr
-
-
-@pytest.mark.parametrize(
-    ("relative_path", "content"),
-    [
-        (
-            "server/aliased_stderr.py",
-            "import sys\n"
-            "out = sys.stderr\n"
-            "out.write(request.data)",
-        ),
-        (
-            "server/aliased_stdout.py",
-            "import sys\n"
-            "out = sys.stdout\n"
-            "forwarded = out\n"
-            "forwarded.write(request.form)",
-        ),
-        (
-            "server/aliased_io_open.py",
-            "import io\n"
-            "open_file = io.open\n"
-            "factory = open_file\n"
-            "factory('report.bin', 'wb').write(request.data)",
-        ),
-        (
-            "server/aliased_builtin_open.py",
-            "open_file = open\n"
-            "output = open_file('report.bin', 'wb')\n"
-            "output.write(request.data)",
-        ),
-        (
-            "server/aliased_path_text.py",
-            "from pathlib import Path\n"
-            "OutputPath = Path\n"
-            "OutputPath('report.txt').write_text(request.data.decode())",
-        ),
-        (
-            "server/aliased_path_bytes.py",
-            "from pathlib import Path\n"
-            "OutputPath = Path\n"
-            "ForwardPath = OutputPath\n"
-            "ForwardPath('report.bin').write_bytes(request.data)",
-        ),
-        (
-            "server/aliased_shelve.py",
-            "from shelve import open as shelf_open\n"
-            "open_store = shelf_open\n"
-            "factory = open_store\n"
-            "store = factory('reports')\n"
-            "store['body'] = request.get_json()",
-        ),
-    ],
-)
-def test_retention_verifier_rejects_aliased_output_and_store_factories(
-    tmp_path: Path,
-    relative_path: str,
-    content: str,
-):
-    repository = _tracked_repo(tmp_path, {relative_path: content + "\n"})
-
-    result = _retention_verifier(repository)
-
-    assert result.returncode == 1
-    assert "Sensitive-retention verification failed" in result.stderr
-    assert content not in result.stdout + result.stderr
-
-
-@pytest.mark.parametrize(
-    ("relative_path", "content"),
-    [
-        (
-            "server/aliased_bytes_writer.py",
-            "import io\n"
-            "stream = io.BytesIO()\n"
-            "write = stream.write\n"
-            "write(request.data)\n"
-            "value = stream.getvalue()",
-        ),
-        (
-            "server/aliased_text_writer.py",
-            "import io\n"
-            "stream = io.StringIO()\n"
-            "write = stream.write\n"
-            "write(request.form.get('resume_text'))\n"
-            "value = stream.getvalue()",
-        ),
-        (
-            "server/aliased_bytes_factory.py",
-            "import io\n"
-            "stream_factory = io.BytesIO\n"
-            "factory = stream_factory\n"
-            "stream = factory()\n"
-            "stream.write(request.data)",
-        ),
-        (
-            "server/local_open_file.py",
-            "import io\n"
-            "def open_file(*_args):\n"
-            "    return io.BytesIO()\n"
-            "output = open_file('report.bin', 'wb')\n"
-            "output.write(request.data)",
-        ),
-        (
-            "server/local_factory_alias.py",
-            "import io\n"
-            "def make_stream():\n"
-            "    return io.BytesIO()\n"
-            "factory = make_stream\n"
-            "output = factory()\n"
-            "output.write(request.data)",
-        ),
-    ],
-)
-def test_retention_verifier_allows_local_stream_and_callable_aliases(
-    tmp_path: Path,
-    relative_path: str,
-    content: str,
-):
-    repository = _tracked_repo(tmp_path, {relative_path: content + "\n"})
-
-    result = _retention_verifier(repository)
-
-    assert result.returncode == 0, result.stderr
-    assert result.stdout == "Sensitive-retention verification passed.\n"
-    assert content not in result.stdout + result.stderr
-
-
-@pytest.mark.parametrize(
-    ("relative_path", "content"),
-    [
-        (
-            "server/aliased_sys_module.py",
-            "import sys as runtime\n"
-            "runtime_alias = runtime\n"
-            "out = runtime_alias.stderr\n"
-            "forwarded = out\n"
-            "forwarded.write(request.data)",
-        ),
-        (
-            "server/aliased_io_module.py",
-            "import io as streams\n"
-            "stream_module = streams\n"
-            "open_file = stream_module.open\n"
-            "factory = open_file\n"
-            "factory('report.bin', 'wb').write(request.data)",
-        ),
-        (
-            "server/aliased_shelve_module.py",
-            "import shelve as storage\n"
-            "storage_module = storage\n"
-            "open_store = storage_module.open\n"
-            "factory = open_store\n"
-            "store = factory('reports')\n"
-            "store['body'] = request.get_json()",
-        ),
-        (
-            "server/builtins_open.py",
-            "import builtins\n"
-            "open_file = builtins.open\n"
-            "open_file('report.bin', 'wb').write(request.data)",
-        ),
-        (
-            "server/imported_builtin_open.py",
-            "from builtins import open as real_open\n"
-            "open_file = real_open\n"
-            "output = open_file('report.bin', 'wb')\n"
-            "output.write(request.data)",
-        ),
-    ],
-)
-def test_retention_verifier_rejects_module_and_builtin_factory_aliases(
-    tmp_path: Path,
-    relative_path: str,
-    content: str,
-):
-    repository = _tracked_repo(tmp_path, {relative_path: content + "\n"})
-
-    result = _retention_verifier(repository)
-
-    assert result.returncode == 1
-    assert "Sensitive-retention verification failed" in result.stderr
-    assert content not in result.stdout + result.stderr
-
-
-@pytest.mark.parametrize(
-    ("relative_path", "content"),
-    [
-        (
-            "server/local_module_like.py",
-            "import io\n"
-            "class Runtime:\n"
-            "    def __init__(self):\n"
-            "        self.stderr = io.BytesIO()\n"
-            "runtime = Runtime()\n"
-            "out = runtime.stderr\n"
-            "out.write(request.data)",
-        ),
-        (
-            "server/overwritten_module_alias.py",
-            "import io\n"
-            "import sys as runtime\n"
-            "class Runtime:\n"
-            "    def __init__(self):\n"
-            "        self.stderr = io.BytesIO()\n"
-            "runtime = Runtime()\n"
-            "runtime.stderr.write(request.data)",
-        ),
-        (
-            "server/local_open_function.py",
-            "import io\n"
-            "def open(*_args):\n"
-            "    return io.BytesIO()\n"
-            "output = open('report.bin', 'wb')\n"
-            "output.write(request.data)",
-        ),
-        (
-            "server/reassigned_open.py",
-            "import io\n"
-            "def memory_open(*_args):\n"
-            "    return io.BytesIO()\n"
-            "open = memory_open\n"
-            "output = open('report.bin', 'wb')\n"
-            "output.write(request.data)",
-        ),
-        (
-            "server/redefined_file_factory.py",
-            "import io\n"
-            "open_file = io.open\n"
-            "def open_file(*_args):\n"
-            "    return io.BytesIO()\n"
-            "output = open_file('report.bin', 'wb')\n"
-            "output.write(request.data)",
-        ),
-        (
-            "server/redefined_path_factory.py",
-            "from pathlib import Path\n"
-            "OutputPath = Path\n"
-            "class OutputPath:\n"
-            "    def __init__(self, _path):\n"
-            "        pass\n"
-            "    def write_bytes(self, value):\n"
-            "        return len(value)\n"
-            "OutputPath('report.bin').write_bytes(request.data)",
-        ),
-        (
-            "server/overwritten_durable_alias.py",
-            "import io\n"
-            "open_file = io.open\n"
-            "def memory_open(*_args):\n"
-            "    return io.BytesIO()\n"
-            "open_file = memory_open\n"
-            "output = open_file('report.bin', 'wb')\n"
-            "output.write(request.data)",
-        ),
-        (
-            "server/import_rebinds_factory.py",
-            "import io\n"
-            "open_file = io.open\n"
-            "from io import BytesIO as open_file\n"
-            "output = open_file()\n"
-            "output.write(request.data)",
-        ),
-        (
-            "server/parameter_shadows_open.py",
-            "def write_locally(open):\n"
-            "    output = open('report.bin', 'wb')\n"
-            "    output.write(request.data)",
-        ),
-        (
-            "server/import_shadows_module_alias.py",
-            "import io\n"
-            "import sys as runtime\n"
-            "from types import SimpleNamespace as runtime\n"
-            "runtime(stderr=io.BytesIO()).stderr.write(request.data)",
-        ),
-    ],
-)
-def test_retention_verifier_allows_shadowed_factories_and_module_like_objects(
-    tmp_path: Path,
-    relative_path: str,
-    content: str,
-):
-    repository = _tracked_repo(tmp_path, {relative_path: content + "\n"})
-
-    result = _retention_verifier(repository)
-
-    assert result.returncode == 0, result.stderr
-    assert result.stdout == "Sensitive-retention verification passed.\n"
-    assert content not in result.stdout + result.stderr
-
-
-def test_retention_verifier_accepts_current_server_patterns():
-    result = _retention_verifier(ROOT)
-
-    assert result.returncode == 0, result.stderr
-    assert result.stdout == "Sensitive-retention verification passed.\n"
-
-
-@pytest.mark.parametrize(
-    "files",
-    [
-        {
-            "server/app.py": (
-                "def extract():\n"
-                "    return request.data\n"
-                "reader = extract\n"
-                "open('report.bin', 'wb').write(reader())\n"
-            ),
-        },
-        {
-            "server/app.py": (
-                "def extract():\n"
-                "    return request.data\n"
-                "reader = extract\n"
-                "forward = reader\n"
-                "database.execute('INSERT INTO report VALUES (?)', forward())\n"
-            ),
-        },
-        {
-            "server/helpers.py": (
-                "def extract():\n"
-                "    return request.data\n"
-            ),
-            "server/app.py": (
-                "from server.helpers import extract\n"
-                "reader = extract\n"
-                "redis_client.set('report', reader())\n"
-            ),
-        },
-        {
-            "server/helpers.py": (
-                "def extract():\n"
-                "    return request.data\n"
-            ),
-            "server/app.py": (
-                "import server.helpers as helpers\n"
-                "redis_client.set('report', helpers.extract())\n"
-            ),
-        },
-    ],
-)
-def test_retention_verifier_rejects_callable_alias_and_cross_file_flows(
-    tmp_path: Path,
-    files: dict[str, str],
-):
-    private_canary = "candidate-private-retention-canary"
-    repository = _tracked_repo(
-        tmp_path,
-        {
-            path: content.replace("report.bin", private_canary)
-            for path, content in files.items()
-        },
-    )
-
-    result = _retention_verifier(repository)
-
-    assert result.returncode == 1
-    assert "durable-content-sink" in result.stderr
-    assert private_canary not in result.stdout + result.stderr
-
-
-@pytest.mark.parametrize(
-    "files",
-    [
-        {
-            "server/app.py": (
-                "import io\n"
-                "def extract():\n"
-                "    return request.data\n"
-                "reader = extract\n"
-                "reader = lambda: b'safe'\n"
-                "output = io.BytesIO()\n"
-                "output.write(reader())\n"
-            ),
-        },
-        {
-            "server/helpers.py": (
-                "def safe_value():\n"
-                "    return b'safe'\n"
-            ),
-            "server/app.py": (
-                "import io\n"
-                "from server.helpers import safe_value as reader\n"
-                "output = io.BytesIO()\n"
-                "output.write(reader())\n"
-            ),
-        },
-        {
-            "server/app.py": (
-                "import io\n"
-                "def use_reader(reader):\n"
-                "    output = io.BytesIO()\n"
-                "    output.write(reader())\n"
-            ),
-        },
-    ],
-)
-def test_retention_verifier_allows_overwritten_and_safe_callable_controls(
-    tmp_path: Path,
-    files: dict[str, str],
-):
-    repository = _tracked_repo(tmp_path, files)
-
-    result = _retention_verifier(repository)
-
-    assert result.returncode == 0, result.stderr
-    assert result.stdout == "Sensitive-retention verification passed.\n"
-
-
-@pytest.mark.parametrize(
-    "files",
-    [
-        {
-            "server/app.py": (
-                "reader = lambda: request.data\n"
-                "forward = reader\n"
-                "redis_client.set('report', forward())\n"
-            ),
-        },
-        {
-            "server/helpers.py": "def extract():\n    return request.data\n",
-            "server/__init__.py": "from server.helpers import extract\n",
-            "server/app.py": (
-                "from server import extract\n"
-                "database.execute('INSERT INTO report VALUES (?)', extract())\n"
-            ),
-        },
-        {
-            "server/helpers.py": "def extract():\n    return request.data\n",
-            "server/app.py": (
-                "from server.helpers import *\n"
-                "redis_client.set('report', extract())\n"
-            ),
-        },
-        {
-            "server/helpers.py": "def extract():\n    return request.data\n",
-            "server/app.py": (
-                "import server.helpers as helpers\n"
-                "reader = getattr(helpers, 'extract')\n"
-                "redis_client.set('report', reader())\n"
-            ),
-        },
-        {
-            "server/app.py": (
-                "def extract():\n    return request.data\n"
-                "def make_reader():\n    return extract\n"
-                "reader = make_reader()\n"
-                "redis_client.set('report', reader())\n"
-            ),
-        },
-        {
-            "server/helpers.py": (
-                "class Unsafe:\n"
-                "    @staticmethod\n"
-                "    def read():\n"
-                "        return request.data\n"
-            ),
-            "server/app.py": (
-                "import server.helpers as helpers\n"
-                "redis_client.set('report', helpers.Unsafe.read())\n"
-            ),
-        },
-        {
-            "server/app.py": (
-                "def unresolved():\n"
-                "    return project_transform()\n"
-                "redis_client.set('report', unresolved())\n"
-            ),
-        },
-        {
-            "server/app.py": (
-                "def make_reader():\n"
-                "    return lambda: request.data\n"
-                "reader = make_reader()\n"
-                "database.execute('INSERT INTO report VALUES (?)', reader())\n"
-            ),
-        },
-        {
-            "server/app.py": (
-                "def unresolved():\n"
-                "    return project_transform()\n"
-                "logger.info(unresolved())\n"
-            ),
-        },
-    ],
-)
-def test_retention_verifier_rejects_advanced_project_callable_flows(
-    tmp_path: Path,
-    files: dict[str, str],
-):
+    files = _trusted_retention_files()
+    assert old in files[relative_path]
+    files[relative_path] = files[relative_path].replace(old, new, 1)
     repository = _tracked_repo(tmp_path, files)
 
     result = _retention_verifier(repository)
 
     assert result.returncode == 1
-    assert "content-" in result.stderr
+    assert "trusted-retention-boundary-modified" in result.stderr
+    assert "extra" not in result.stderr
 
 
 @pytest.mark.parametrize(
     "content",
     [
+        "def cache(client):\n    client.set('health', 'ok')\n",
+        "def emit(logger):\n    logger.info('safe')\n",
         (
-            "reader = lambda: b'safe'\n"
-            "redis_client.set('report', reader())\n"
+            "def cache(redis_client, method):\n"
+            "    sink = getattr(redis_client, method)\n"
+            "    sink('health', 'ok')\n"
         ),
         (
-            "class Unsafe:\n"
-            "    @staticmethod\n"
-            "    def read():\n"
-            "        return request.data\n"
-            "class Safe:\n"
-            "    @staticmethod\n"
-            "    def read():\n"
-            "        return b'safe'\n"
-            "redis_client.set('report', Safe().read())\n"
+            "def emit(logger):\n"
+            "    sink = logger.__dict__['info']\n"
+            "    sink('safe')\n"
         ),
-        (
-            "def read():\n"
-            "    return request.data\n"
-            "def read():\n"
-            "    return b'safe'\n"
-            "redis_client.set('report', read())\n"
-        ),
-        (
-            "def persist(reader):\n"
-            "    redis_client.set('report', reader())\n"
-        ),
-    ],
-)
-def test_retention_verifier_keeps_scope_and_safe_callable_controls(
-    tmp_path: Path,
-    content: str,
-):
-    repository = _tracked_repo(tmp_path, {"server/app.py": content})
-
-    result = _retention_verifier(repository)
-
-    assert result.returncode == 0, result.stderr
-    assert result.stdout == "Sensitive-retention verification passed.\n"
-
-
-@pytest.mark.parametrize(
-    "files",
-    [
-        {
-            "server/app.py": (
-                "def extract():\n    return request.data\n"
-                "def persist(reader):\n"
-                "    redis_client.set('report', reader())\n"
-                "persist(extract)\n"
-            ),
-        },
-        {
-            "server/app.py": (
-                "def extract():\n    return request.data\n"
-                "def persist(reader=extract):\n"
-                "    logger.info(reader())\n"
-                "persist()\n"
-            ),
-        },
-        {
-            "server/app.py": (
-                "def extract():\n    return request.data\n"
-                "safe = lambda: b'safe'\n"
-                "reader = extract if enabled else safe\n"
-                "redis_client.set('report', reader())\n"
-            ),
-        },
-        {
-            "server/app.py": (
-                "import functools\n"
-                "def extract():\n    return request.data\n"
-                "reader = functools.partial(extract)\n"
-                "redis_client.set('report', reader())\n"
-            ),
-        },
-        {
-            "server/app.py": (
-                "from typing import cast as typed\n"
-                "def extract():\n    return request.data\n"
-                "reader = typed(object, extract)\n"
-                "logger.info(reader())\n"
-            ),
-        },
-        {
-            "server/helpers.py": "def extract():\n    return request.data\n",
-            "server/app.py": (
-                "import server.helpers as helpers\n"
-                "lookup = getattr\n"
-                "reader = lookup(helpers, 'extract')\n"
-                "redis_client.set('report', reader())\n"
-            ),
-        },
-        {
-            "server/helpers.py": "def extract():\n    return request.data\n",
-            "server/app.py": (
-                "import server.helpers as helpers\n"
-                "reader = helpers.__dict__['extract']\n"
-                "database.execute('INSERT INTO report VALUES (?)', reader())\n"
-            ),
-        },
-        {
-            "server/app.py": (
-                "def extract():\n    return request.data\n"
-                "redis_client.set('report', (reader := extract)())\n"
-            ),
-        },
-        {
-            "server/helpers.py": "def extract():\n    return request.data\n",
-            "server/reexport.py": (
-                "from server.helpers import extract as _extract\n"
-                "extract = _extract\n"
-            ),
-            "server/app.py": (
-                "from server.reexport import extract\n"
-                "redis_client.set('report', extract())\n"
-            ),
-        },
-        {
-            "server/helpers.py": "def extract():\n    return request.data\n",
-            "server/reexport.py": (
-                "import server.helpers as helpers\n"
-                "extract = helpers.extract\n"
-            ),
-            "server/app.py": (
-                "from server.reexport import extract\n"
-                "logger.info(extract())\n"
-            ),
-        },
-        {
-            "server/app.py": (
-                "class Base:\n"
-                "    @staticmethod\n"
-                "    def read():\n"
-                "        return request.data\n"
-                "class Child(Base):\n"
-                "    pass\n"
-                "redis_client.set('report', Child.read())\n"
-            ),
-        },
-        {
-            "server/app.py": (
-                "class Reader:\n"
-                "    read = staticmethod(lambda: request.data)\n"
-                "database.execute('INSERT INTO report VALUES (?)', Reader.read())\n"
-            ),
-        },
-        {
-            "server/app.py": (
-                "def extract():\n    return request.data\n"
-                "safe = lambda: b'safe'\n"
-                "reader = extract or safe\n"
-                "logger.info(reader())\n"
-            ),
-        },
-        {
-            "server/helpers.py": "def extract():\n    return request.data\n",
-            "server/app.py": (
-                "import server.helpers as helpers\n"
-                "lookup = getattr\n"
-                "name = 'extract'\n"
-                "reader = lookup(helpers, name)\n"
-                "redis_client.set('report', reader())\n"
-            ),
-        },
-        {
-            "server/helpers.py": "def extract():\n    return request.data\n",
-            "server/app.py": (
-                "import server.helpers as helpers\n"
-                "name = 'extract'\n"
-                "reader = helpers.__dict__[name]\n"
-                "logger.info(reader())\n"
-            ),
-        },
-        {
-            "server/helpers.py": (
-                "class Base:\n"
-                "    @staticmethod\n"
-                "    def read():\n"
-                "        return request.data\n"
-            ),
-            "server/app.py": (
-                "import server.helpers as helpers\n"
-                "class Child(helpers.Base):\n"
-                "    pass\n"
-                "redis_client.set('report', Child.read())\n"
-            ),
-        },
-    ],
-)
-def test_retention_verifier_rejects_higher_order_and_dynamic_callable_flows(
-    tmp_path: Path,
-    files: dict[str, str],
-):
-    repository = _tracked_repo(tmp_path, files)
-
-    result = _retention_verifier(repository)
-
-    assert result.returncode == 1
-    assert "content-" in result.stderr
-
-
-@pytest.mark.parametrize(
-    "content",
-    [
-        (
-            "def persist(reader):\n"
-            "    redis_client.set('report', reader())\n"
-        ),
-        (
-            "safe_one = lambda: b'one'\n"
-            "safe_two = lambda: b'two'\n"
-            "reader = safe_one if enabled else safe_two\n"
-            "redis_client.set('report', reader())\n"
-        ),
-        (
-            "class Unsafe:\n"
-            "    @staticmethod\n"
-            "    def read():\n"
-            "        return request.data\n"
-            "class Safe:\n"
-            "    read = staticmethod(lambda: b'safe')\n"
-            "redis_client.set('report', Safe.read())\n"
-        ),
-        (
-            "def unsafe_outer():\n"
-            "    def read():\n"
-            "        return request.data\n"
-            "    return read\n"
-            "def safe_outer():\n"
-            "    def read():\n"
-            "        return b'safe'\n"
-            "    return read\n"
-            "reader = safe_outer()\n"
-            "redis_client.set('report', reader())\n"
-        ),
-    ],
-)
-def test_retention_verifier_allows_proven_safe_higher_order_controls(
-    tmp_path: Path,
-    content: str,
-):
-    repository = _tracked_repo(tmp_path, {"server/app.py": content})
-
-    result = _retention_verifier(repository)
-
-    assert result.returncode == 0, result.stderr
-    assert result.stdout == "Sensitive-retention verification passed.\n"
-
-
-@pytest.mark.parametrize(
-    "content",
-    [
-        (
-            "def extract():\n    return request.data\n"
-            "def persist(reader):\n"
-            "    alias = reader\n"
-            "    redis_client.set('report', alias())\n"
-            "persist(extract)\n"
-        ),
-        (
-            "def extract():\n    return request.data\n"
-            "def persist(reader):\n"
-            "    callbacks = [reader]\n"
-            "    logger.info(callbacks[0]())\n"
-            "persist(extract)\n"
-        ),
-        (
-            "def extract():\n    return request.data\n"
-            "def persist(reader):\n"
-            "    redis_client.set('report', reader.__call__())\n"
-            "persist(extract)\n"
-        ),
-        (
-            "def extract():\n    return request.data\n"
-            "def persist(reader):\n"
-            "    logger.info(reader())\n"
-            "def forward(callback):\n"
-            "    persist(callback)\n"
-            "forward(extract)\n"
-        ),
-        (
-            "def extract():\n    return request.data\n"
-            "class Store:\n"
-            "    def persist(self, reader):\n"
-            "        redis_client.set('report', reader())\n"
-            "store = Store()\n"
-            "store.persist(extract)\n"
-        ),
-        (
-            "def extract():\n    return request.data\n"
-            "class Store:\n"
-            "    def __init__(self, reader):\n"
-            "        logger.info(reader())\n"
-            "Store(extract)\n"
-        ),
-        (
-            "def extract():\n    return request.data\n"
-            "class Store:\n"
-            "    def __call__(self, reader):\n"
-            "        redis_client.set('report', reader())\n"
-            "store = Store()\n"
-            "store(extract)\n"
-        ),
-        (
-            "def extract():\n    return request.data\n"
-            "persist = lambda reader: logger.info(reader())\n"
-            "persist(extract)\n"
-        ),
-        (
-            "def extract():\n    return request.data\n"
-            "def persist(*readers):\n"
-            "    redis_client.set('report', readers[0]())\n"
-            "persist(*(extract,))\n"
-        ),
-        (
-            "def extract():\n    return request.data\n"
-            "def persist(**readers):\n"
-            "    logger.info(readers['primary']())\n"
-            "persist(**{'primary': extract})\n"
-        ),
-        (
-            "def extract():\n    return request.data\n"
-            "def persist(reader):\n"
-            "    logger.info(reader())\n"
-            "callbacks = (extract,)\n"
-            "persist(*callbacks)\n"
-        ),
-    ],
-)
-def test_retention_verifier_rejects_executed_callback_sink_summaries(
-    tmp_path: Path,
-    content: str,
-):
-    repository = _tracked_repo(tmp_path, {"server/app.py": content})
-
-    result = _retention_verifier(repository)
-
-    assert result.returncode == 1
-    assert "content-" in result.stderr
-
-
-@pytest.mark.parametrize(
-    "content",
-    [
-        (
-            "def persist(reader):\n"
-            "    unused = reader\n"
-            "    logger.info('safe')\n"
-            "persist(lambda: b'safe')\n"
-        ),
-        (
-            "def persist(reader):\n"
-            "    redis_client.set('report', reader())\n"
-            "persist(lambda: b'safe')\n"
-        ),
-        (
-            "def persist(reader):\n"
-            "    redis_client.set('report', reader())\n"
-            "callbacks = (lambda: b'safe',)\n"
-            "persist(*callbacks)\n"
-        ),
-        "logger.info(lambda: request.data)\n",
-        "logger.info((request.data for _ in range(1)))\n",
-        (
-            "import external_package as external\n"
-            "name = 'callback'\n"
-            "logger.info(getattr(external, name)())\n"
-        ),
-    ],
-)
-def test_retention_verifier_allows_unused_safe_and_deferred_callbacks(
-    tmp_path: Path,
-    content: str,
-):
-    repository = _tracked_repo(tmp_path, {"server/app.py": content})
-
-    result = _retention_verifier(repository)
-
-    assert result.returncode == 0, result.stderr
-
-
-@pytest.mark.parametrize(
-    "content",
-    [
-        (
-            "def extract():\n    return request.data\n"
-            "safe = lambda: b'safe'\n"
-            "def choose(flag):\n"
-            "    if flag:\n        return extract\n"
-            "    return safe\n"
-            "logger.info(choose(True)())\n"
-        ),
-        (
-            "def extract():\n    return request.data\n"
-            "safe = lambda: b'safe'\n"
-            "def choose(flag):\n"
-            "    if flag:\n        return safe\n"
-            "    return extract\n"
-            "redis_client.set('report', choose(False)())\n"
-        ),
-        (
-            "def extract():\n    return request.data\n"
-            "def identity(callback):\n    return callback\n"
-            "logger.info(identity(extract)())\n"
-        ),
+        "import redis as cache\n",
+        "from sqlalchemy import create_engine as connect\n",
+        "from pathlib import Path\nwriter = Path.write_text\n",
+        "def emit(log):\n    log('safe')\n",
+        "emit = print\nemit('safe')\n",
+        "def cache(client):\n    sink = client.__dict__['set']\n",
+        "def cache(client):\n    sink = vars(client)['execute']\n",
         (
             "import functools\n"
-            "def extract():\n    return request.data\n"
-            "def wrap(callback):\n    return functools.partial(callback)\n"
-            "def again(callback):\n    return wrap(callback)\n"
-            "redis_client.set('report', again(extract)())\n"
+            "def cache(client):\n"
+            "    sink = functools.partial(client.set, 'health')\n"
         ),
-        "logger.info([item for item in (request.data,)])\n",
-        "logger.info(list(item for item in (request.data,)))\n",
-        "(lambda: logger.info(request.data))()\n",
+        "def emit(logger):\n    logger.info(lambda: request.data)\n",
+        "import sys\nemit = sys.stderr.write\n",
+        "writer = open\nwriter('report.txt', 'w')\n",
+        "import os\nwriter = os.open\n",
+        "from io import open as writer\n",
+        "import tempfile\nwriter = tempfile.NamedTemporaryFile\n",
+        "import pathlib\nwriter = pathlib.Path.open\n",
+        "from io import FileIO as writer\n",
+        "def select(receiver, method):\n    return getattr(receiver, method)\n",
+        "def select(receiver, method):\n    return receiver.__dict__[method]\n",
+        "def select(receiver, method):\n    return vars(receiver)[method]\n",
     ],
 )
-def test_retention_verifier_rejects_callable_return_lattices_and_eager_bodies(
+def test_architectural_retention_policy_rejects_untrusted_sink_capabilities(
     tmp_path: Path,
     content: str,
 ):
-    repository = _tracked_repo(tmp_path, {"server/app.py": content})
+    repository = _tracked_repo(tmp_path, {"server/feature.py": content})
 
     result = _retention_verifier(repository)
 
     assert result.returncode == 1
-    assert "content-" in result.stderr
+    assert "capability" in result.stderr or "logging-sink" in result.stderr
+    assert "health" not in result.stderr
 
 
-def test_retention_verifier_allows_all_safe_callable_return_lattice(tmp_path: Path):
+def test_architectural_retention_policy_rejects_new_operation_in_trusted_file(
+    tmp_path: Path,
+):
+    files = _trusted_retention_files()
+    files["server/rate_limit.py"] += (
+        "\ndef extra_storage_operation(client):\n"
+        "    client.set('architecture-canary', 'safe')\n"
+    )
+    repository = _tracked_repo(tmp_path, files)
+
+    result = _retention_verifier(repository)
+
+    assert result.returncode == 1
+    assert "trusted-retention-boundary-modified" in result.stderr
+    assert "architecture-canary" not in result.stdout + result.stderr
+
+
+def test_architectural_retention_policy_allows_request_local_parsing_without_sinks(
+    tmp_path: Path,
+):
     repository = _tracked_repo(
         tmp_path,
         {
-            "server/app.py": (
-                "safe_one = lambda: b'one'\n"
-                "safe_two = lambda: b'two'\n"
-                "def choose(flag):\n"
-                "    if flag:\n        return safe_one\n"
-                "    return safe_two\n"
-                "logger.info(choose(True)())\n"
+            "server/feature.py": (
+                "import io\n"
+                "def parse(request):\n"
+                "    body = request.get_json()\n"
+                "    stream = io.BytesIO()\n"
+                "    stream.write(body['resume_text'].encode())\n"
+                "    return {'resume': stream.getvalue()}\n"
             )
         },
     )
@@ -2170,82 +910,37 @@ def test_retention_verifier_allows_all_safe_callable_return_lattice(tmp_path: Pa
 
 
 @pytest.mark.parametrize(
-    "files",
+    ("relative_path", "content", "rule"),
     [
-        {
-            "server/app.py": (
-                "class Reader:\n"
-                "    def read(self):\n        return request.data\n"
-                "reader = Reader()\n"
-                "name = 'read'\n"
-                "logger.info(getattr(reader, name)())\n"
-            )
-        },
-        {
-            "server/app.py": (
-                "class Reader:\n"
-                "    @staticmethod\n"
-                "    def read():\n        return request.data\n"
-                "logger.info(Reader.__dict__['read']())\n"
-            )
-        },
-        {
-            "server/helpers.py": "def extract():\n    return request.data\n",
-            "server/app.py": (
-                "import server.helpers as helpers\n"
-                "reader = vars(helpers)['extract']\n"
-                "redis_client.set('report', reader())\n"
-            ),
-        },
-        {
-            "server/app.py": (
-                "def extract():\n    return request.data\n"
-                "class Reader:\n"
-                "    read = staticmethod(extract)\n"
-                "logger.info(Reader.read())\n"
-            )
-        },
-        {
-            "server/app.py": (
-                "class Reader:\n"
-                "    read = classmethod(lambda cls: request.data)\n"
-                "redis_client.set('report', Reader.read())\n"
-            )
-        },
-        {
-            "server/helpers.py": "def extract():\n    return request.data\n",
-            "server/reexport.py": (
-                "from server.helpers import extract as imported\n"
-                "extract, safe = imported, (lambda: b'safe')\n"
-            ),
-            "server/app.py": (
-                "from server.reexport import extract\n"
-                "logger.info(extract())\n"
-            ),
-        },
-        {
-            "server/helpers.py": "def extract():\n    return request.data\n",
-            "server/reexport.py": (
-                "import server.helpers\n"
-                "extract = server.helpers.extract\n"
-            ),
-            "server/app.py": (
-                "from server.reexport import extract\n"
-                "redis_client.set('report', extract())\n"
-            ),
-        },
+        (
+            "contracts/request.json",
+            '{"properties":{"resume_text":{"type":"string"}}}',
+            "sensitive-schema-field",
+        ),
+        (
+            "static/app.js",
+            "localStorage.setItem('resume-history', value);",
+            "browser-content-history",
+        ),
+        (
+            "server/feature.py",
+            "import sqlite3\nconnection = sqlite3.connect('state.db')\n",
+            "new-server-retention-store",
+        ),
     ],
 )
-def test_retention_verifier_rejects_dynamic_class_and_catalog_flows(
+def test_architectural_retention_policy_keeps_non_allowlist_gates(
     tmp_path: Path,
-    files: dict[str, str],
+    relative_path: str,
+    content: str,
+    rule: str,
 ):
-    repository = _tracked_repo(tmp_path, files)
+    repository = _tracked_repo(tmp_path, {relative_path: content})
 
     result = _retention_verifier(repository)
 
     assert result.returncode == 1
-    assert "content-" in result.stderr
+    assert rule in result.stderr
 
 
 def test_release_docs_and_ci_cover_required_unverified_boundaries():

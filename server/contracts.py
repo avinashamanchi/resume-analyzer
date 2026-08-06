@@ -84,8 +84,13 @@ class ScoreComponentsV1(StrictContract):
             if self.keywords is None
             else {"structure": 25, "impact": 30, "readability": 20}
         )
+        values = {
+            "structure": self.structure,
+            "impact": self.impact,
+            "readability": self.readability,
+        }
         for field, maximum in maxima.items():
-            if getattr(self, field) > maximum:
+            if values[field] > maximum:
                 raise ValueError(f"{field} exceeds its scoring-branch maximum")
         return self
 

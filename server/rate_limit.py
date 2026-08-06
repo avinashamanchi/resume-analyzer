@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from typing import Any, Iterator, Protocol
 from uuid import UUID
 
+from redis import Redis
 from redis.exceptions import RedisError, WatchError
 
 from .errors import ErrorCode, PublicServiceError
@@ -30,6 +31,11 @@ DEFAULT_INSTALLATION_ISSUE_IP_DAILY_LIMIT = 20
 _MAX_TRANSACTION_RETRIES = 100
 _OWNER_NONCE_BYTES = 64
 _OWNER_NONCE_ALPHABET = frozenset(b"0123456789abcdef")
+
+
+def build_redis_client(url: str, **options: object) -> Redis:
+    """Create the shared Redis client inside the audited durable boundary."""
+    return Redis.from_url(url, **options)
 
 
 @dataclass(frozen=True, slots=True)

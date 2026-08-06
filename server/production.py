@@ -6,13 +6,12 @@ import hmac
 from typing import TYPE_CHECKING, Any
 
 from groq import Groq
-from redis import Redis
 
 from .ai_gateway import AiFeedbackGateway
 from .config import ConfigurationError, Settings
 from .installations import InstallationTokenService
 from .pdf_parser import extract_pdf_text
-from .rate_limit import RateLimiter, RedisRequestLeaseStore
+from .rate_limit import RateLimiter, RedisRequestLeaseStore, build_redis_client
 from .scoring import score_resume
 
 if TYPE_CHECKING:
@@ -39,7 +38,7 @@ def _runtime_key(master_key: str, purpose: bytes) -> bytes:
 def build_production_services(
     settings: Settings,
     *,
-    redis_factory: Callable[..., Any] = Redis.from_url,
+    redis_factory: Callable[..., Any] = build_redis_client,
     groq_factory: Callable[..., Any] = Groq,
 ) -> ServiceRegistry:
     """Build one fail-closed service registry for a production app instance."""
