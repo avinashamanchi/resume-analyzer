@@ -242,6 +242,9 @@ class PythonRetentionVisitor(ast.NodeVisitor):
         class_identities: set[str] | None = None,
         node_identities: dict[int, str] | None = None,
         module_exports: dict[str, dict[str, str]] | None = None,
+        callable_parameter_sinks: dict[str, dict[str, set[str]]] | None = None,
+        callable_parameters: dict[str, tuple[str, ...]] | None = None,
+        callable_defaults: dict[str, dict[str, str]] | None = None,
     ) -> None:
         self.findings: set[str] = set()
         self._tainted_paths: set[AccessPath] = set()
@@ -268,9 +271,20 @@ class PythonRetentionVisitor(ast.NodeVisitor):
         self._module_exports = {
             module: dict(exports) for module, exports in (module_exports or {}).items()
         }
+        self.callable_parameter_sinks = {
+            identity: {name: set(kinds) for name, kinds in parameters.items()}
+            for identity, parameters in (callable_parameter_sinks or {}).items()
+        }
+        self.callable_parameters = dict(callable_parameters or {})
+        self.callable_defaults = {
+            identity: dict(defaults)
+            for identity, defaults in (callable_defaults or {}).items()
+        }
         self._function_stack: list[str] = []
+        self._parameter_stack: list[set[str]] = []
         self._scope_stack: list[str] = []
         self._function_return_states: dict[str, set[str]] = {}
+        self._callable_transforms: dict[AccessPath, str] = {}
         for name, identity in (initial_callables or {}).items():
             path = (name,)
             self._bound_paths.add(path)
@@ -312,7 +326,9 @@ class PythonRetentionVisitor(ast.NodeVisitor):
     def _register_lambda(self, node: ast.Lambda) -> str:
         scope = ".".join(self._scope_stack)
         prefix = f"{self._module_name}.{scope}." if scope else f"{self._module_name}."
-        identity = f"{prefix}<lambda>@{node.lineno}:{node.col_offset}"
+        identity = self._node_identities.get(
+            id(node), f"{prefix}<lambda>@{node.lineno}:{node.col_offset}"
+        )
         self._project_callables.add(identity)
         if self._expression_is_request_object(node.body):
             self.request_functions.add(identity)
@@ -322,25 +338,113 @@ class PythonRetentionVisitor(ast.NodeVisitor):
             self.safe_functions.add(identity)
         return identity
 
+    def _merged_callable_identity(
+        self, node: ast.AST, identities: list[str], kind: str
+    ) -> str | None:
+        if not identities:
+            return None
+        if len(set(identities)) == 1:
+            return identities[0]
+        scope = ".".join(self._scope_stack)
+        prefix = f"{self._module_name}.{scope}." if scope else f"{self._module_name}."
+        identity = f"{prefix}<{kind}>@{node.lineno}:{node.col_offset}"
+        self._project_callables.add(identity)
+        if any(item in self.request_functions for item in identities):
+            self.request_functions.add(identity)
+        if any(item in self.tainted_functions for item in identities):
+            self.tainted_functions.add(identity)
+        elif all(item in self.safe_functions for item in identities):
+            self.safe_functions.add(identity)
+        return identity
+
+    def _callable_transform_kind(self, node: ast.AST) -> str | None:
+        path = _access_path(node)
+        if path is not None and path in self._callable_transforms:
+            return self._callable_transforms[path]
+        canonical = self._canonical_module_member(node)
+        dotted = canonical or _dotted_name(node)
+        if dotted == "getattr" and path not in self._bound_paths:
+            return "getattr"
+        return {
+            "builtins.getattr": "getattr",
+            "functools.partial": "partial",
+            "typing.cast": "cast",
+            "staticmethod": "staticmethod",
+        }.get(dotted)
+
+    def _unknown_project_callable(self, node: ast.AST, kind: str) -> str:
+        scope = ".".join(self._scope_stack)
+        prefix = f"{self._module_name}.{scope}." if scope else f"{self._module_name}."
+        identity = f"{prefix}<unknown-{kind}>@{node.lineno}:{node.col_offset}"
+        self._project_callables.add(identity)
+        return identity
+
     def _resolve_callable_value(self, node: ast.AST | None) -> str | None:
         if node is None:
             return None
         if isinstance(node, ast.Lambda):
             return self._register_lambda(node)
+        if isinstance(node, ast.NamedExpr):
+            return self._resolve_callable_value(node.value)
+        if isinstance(node, ast.IfExp):
+            identities = [
+                identity
+                for identity in (
+                    self._resolve_callable_value(node.body),
+                    self._resolve_callable_value(node.orelse),
+                )
+                if identity is not None
+            ]
+            if len(identities) < 2:
+                identities.append(self._unknown_project_callable(node, "conditional"))
+            return self._merged_callable_identity(node, identities, "conditional")
+        if isinstance(node, ast.BoolOp):
+            identities = [
+                identity
+                for value in node.values
+                if (identity := self._resolve_callable_value(value)) is not None
+            ]
+            if len(identities) < len(node.values):
+                identities.append(self._unknown_project_callable(node, "boolean"))
+            return self._merged_callable_identity(node, identities, "boolean")
+        if (
+            isinstance(node, ast.Subscript)
+            and isinstance(node.value, ast.Attribute)
+            and node.value.attr == "__dict__"
+        ):
+            module_path = _access_path(node.value.value)
+            module = self._module_aliases.get(module_path) if module_path else None
+            if module in self._project_modules:
+                if isinstance(node.slice, ast.Constant) and isinstance(
+                    node.slice.value, str
+                ):
+                    resolved = self._module_exports.get(module, {}).get(node.slice.value)
+                    if resolved is not None:
+                        return resolved
+                return self._unknown_project_callable(node, "module-lookup")
         identity = self._callable_identity(node)
         if identity is not None:
             return identity
-        if (
-            isinstance(node, ast.Call)
-            and isinstance(node.func, ast.Name)
-            and node.func.id == "getattr"
-            and len(node.args) >= 2
-            and isinstance(node.args[1], ast.Constant)
-            and isinstance(node.args[1].value, str)
-        ):
-            synthetic = ast.Attribute(value=node.args[0], attr=node.args[1].value)
-            return self._callable_identity(synthetic)
         if isinstance(node, ast.Call):
+            transform = self._callable_transform_kind(node.func)
+            if transform in {"partial", "staticmethod"} and node.args:
+                return self._resolve_callable_value(node.args[0])
+            if transform == "cast" and node.args:
+                return self._resolve_callable_value(node.args[-1])
+            if transform == "getattr" and len(node.args) >= 2:
+                if isinstance(node.args[1], ast.Constant) and isinstance(
+                    node.args[1].value, str
+                ):
+                    synthetic = ast.Attribute(
+                        value=node.args[0], attr=node.args[1].value
+                    )
+                    resolved = self._callable_identity(synthetic)
+                    if resolved is not None:
+                        return resolved
+                module_path = _access_path(node.args[0])
+                module = self._module_aliases.get(module_path) if module_path else None
+                if module in self._project_modules:
+                    return self._unknown_project_callable(node, "getattr")
             called = self._callable_identity(node.func)
             if called is not None:
                 if called in self.callable_returns:
@@ -391,7 +495,7 @@ class PythonRetentionVisitor(ast.NodeVisitor):
         if self._expression_is_tainted(node):
             return True
         if isinstance(node, ast.Call):
-            identity = self._callable_identity(node.func)
+            identity = self._resolve_callable_value(node.func)
             if (
                 identity is not None
                 and identity in self._project_callables
@@ -651,6 +755,11 @@ class PythonRetentionVisitor(ast.NodeVisitor):
             for candidate, identity in self._callable_aliases.items()
             if not _path_is_prefix(path, candidate)
         }
+        self._callable_transforms = {
+            candidate: kind
+            for candidate, kind in self._callable_transforms.items()
+            if not _path_is_prefix(path, candidate)
+        }
         self._module_aliases = {
             candidate: module
             for candidate, module in self._module_aliases.items()
@@ -728,6 +837,9 @@ class PythonRetentionVisitor(ast.NodeVisitor):
         callable_identity = self._resolve_callable_value(value)
         if callable_identity is not None:
             self._callable_aliases[target] = callable_identity
+        transform_kind = self._callable_transform_kind(value)
+        if transform_kind is not None:
+            self._callable_transforms[target] = transform_kind
         sink_kind = self._sink_kind(value)
         if sink_kind is not None:
             self._sink_aliases[target] = sink_kind
@@ -783,12 +895,35 @@ class PythonRetentionVisitor(ast.NodeVisitor):
         node: ast.FunctionDef | ast.AsyncFunctionDef,
         identity: str,
     ) -> None:
+        positional = (*node.args.posonlyargs, *node.args.args)
+        parameter_order = (*positional, *node.args.kwonlyargs)
+        self.callable_parameters[identity] = tuple(
+            argument.arg for argument in parameter_order
+        )
+        defaults: dict[str, str] = {}
+        positional_defaults = zip(
+            positional[-len(node.args.defaults) :] if node.args.defaults else (),
+            node.args.defaults,
+            strict=True,
+        )
+        for argument, value in positional_defaults:
+            callable_identity = self._resolve_callable_value(value)
+            if callable_identity is not None:
+                defaults[argument.arg] = callable_identity
+        for argument, value in zip(
+            node.args.kwonlyargs, node.args.kw_defaults, strict=True
+        ):
+            callable_identity = self._resolve_callable_value(value)
+            if callable_identity is not None:
+                defaults[argument.arg] = callable_identity
+        self.callable_defaults[identity] = defaults
         previous_taint = self._tainted_paths
         previous_aliases = self._sink_aliases
         previous_request_paths = self._request_paths
         previous_receivers = self._durable_receivers
         previous_factories = self._callable_factories
         previous_callables = self._callable_aliases
+        previous_transforms = self._callable_transforms
         previous_modules = self._module_aliases
         previous_bound_paths = self._bound_paths
         previous_flask_aliases = self._flask_module_aliases
@@ -811,6 +946,7 @@ class PythonRetentionVisitor(ast.NodeVisitor):
         self._durable_receivers = dict(previous_receivers)
         self._callable_factories = dict(previous_factories)
         self._callable_aliases = dict(previous_callables)
+        self._callable_transforms = dict(previous_transforms)
         self._module_aliases = dict(previous_modules)
         self._bound_paths = set(previous_bound_paths)
         self._flask_module_aliases = set(previous_flask_aliases)
@@ -825,11 +961,13 @@ class PythonRetentionVisitor(ast.NodeVisitor):
             (name,) for name in parameter_names if SENSITIVE_NAME_PATTERN.search(name)
         )
         self._function_stack.append(identity)
+        self._parameter_stack.append(parameter_names)
         self._function_return_states[identity] = set()
-        self._scope_stack.append(node.name)
+        self._scope_stack.append(f"{node.name}@{node.lineno}")
         for statement in node.body:
             self.visit(statement)
         self._scope_stack.pop()
+        self._parameter_stack.pop()
         self._function_stack.pop()
         states = self._function_return_states[identity]
         if not states or states <= {"safe", "callable"}:
@@ -840,6 +978,7 @@ class PythonRetentionVisitor(ast.NodeVisitor):
         self._durable_receivers = previous_receivers
         self._callable_factories = previous_factories
         self._callable_aliases = previous_callables
+        self._callable_transforms = previous_transforms
         self._module_aliases = previous_modules
         self._bound_paths = previous_bound_paths
         self._flask_module_aliases = previous_flask_aliases
@@ -874,6 +1013,7 @@ class PythonRetentionVisitor(ast.NodeVisitor):
         previous_receivers = self._durable_receivers
         previous_factories = self._callable_factories
         previous_callables = self._callable_aliases
+        previous_transforms = self._callable_transforms
         previous_modules = self._module_aliases
         previous_bound_paths = self._bound_paths
         previous_flask_aliases = self._flask_module_aliases
@@ -884,11 +1024,12 @@ class PythonRetentionVisitor(ast.NodeVisitor):
         self._durable_receivers = dict(previous_receivers)
         self._callable_factories = dict(previous_factories)
         self._callable_aliases = dict(previous_callables)
+        self._callable_transforms = dict(previous_transforms)
         self._module_aliases = dict(previous_modules)
         self._bound_paths = set(previous_bound_paths)
         self._flask_module_aliases = set(previous_flask_aliases)
         self._path_constructor_aliases = set(previous_path_aliases)
-        self._scope_stack.append(node.name)
+        self._scope_stack.append(f"{node.name}@{node.lineno}")
         for statement in node.body:
             self.visit(statement)
         self._scope_stack.pop()
@@ -898,6 +1039,7 @@ class PythonRetentionVisitor(ast.NodeVisitor):
         self._durable_receivers = previous_receivers
         self._callable_factories = previous_factories
         self._callable_aliases = previous_callables
+        self._callable_transforms = previous_transforms
         self._module_aliases = previous_modules
         self._bound_paths = previous_bound_paths
         self._flask_module_aliases = previous_flask_aliases
@@ -952,7 +1094,7 @@ class PythonRetentionVisitor(ast.NodeVisitor):
             self.visit(node.value)
 
     def visit_Import(self, node: ast.Import) -> None:
-        tracked_modules = {"builtins", "io", "shelve", "sys"}
+        tracked_modules = {"builtins", "functools", "io", "shelve", "sys", "typing"}
         for alias in node.names:
             target_name = alias.asname or alias.name.split(".", maxsplit=1)[0]
             target = self._bind_import(target_name)
@@ -986,6 +1128,12 @@ class PythonRetentionVisitor(ast.NodeVisitor):
                 self._callable_factories[target] = "file"
             elif node.module == "io" and alias.name in LOCAL_RECEIVER_CONSTRUCTORS:
                 self._callable_factories[target] = "local"
+            if node.module == "typing" and alias.name == "cast":
+                self._callable_transforms[target] = "cast"
+            elif node.module == "functools" and alias.name == "partial":
+                self._callable_transforms[target] = "partial"
+            elif node.module == "builtins" and alias.name == "getattr":
+                self._callable_transforms[target] = "getattr"
             imported_identity = self._module_exports.get(imported_module, {}).get(
                 alias.name
             )
@@ -1022,7 +1170,56 @@ class PythonRetentionVisitor(ast.NodeVisitor):
             for path in _assigned_paths(target):
                 self._clear_target(path)
 
+    def _record_parameter_sink_calls(
+        self, value: ast.AST, sink_kind: str
+    ) -> None:
+        if not self._function_stack or not self._parameter_stack:
+            return
+        identity = self._function_stack[-1]
+        parameter_names = self._parameter_stack[-1]
+        for candidate in ast.walk(value):
+            if (
+                isinstance(candidate, ast.Call)
+                and isinstance(candidate.func, ast.Name)
+                and candidate.func.id in parameter_names
+            ):
+                parameter_sinks = self.callable_parameter_sinks.setdefault(
+                    identity, {}
+                )
+                parameter_sinks.setdefault(candidate.func.id, set()).add(sink_kind)
+
+    def _check_parameterized_call(self, node: ast.Call) -> None:
+        identity = self._callable_identity(node.func)
+        parameter_sinks = (
+            self.callable_parameter_sinks.get(identity, {})
+            if identity is not None
+            else {}
+        )
+        if not parameter_sinks or identity is None:
+            return
+        parameters = self.callable_parameters.get(identity, ())
+        supplied: dict[str, ast.AST] = dict(zip(parameters, node.args))
+        supplied.update(
+            (keyword.arg, keyword.value)
+            for keyword in node.keywords
+            if keyword.arg is not None
+        )
+        defaults = self.callable_defaults.get(identity, {})
+        for name, sink_kinds in parameter_sinks.items():
+            callable_identity = (
+                self._resolve_callable_value(supplied[name])
+                if name in supplied
+                else defaults.get(name)
+            )
+            if (
+                callable_identity is not None
+                and callable_identity in self._project_callables
+                and callable_identity not in self.safe_functions
+            ):
+                self.findings.update(sink_kinds)
+
     def visit_Call(self, node: ast.Call) -> None:
+        self._check_parameterized_call(node)
         factory_kind = self._callable_factory_kind(node.func)
         if factory_kind in {"database", "shelve"}:
             self.findings.add("new-server-retention-store")
@@ -1050,6 +1247,9 @@ class PythonRetentionVisitor(ast.NodeVisitor):
         )
         if sink_kind is not None and has_potentially_sensitive_value:
             self.findings.add(sink_kind)
+        if sink_kind is not None:
+            for value in values:
+                self._record_parameter_sink_calls(value, sink_kind)
         if (
             isinstance(node.func, ast.Attribute)
             and node.func.attr in LOCAL_MUTATION_METHODS
@@ -1135,81 +1335,174 @@ def _definition_catalog(
         path: {} for path in parsed_modules
     }
 
+    class_bases: list[tuple[str, str, tuple[ast.expr, ...]]] = []
+    project_module_aliases: dict[str, dict[str, str]] = {
+        module: {} for module in modules_by_path.values()
+    }
+    for relative_path, parsed in parsed_modules.items():
+        module = modules_by_path[relative_path]
+        for statement in parsed.body:
+            if isinstance(statement, ast.Import):
+                for alias in statement.names:
+                    if alias.name in exports:
+                        project_module_aliases[module][
+                            alias.asname or alias.name.split(".", 1)[0]
+                        ] = alias.name
+
+    def register_lambda(
+        relative_path: str, node: ast.Lambda, scope: tuple[str, ...]
+    ) -> str:
+        module = modules_by_path[relative_path]
+        prefix = ".".join((module, *scope))
+        identity = f"{prefix + '.' if prefix else ''}<lambda>@{node.lineno}:{node.col_offset}"
+        identities_by_path[relative_path][id(node)] = identity
+        project_callables.add(identity)
+        return identity
+
+    def assigned_lambda(node: ast.AST | None) -> ast.Lambda | None:
+        if isinstance(node, ast.Lambda):
+            return node
+        if (
+            isinstance(node, ast.Call)
+            and _dotted_name(node.func) == "staticmethod"
+            and node.args
+            and isinstance(node.args[0], ast.Lambda)
+        ):
+            return node.args[0]
+        return None
+
     def register(
         relative_path: str,
         node: ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef,
         scope: tuple[str, ...],
     ) -> str:
         module = modules_by_path[relative_path]
-        public_name = ".".join((module, *scope, node.name))
-        identity = f"{public_name}@{node.lineno}"
+        qualified_part = f"{node.name}@{node.lineno}"
+        identity = ".".join((module, *scope, qualified_part))
         identities_by_path[relative_path][id(node)] = identity
-        public_callables[public_name] = identity
         project_callables.add(identity)
+        child_scope = (*scope, qualified_part)
         if isinstance(node, ast.ClassDef):
             class_identities.add(identity)
-            for child in node.body:
-                if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                    child_identity = register(
-                        relative_path,
-                        child,
-                        (*scope, node.name),
-                    )
+            class_bases.append((identity, module, tuple(node.bases)))
+        for child in node.body:
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                child_identity = register(relative_path, child, child_scope)
+                if isinstance(node, ast.ClassDef):
                     class_members[(identity, child.name)] = child_identity
+            elif isinstance(child, (ast.Assign, ast.AnnAssign)):
+                value = assigned_lambda(child.value)
+                if value is None:
+                    continue
+                lambda_identity = register_lambda(relative_path, value, child_scope)
+                targets = child.targets if isinstance(child, ast.Assign) else [child.target]
+                for target in targets:
+                    if isinstance(target, ast.Name) and isinstance(node, ast.ClassDef):
+                        class_members[(identity, target.id)] = lambda_identity
         return identity
 
     for relative_path, parsed in parsed_modules.items():
         module = modules_by_path[relative_path]
         for node in parsed.body:
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-                exports[module][node.name] = register(relative_path, node, ())
-            elif (
-                isinstance(node, (ast.Assign, ast.AnnAssign))
-                and isinstance(node.value, ast.Lambda)
-            ):
+                identity = register(relative_path, node, ())
+                exports[module][node.name] = identity
+                public_callables[f"{module}.{node.name}"] = identity
+            elif isinstance(node, (ast.Assign, ast.AnnAssign)):
+                value = assigned_lambda(node.value)
+                if value is None:
+                    continue
                 targets = node.targets if isinstance(node, ast.Assign) else [node.target]
                 for target in targets:
                     if isinstance(target, ast.Name):
-                        identity = (
-                            f"{module}.<lambda>@{node.value.lineno}:"
-                            f"{node.value.col_offset}"
-                        )
+                        identity = register_lambda(relative_path, value, ())
                         exports[module][target.id] = identity
                         public_callables[f"{module}.{target.id}"] = identity
-                        project_callables.add(identity)
 
-    for _ in range(len(parsed_modules) + 1):
+    def resolve_catalog_value(
+        module: str,
+        value: ast.AST,
+        module_aliases: dict[str, str],
+    ) -> str | None:
+        if isinstance(value, ast.Name):
+            return exports[module].get(value.id)
+        if isinstance(value, ast.Attribute):
+            dotted = _dotted_name(value)
+            if dotted is None:
+                return None
+            root, separator, members = dotted.partition(".")
+            source_module = module_aliases.get(root)
+            if source_module is None or not separator or "." in members:
+                return None
+            return exports.get(source_module, {}).get(members)
+        return None
+
+    for _ in range(len(parsed_modules) + len(class_identities) + 2):
         changed = False
         for relative_path, parsed in parsed_modules.items():
             module = modules_by_path[relative_path]
+            module_aliases: dict[str, str] = {}
             for node in parsed.body:
-                if not isinstance(node, ast.ImportFrom):
+                if isinstance(node, ast.Import):
+                    for alias in node.names:
+                        if alias.name in exports:
+                            module_aliases[
+                                alias.asname or alias.name.split(".", 1)[0]
+                            ] = alias.name
                     continue
-                source_module = _resolve_import_module(
-                    module,
-                    node.module,
-                    node.level,
-                )
-                source_exports = exports.get(source_module, {})
-                for alias in node.names:
-                    if alias.name == "*":
-                        imported = {
-                            name: identity
-                            for name, identity in source_exports.items()
-                            if not name.startswith("_")
-                        }
-                    else:
-                        identity = source_exports.get(alias.name)
-                        imported = (
-                            {alias.asname or alias.name: identity}
-                            if identity is not None
-                            else {}
+                imported: dict[str, str] = {}
+                if isinstance(node, ast.ImportFrom):
+                    source_module = _resolve_import_module(
+                        module,
+                        node.module,
+                        node.level,
+                    )
+                    source_exports = exports.get(source_module, {})
+                    for alias in node.names:
+                        if alias.name == "*":
+                            imported.update(
+                                {
+                                    name: identity
+                                    for name, identity in source_exports.items()
+                                    if not name.startswith("_")
+                                }
+                            )
+                        elif (identity := source_exports.get(alias.name)) is not None:
+                            imported[alias.asname or alias.name] = identity
+                elif isinstance(node, (ast.Assign, ast.AnnAssign)):
+                    value = node.value
+                    identity = resolve_catalog_value(module, value, module_aliases)
+                    if identity is not None:
+                        targets = (
+                            node.targets if isinstance(node, ast.Assign) else [node.target]
                         )
-                    for name, identity in imported.items():
-                        if exports[module].get(name) != identity:
-                            exports[module][name] = identity
-                            public_callables[f"{module}.{name}"] = identity
-                            changed = True
+                        imported.update(
+                            {
+                                target.id: identity
+                                for target in targets
+                                if isinstance(target, ast.Name)
+                            }
+                        )
+                for name, identity in imported.items():
+                    if exports[module].get(name) != identity:
+                        exports[module][name] = identity
+                        public_callables[f"{module}.{name}"] = identity
+                        changed = True
+
+        for class_identity, module, bases in class_bases:
+            for base in bases:
+                base_identity = resolve_catalog_value(
+                    module, base, project_module_aliases[module]
+                )
+                if base_identity is None:
+                    continue
+                for (owner, name), member_identity in tuple(class_members.items()):
+                    if owner != base_identity:
+                        continue
+                    key = (class_identity, name)
+                    if key not in class_members:
+                        class_members[key] = member_identity
+                        changed = True
         if not changed:
             break
 
@@ -1248,6 +1541,9 @@ def python_project_findings(contents: dict[str, str]) -> dict[str, set[str]]:
     request_functions: set[str] = set()
     safe_functions: set[str] = set()
     callable_returns: dict[str, str] = {}
+    callable_parameter_sinks: dict[str, dict[str, set[str]]] = {}
+    callable_parameters: dict[str, tuple[str, ...]] = {}
+    callable_defaults: dict[str, dict[str, str]] = {}
     function_count = sum(
         isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
         for parsed in parsed_modules.values()
@@ -1259,6 +1555,15 @@ def python_project_findings(contents: dict[str, str]) -> dict[str, set[str]]:
         discovered_request = set(request_functions)
         discovered_safe = set(safe_functions)
         discovered_callable_returns = dict(callable_returns)
+        discovered_parameter_sinks = {
+            identity: {name: set(kinds) for name, kinds in parameters.items()}
+            for identity, parameters in callable_parameter_sinks.items()
+        }
+        discovered_parameters = dict(callable_parameters)
+        discovered_defaults = {
+            identity: dict(defaults)
+            for identity, defaults in callable_defaults.items()
+        }
         iteration_findings = {relative_path: set() for relative_path in contents}
         for relative_path, parsed in parsed_modules.items():
             module_name = modules_by_path[relative_path]
@@ -1276,6 +1581,9 @@ def python_project_findings(contents: dict[str, str]) -> dict[str, set[str]]:
                 class_identities=class_identities,
                 node_identities=identities_by_path.get(relative_path, {}),
                 module_exports=module_exports,
+                callable_parameter_sinks=callable_parameter_sinks,
+                callable_parameters=callable_parameters,
+                callable_defaults=callable_defaults,
             )
             visitor.visit(parsed)
             iteration_findings[relative_path].update(visitor.findings)
@@ -1283,12 +1591,21 @@ def python_project_findings(contents: dict[str, str]) -> dict[str, set[str]]:
             discovered_request.update(visitor.request_functions)
             discovered_safe.update(visitor.safe_functions)
             discovered_callable_returns.update(visitor.callable_returns)
+            for identity, parameters in visitor.callable_parameter_sinks.items():
+                target_parameters = discovered_parameter_sinks.setdefault(identity, {})
+                for name, kinds in parameters.items():
+                    target_parameters.setdefault(name, set()).update(kinds)
+            discovered_parameters.update(visitor.callable_parameters)
+            discovered_defaults.update(visitor.callable_defaults)
             project_callables.update(visitor._project_callables)
         if (
             discovered_tainted == tainted_functions
             and discovered_request == request_functions
             and discovered_safe == safe_functions
             and discovered_callable_returns == callable_returns
+            and discovered_parameter_sinks == callable_parameter_sinks
+            and discovered_parameters == callable_parameters
+            and discovered_defaults == callable_defaults
         ):
             for relative_path, rules in iteration_findings.items():
                 findings[relative_path].update(rules)
@@ -1297,6 +1614,9 @@ def python_project_findings(contents: dict[str, str]) -> dict[str, set[str]]:
         request_functions = discovered_request
         safe_functions = discovered_safe
         callable_returns = discovered_callable_returns
+        callable_parameter_sinks = discovered_parameter_sinks
+        callable_parameters = discovered_parameters
+        callable_defaults = discovered_defaults
     else:
         for relative_path, rules in iteration_findings.items():
             findings[relative_path].update(rules)

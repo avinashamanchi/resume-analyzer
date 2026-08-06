@@ -1759,6 +1759,215 @@ def test_retention_verifier_keeps_scope_and_safe_callable_controls(
     assert result.stdout == "Sensitive-retention verification passed.\n"
 
 
+@pytest.mark.parametrize(
+    "files",
+    [
+        {
+            "server/app.py": (
+                "def extract():\n    return request.data\n"
+                "def persist(reader):\n"
+                "    redis_client.set('report', reader())\n"
+                "persist(extract)\n"
+            ),
+        },
+        {
+            "server/app.py": (
+                "def extract():\n    return request.data\n"
+                "def persist(reader=extract):\n"
+                "    logger.info(reader())\n"
+                "persist()\n"
+            ),
+        },
+        {
+            "server/app.py": (
+                "def extract():\n    return request.data\n"
+                "safe = lambda: b'safe'\n"
+                "reader = extract if enabled else safe\n"
+                "redis_client.set('report', reader())\n"
+            ),
+        },
+        {
+            "server/app.py": (
+                "import functools\n"
+                "def extract():\n    return request.data\n"
+                "reader = functools.partial(extract)\n"
+                "redis_client.set('report', reader())\n"
+            ),
+        },
+        {
+            "server/app.py": (
+                "from typing import cast as typed\n"
+                "def extract():\n    return request.data\n"
+                "reader = typed(object, extract)\n"
+                "logger.info(reader())\n"
+            ),
+        },
+        {
+            "server/helpers.py": "def extract():\n    return request.data\n",
+            "server/app.py": (
+                "import server.helpers as helpers\n"
+                "lookup = getattr\n"
+                "reader = lookup(helpers, 'extract')\n"
+                "redis_client.set('report', reader())\n"
+            ),
+        },
+        {
+            "server/helpers.py": "def extract():\n    return request.data\n",
+            "server/app.py": (
+                "import server.helpers as helpers\n"
+                "reader = helpers.__dict__['extract']\n"
+                "database.execute('INSERT INTO report VALUES (?)', reader())\n"
+            ),
+        },
+        {
+            "server/app.py": (
+                "def extract():\n    return request.data\n"
+                "redis_client.set('report', (reader := extract)())\n"
+            ),
+        },
+        {
+            "server/helpers.py": "def extract():\n    return request.data\n",
+            "server/reexport.py": (
+                "from server.helpers import extract as _extract\n"
+                "extract = _extract\n"
+            ),
+            "server/app.py": (
+                "from server.reexport import extract\n"
+                "redis_client.set('report', extract())\n"
+            ),
+        },
+        {
+            "server/helpers.py": "def extract():\n    return request.data\n",
+            "server/reexport.py": (
+                "import server.helpers as helpers\n"
+                "extract = helpers.extract\n"
+            ),
+            "server/app.py": (
+                "from server.reexport import extract\n"
+                "logger.info(extract())\n"
+            ),
+        },
+        {
+            "server/app.py": (
+                "class Base:\n"
+                "    @staticmethod\n"
+                "    def read():\n"
+                "        return request.data\n"
+                "class Child(Base):\n"
+                "    pass\n"
+                "redis_client.set('report', Child.read())\n"
+            ),
+        },
+        {
+            "server/app.py": (
+                "class Reader:\n"
+                "    read = staticmethod(lambda: request.data)\n"
+                "database.execute('INSERT INTO report VALUES (?)', Reader.read())\n"
+            ),
+        },
+        {
+            "server/app.py": (
+                "def extract():\n    return request.data\n"
+                "safe = lambda: b'safe'\n"
+                "reader = extract or safe\n"
+                "logger.info(reader())\n"
+            ),
+        },
+        {
+            "server/helpers.py": "def extract():\n    return request.data\n",
+            "server/app.py": (
+                "import server.helpers as helpers\n"
+                "lookup = getattr\n"
+                "name = 'extract'\n"
+                "reader = lookup(helpers, name)\n"
+                "redis_client.set('report', reader())\n"
+            ),
+        },
+        {
+            "server/helpers.py": "def extract():\n    return request.data\n",
+            "server/app.py": (
+                "import server.helpers as helpers\n"
+                "name = 'extract'\n"
+                "reader = helpers.__dict__[name]\n"
+                "logger.info(reader())\n"
+            ),
+        },
+        {
+            "server/helpers.py": (
+                "class Base:\n"
+                "    @staticmethod\n"
+                "    def read():\n"
+                "        return request.data\n"
+            ),
+            "server/app.py": (
+                "import server.helpers as helpers\n"
+                "class Child(helpers.Base):\n"
+                "    pass\n"
+                "redis_client.set('report', Child.read())\n"
+            ),
+        },
+    ],
+)
+def test_retention_verifier_rejects_higher_order_and_dynamic_callable_flows(
+    tmp_path: Path,
+    files: dict[str, str],
+):
+    repository = _tracked_repo(tmp_path, files)
+
+    result = _retention_verifier(repository)
+
+    assert result.returncode == 1
+    assert "content-" in result.stderr
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        (
+            "def persist(reader):\n"
+            "    redis_client.set('report', reader())\n"
+        ),
+        (
+            "safe_one = lambda: b'one'\n"
+            "safe_two = lambda: b'two'\n"
+            "reader = safe_one if enabled else safe_two\n"
+            "redis_client.set('report', reader())\n"
+        ),
+        (
+            "class Unsafe:\n"
+            "    @staticmethod\n"
+            "    def read():\n"
+            "        return request.data\n"
+            "class Safe:\n"
+            "    read = staticmethod(lambda: b'safe')\n"
+            "redis_client.set('report', Safe.read())\n"
+        ),
+        (
+            "def unsafe_outer():\n"
+            "    def read():\n"
+            "        return request.data\n"
+            "    return read\n"
+            "def safe_outer():\n"
+            "    def read():\n"
+            "        return b'safe'\n"
+            "    return read\n"
+            "reader = safe_outer()\n"
+            "redis_client.set('report', reader())\n"
+        ),
+    ],
+)
+def test_retention_verifier_allows_proven_safe_higher_order_controls(
+    tmp_path: Path,
+    content: str,
+):
+    repository = _tracked_repo(tmp_path, {"server/app.py": content})
+
+    result = _retention_verifier(repository)
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "Sensitive-retention verification passed.\n"
+
+
 def test_release_docs_and_ci_cover_required_unverified_boundaries():
     required_docs = (
         ROOT / "docs" / "privacy-policy.md",
