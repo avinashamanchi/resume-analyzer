@@ -789,6 +789,14 @@ def test_architectural_retention_policy_pins_python_and_capability_counts():
         "server/app.py": {"logging": 3},
         "server/gunicorn_logger.py": {"logging": 5},
     }
+    assert {
+        path: sum(item.count for item in boundary.approved_security_scopes)
+        for path, boundary in retention.TRUSTED_BOUNDARIES.items()
+    } == {
+        "server/rate_limit.py": 60,
+        "server/app.py": 36,
+        "server/gunicorn_logger.py": 7,
+    }
 
 
 @pytest.mark.parametrize(
@@ -867,6 +875,32 @@ def test_architectural_retention_policy_requires_module_and_node_attestations(
 
     assert "trusted-retention-boundary-modified" in findings
     assert "durable-storage-capability" in findings
+
+
+def test_architectural_retention_policy_requires_security_scope_attestation(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    content = _trusted_retention_files()["server/app.py"]
+    mutated = content.replace(
+        "json.dumps(payload, separators=(\",\", \":\"), sort_keys=True) + \"\\n\"",
+        "request.data",
+        1,
+    )
+    assert mutated != content
+    tree = ast.parse(mutated)
+    current = retention.TRUSTED_BOUNDARIES["server/app.py"]
+    monkeypatch.setitem(
+        retention.TRUSTED_BOUNDARIES,
+        "server/app.py",
+        replace(current, module_fingerprint=retention._node_fingerprint(tree)),
+    )
+
+    findings = retention.python_project_findings(
+        {"server/app.py": mutated}
+    )["server/app.py"]
+
+    assert "trusted-retention-boundary-modified" in findings
+    assert "logging-sink" in findings
 
 
 def test_architectural_retention_policy_rejects_expected_node_count_drift(
@@ -1003,6 +1037,20 @@ def test_architectural_retention_policy_rejects_expected_node_count_drift(
         "import os\nwriter = os.ftruncate\n",
         "def persist(handle):\n    handle.truncate(0)\n",
         "import os\ndef persist():\n    return os.open('state.txt', os.O_WRONLY)\n",
+        "import os\ncreator = os.creat\n",
+        "import dbm\n",
+        "from dbm import open as database_open\n",
+        "import shutil\ncopier = shutil.copy\n",
+        "import shutil\ncopier = shutil.copy2\n",
+        "import shutil\ncopier = shutil.copyfile\n",
+        "import shutil\ncopier = shutil.copyfileobj\n",
+        "import shutil\ncopier = shutil.copytree\n",
+        "import runpy\nrunner = runpy.run_path\n",
+        "from runpy import run_module as runner\n",
+        "import warnings\nwarnings.warn('safe')\n",
+        "from warnings import showwarning as emit\n",
+        "def emit():\n    return print('safe')\n",
+        "def execute():\n    return eval('40 + 2')\n",
     ],
 )
 def test_architectural_retention_policy_rejects_untrusted_sink_capabilities(
@@ -1058,6 +1106,49 @@ def test_architectural_retention_policy_rejects_untrusted_sink_capabilities(
     ],
 )
 def test_architectural_retention_policy_allows_read_only_and_memory_io(
+    tmp_path: Path,
+    content: str,
+):
+    repository = _tracked_repo(tmp_path, {"server/feature.py": content})
+
+    result = _retention_verifier(repository)
+
+    assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        (
+            "def print(message):\n"
+            "    return message\n"
+            "result = print('safe')\n"
+        ),
+        "def apply(eval):\n    return eval('safe')\n",
+        (
+            "def outer():\n"
+            "    def print(message):\n"
+            "        return message\n"
+            "    def inner():\n"
+            "        return print('safe')\n"
+            "    return inner()\n"
+        ),
+        (
+            "def identity(value):\n"
+            "    return value\n"
+            "print = identity\n"
+            "result = print('safe')\n"
+        ),
+        (
+            "def outer():\n"
+            "    eval = lambda value: value\n"
+            "    def inner():\n"
+            "        return eval('safe')\n"
+            "    return inner()\n"
+        ),
+    ],
+)
+def test_architectural_retention_policy_honors_lexical_builtin_shadowing(
     tmp_path: Path,
     content: str,
 ):

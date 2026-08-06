@@ -82,7 +82,7 @@ CAPABILITY_RULES = {
     "dynamic": "dynamic-capability-synthesis",
 }
 DURABLE_MODULE_ROOTS = frozenset(
-    {"psycopg", "psycopg2", "redis", "shelve", "sqlalchemy", "sqlite3"}
+    {"dbm", "psycopg", "psycopg2", "redis", "shelve", "sqlalchemy", "sqlite3"}
 )
 DURABLE_CONSTRUCTORS = frozenset(
     {
@@ -154,6 +154,14 @@ READABLE_OPEN_CAPABILITIES = frozenset(
 ALWAYS_DURABLE_FILE_CAPABILITIES = frozenset(
     {
         "io.FileIO",
+        "os.creat",
+        "shutil.copy",
+        "shutil.copy2",
+        "shutil.copyfile",
+        "shutil.copyfileobj",
+        "shutil.copymode",
+        "shutil.copystat",
+        "shutil.copytree",
         "tempfile.NamedTemporaryFile",
         "tempfile.SpooledTemporaryFile",
         "tempfile.TemporaryFile",
@@ -184,8 +192,31 @@ DYNAMIC_CANONICAL_CAPABILITIES = frozenset(
         "builtins.locals",
         "operator.attrgetter",
         "operator.methodcaller",
+        "runpy.run_module",
+        "runpy.run_path",
     }
 )
+LOGGING_CANONICAL_CAPABILITIES = frozenset(
+    {
+        "builtins.print",
+        "warnings.showwarning",
+        "warnings.warn",
+        "warnings.warn_explicit",
+    }
+)
+DYNAMIC_MODULE_ROOTS = frozenset({"importlib", "runpy"})
+BUILTIN_CALLABLE_KINDS = {
+    "__import__": "dynamic",
+    "compile": "dynamic",
+    "eval": "dynamic",
+    "exec": "dynamic",
+    "getattr": "getattr",
+    "globals": "dynamic",
+    "locals": "dynamic",
+    "open": "open",
+    "print": "logging",
+    "vars": "vars",
+}
 LOG_METHODS = frozenset(
     {"critical", "debug", "error", "exception", "info", "log", "warning"}
 )
@@ -207,9 +238,16 @@ class CapabilityAttestation:
 
 
 @dataclass(frozen=True)
+class SecurityScopeAttestation:
+    fingerprint: str
+    count: int
+
+
+@dataclass(frozen=True)
 class TrustedBoundary:
     module_fingerprint: str
     approved_capabilities: tuple[CapabilityAttestation, ...]
+    approved_security_scopes: tuple[SecurityScopeAttestation, ...]
 
 
 TRUSTED_BOUNDARIES: dict[str, TrustedBoundary] = {
@@ -297,6 +335,70 @@ TRUSTED_BOUNDARIES: dict[str, TrustedBoundary] = {
                 2,
             ),
         ),
+        # Mechanical CPython 3.12 Counter: every function/class scope plus
+        # every top-level import and assignment in the trusted module.
+        approved_security_scopes=(
+            SecurityScopeAttestation("01a94bce2be478d6d8b882db9ef05a4000b9934b6cd3e4c9d839303939a8de75", 1),
+            SecurityScopeAttestation("01f0c34fde4dc260b035a630bc5d88fb5a532e4d2ccbd16915d00a725432053b", 1),
+            SecurityScopeAttestation("056ff751f1ed3c108880197a022860feb7f2bcb4bde51f2aabe594486d722723", 1),
+            SecurityScopeAttestation("057b19a6413b4fccc58caa329f44a8e67bec8768a6a6bd54cb25384eed1198cd", 1),
+            SecurityScopeAttestation("05d8de889ca2008d86f18c67b8bbdd3c0827da9ccf4c3613c34300933a0acde4", 1),
+            SecurityScopeAttestation("0879e742986ee6b31329c891e5e58ad3e0d293b6e34270f9768a8f715511cad7", 1),
+            SecurityScopeAttestation("09d5ef34d181eb10dca17aae6dd4c271c7cf12f882e316324310b7978c0bf08d", 1),
+            SecurityScopeAttestation("11295ab715343fd02fa9b919b031c99e7242a7574cce7662485c1912abcfa4d5", 1),
+            SecurityScopeAttestation("1bfb24e9e2975908c35d5ebeee0d07a48eb605149bb399f75629df7d5317f5a5", 1),
+            SecurityScopeAttestation("1f2eab67e510e501526e704eb73860c1272eefd20ddc294dc639685adf591be9", 1),
+            SecurityScopeAttestation("26ae916c3cfae485b6bdf751c411c382b0344d327465e64318b538dfe65bb384", 1),
+            SecurityScopeAttestation("27deac5122477a5f6a7b6af1e99c9fd07747bb2bc87e6f06a5f111401f1b5bb7", 1),
+            SecurityScopeAttestation("2c4493757d7d49316829a40a6469dd399a98b7b20e8a9485eb84d3fc00c435de", 1),
+            SecurityScopeAttestation("31188bd8ca3d4fb1b1dbe92d7aabd7221a29186490a62c9c8826ade2aa790254", 1),
+            SecurityScopeAttestation("3522a6dfb9f3e8434bddf0ffb0f69e867d4451a85da035ab60c87528414aac35", 1),
+            SecurityScopeAttestation("3589c0927040d30cd4f5c0c18cbd142f26db58e0c05eee28c9406cde887db3cf", 1),
+            SecurityScopeAttestation("374b61224d36afa6b6cb128d0cb866452c6e2ccc51935499482b95f41ad400e4", 1),
+            SecurityScopeAttestation("3a20155993ea82ee8a5cf5bf5a85926830fb39a16bff234ff00c5b07aa3096c5", 1),
+            SecurityScopeAttestation("41bb6862b9e67384b3b5bf4c6d2abfca15c92a15e6476ae98f0c5b06e4e655ad", 1),
+            SecurityScopeAttestation("4b27ddde5ba4a5c76eebc507224428f536803c9057f8076bf7d7a8a018dd8f73", 1),
+            SecurityScopeAttestation("4f9b8f94701c55f7bd17bdfe232a0df2c485c3cfa003c7d49c72ef168f68a40e", 1),
+            SecurityScopeAttestation("526a2abf402edb4e4e0aba6bcb966a415e3eb5309c17e8fb045b1b8ba1063069", 1),
+            SecurityScopeAttestation("536bcdebd23575330a29f16e9ae7f80f1d78b5d8c2d08d1ae17e94a9ec691b1f", 1),
+            SecurityScopeAttestation("542ba0bd59082fec2d4845523a6fa67d655edcf4bae8931c6d35b7c1af57cfe2", 1),
+            SecurityScopeAttestation("60db75ac2d4d9121f01af316ae1f4cebe0624a4b85597825c1d44959af0b2341", 1),
+            SecurityScopeAttestation("63dd9d905960ca009825c400754c2ff0c1568ef50dc4e07eab2aff50802b1e3f", 1),
+            SecurityScopeAttestation("64c38391a3bfbb9accb2a1973ac2bcb08905b68b967ba3a06ffe6a5f35e338b4", 1),
+            SecurityScopeAttestation("68f5ba7161f9ddf276c0426af6f431d7faec3aca613e8b6a4cfac67958071d2b", 1),
+            SecurityScopeAttestation("789549cc67097a835dc3678a9f74a4f578e7e74f28c91d00461990fdf95d08e1", 1),
+            SecurityScopeAttestation("7d3cd2caaca23548d5281984ce2d5904f361736b0a6400f99456a8074adac378", 1),
+            SecurityScopeAttestation("7e70a552fd9f537f01cf7ff1cf48b87a1a60f3e763b5e6fdde2bac02cb2c178e", 1),
+            SecurityScopeAttestation("7e9f1e2d671a0e083333d433529317946508d0b93538574c9b7d9e8aec73c408", 1),
+            SecurityScopeAttestation("805dd6b236b1c74144b5bbe8c41fad581e53f58936cfe929830cddb75247ba6b", 1),
+            SecurityScopeAttestation("94261edcdf68f0066c4b352343ad2dd6ab97b79cfa01a8647e1e7a33dee797d9", 1),
+            SecurityScopeAttestation("973d689365657e1fe766e12b1f5f58d8970f309a9660191a401ef77e2f360783", 1),
+            SecurityScopeAttestation("9fae10a90858f7baa61dfadb69d89492c4fe09cf01ed7b306c9cd8076fdfa62e", 1),
+            SecurityScopeAttestation("a1eb5d6c9210f799e9028b3c6c61d63baee029cf9b883b26d63ab54207db6d98", 1),
+            SecurityScopeAttestation("ac563d0c130acf89c8d2ecdfc413d1cc5db307091c244955ca392f86935d08a2", 1),
+            SecurityScopeAttestation("ae06405b96e35794b68c923e1e4d805f5d65c572cfeaaee3fa968547227ea518", 1),
+            SecurityScopeAttestation("af5fd1daf045be635c9f43e029bee810b515fbe1b4f06734e8313e5e7e945109", 1),
+            SecurityScopeAttestation("b5061f58ca0924a6c607d9b308c98c363a495f8546b8de08016e86afea8f93c7", 1),
+            SecurityScopeAttestation("b5d71589f34034898328e0fb62e16a0c9c65b2a3bb3026149adf4c0ced99782b", 1),
+            SecurityScopeAttestation("b844416e358d8da84a17a37a739388394a7af816194baf4c64b6e77e3a1a4ec4", 1),
+            SecurityScopeAttestation("bd89d0993f96eb104c20169a63306b78ce2dd5382629c86418ed582e7b8f4cbc", 1),
+            SecurityScopeAttestation("c42c549ac555439baa1adb3c87c17c34364a9b32e52ae24964969df4011d973c", 1),
+            SecurityScopeAttestation("c52b9bdbfe11a36cfbac499c50f2957707650006fd6677ae23b515ea85c7875d", 1),
+            SecurityScopeAttestation("c5904b45b4b5abaa124226846a1f6562b8bb4453931fc7dc86793893e8addf33", 1),
+            SecurityScopeAttestation("c7dc3911192ef394d1ab46083ac6b29d9af719e4295956797354414e1f5338dc", 1),
+            SecurityScopeAttestation("c994cd1971cad9038c734ff7a351099fe3b8ecba98d658febd8ef3ada5bf6249", 1),
+            SecurityScopeAttestation("ced53ecf5003b94a7aa47102d17dcb385e26fdf7268209384d7207ea9fb7fd54", 1),
+            SecurityScopeAttestation("cf7ca773746f0285b2d5cee0d513df27db55114a31661448aa5acaba43043285", 1),
+            SecurityScopeAttestation("d116b387f1e75e49754f90d22abd1241e1506817faf596cc0db9cd408be3ad43", 1),
+            SecurityScopeAttestation("d5b62c9871e30cecccd4386cfdca1c8cdeacde38cd955776524ddda25694482b", 1),
+            SecurityScopeAttestation("d8fd5ceeb197fcd9a2b6129717ba6da1835a7e703876da13e8f9008d726f41a2", 1),
+            SecurityScopeAttestation("dd44436483f3a9e4e6998b96fee3863617d7fc8627421fc69c0e817d9fbe1283", 1),
+            SecurityScopeAttestation("ea11d9d9266d5c9349445097963044391bb02617283be360f8e21bf8461051d0", 1),
+            SecurityScopeAttestation("f3a3532b34b75849f82e79cd50e3b44230377440f35989d7a95e13d9eaf4cf03", 1),
+            SecurityScopeAttestation("f552e5df3f7a9727edb9e0d7dd5a28e8d0a6569a9a7ae696c0aed18777142853", 1),
+            SecurityScopeAttestation("f81f8013ba7c1be8c18ca6ca77fa247930dc3cb68bebbc5d248b5c1c7ea25b07", 1),
+            SecurityScopeAttestation("fe25d3cd0d050418a98f7d71d06d7f0a927cb07acad269980dd165c59101ce1c", 1),
+        ),
     ),
     "server/app.py": TrustedBoundary(
         module_fingerprint=(
@@ -315,6 +417,44 @@ TRUSTED_BOUNDARIES: dict[str, TrustedBoundary] = {
                 "f48fb992d4d732200eb68eb4ece8779628415e407dfeae7b6d69c2698a82fa1a",
                 1,
             ),
+        ),
+        approved_security_scopes=(
+            SecurityScopeAttestation("005dbf4b2a46b3c23a31d35feedab349a4073cbe6ae83f4baabbf4146558fcee", 1),
+            SecurityScopeAttestation("1222e797ec463c55042234d5e95c4f78d4d4001dc6518c8bba73928ee9c0413e", 1),
+            SecurityScopeAttestation("18aebaa69856080278f54328d8cef22aa5be314723c5896bd87aea9fb9b856df", 1),
+            SecurityScopeAttestation("1bb89e34b7e21d63a4375d87cefbb8b66f194c99fe14a8025674e62c29c051b4", 1),
+            SecurityScopeAttestation("2bd9469f0b02b50b1818640e3fc3787f75427691620c04e6706912629d88206f", 1),
+            SecurityScopeAttestation("2e083104328b7a996e485aa017a269bae64659890674633bd2fab854caa00a32", 1),
+            SecurityScopeAttestation("327b518701727f1905480df3067438b6e015bd9f4f0b740e5c129aa2c7a19a53", 1),
+            SecurityScopeAttestation("3c277a5c45f99a192e8e02e5a98a04a3468c11fdb1c79937da8081142ca2625f", 1),
+            SecurityScopeAttestation("3deda8f227a03487817e9ed3172e2d8eb733b3d54a21b6520381d5cb5ce16ee5", 1),
+            SecurityScopeAttestation("3f1da7a69fc7c9873cab9feec0ca3e814642e414370683316343fdb54be1bf70", 1),
+            SecurityScopeAttestation("4f67752ebb195a19308ebe3536577d9b872577e8f3b7d921c838159f5a6357af", 1),
+            SecurityScopeAttestation("5043966e5abc6eaa5202af56b0985c3d12cedd794be03e76931baa4d2c987fc7", 1),
+            SecurityScopeAttestation("568ad03ced02ed1c8e439daa0b9806ce6b675b4857527929ad10a90e29c63412", 1),
+            SecurityScopeAttestation("59e30dd9f61b76da01c5dae045b4b4e671436c5dfa93a11e7695ccb2d616ed85", 1),
+            SecurityScopeAttestation("60cb8a23aa3edaf117f5fd51244c88dbed49534aac213f6a3648adb4c53c8b67", 1),
+            SecurityScopeAttestation("65e88aa2fd697edc39d97565c7eafa024129633ce83858ec1e5094452b776f11", 1),
+            SecurityScopeAttestation("8a3880f52e8176ded0cd888ba1615ff98e7c68cd1794a7cd6ce5c0dae720105c", 1),
+            SecurityScopeAttestation("8c6e58964f1661d063ab79debb75e6a23156d531e46c3a642c947f4f9eaa7c8a", 1),
+            SecurityScopeAttestation("8dc6ba25e69e259f912bb34d0430506fe49cbc8af26ec97825a69b2f923892f7", 1),
+            SecurityScopeAttestation("9376855c629bcd9718a789018b150168a06fde0f6e7e2838d0f36da1c98a429e", 1),
+            SecurityScopeAttestation("a2e9e10ca1ff2a6e44ec73b472c8eb69bb2e765b94dbc339501ffc94f0631879", 1),
+            SecurityScopeAttestation("a38e14e4b2e14938cd5f6ebd34ef7ad9b5a8f10114efb7b4d473b3ed0aacbbfc", 1),
+            SecurityScopeAttestation("a7ba9459b61c3de0ab9e2ff33a635e1e3d7026837d5b82b331a5e9a883e12d06", 1),
+            SecurityScopeAttestation("af5950e2ab77ddef271805864f553df3334cc3f9d5c63d5d790f874f04a43d57", 1),
+            SecurityScopeAttestation("bb8133ec04ce234af00ea88cdc928c3182c54ef24086a94516636835b08a1398", 1),
+            SecurityScopeAttestation("be073a129125df08107ae370b48e7eb38ce0ed9a3fed1deadbd3c3154aaebe8f", 1),
+            SecurityScopeAttestation("d8fd5ceeb197fcd9a2b6129717ba6da1835a7e703876da13e8f9008d726f41a2", 1),
+            SecurityScopeAttestation("e176e239aa8cb44065f57dc167e3c53f6fc9bfd8d552da46b23aea6394f81043", 1),
+            SecurityScopeAttestation("e389bc64f7c73a277eab1c8c907384cf00d6995b8db724ebaef0395f838f60ec", 1),
+            SecurityScopeAttestation("e75748f30137a2612c3db979a0fb860b85681dd53d219fd2cc415699ae770660", 1),
+            SecurityScopeAttestation("ea11d9d9266d5c9349445097963044391bb02617283be360f8e21bf8461051d0", 1),
+            SecurityScopeAttestation("ee09ac8c0a35032aa14ab63a94d50bd4a6f6378e898e76af5b08e19f02423567", 1),
+            SecurityScopeAttestation("f1a5cbb2372708555c91ad79d7c7f5d9fdaf9267116459aed2a5d417f6fcee5e", 1),
+            SecurityScopeAttestation("f6d94c7eb407c7ab5e4a81a507b30cfb93bc854d0d385540fc18f97c11b74138", 1),
+            SecurityScopeAttestation("fd39984cd5a9ccd66728b403e18729d7d02538083969d4d22a463ef8da46cd5f", 1),
+            SecurityScopeAttestation("fe25d3cd0d050418a98f7d71d06d7f0a927cb07acad269980dd165c59101ce1c", 1),
         ),
     ),
     "server/gunicorn_logger.py": TrustedBoundary(
@@ -346,6 +486,15 @@ TRUSTED_BOUNDARIES: dict[str, TrustedBoundary] = {
                 "94c6bc7efaf9ed9ff637b8f520dae3c28d07d97fec9e8e5659cf4aaedcfda5c1",
                 2,
             ),
+        ),
+        approved_security_scopes=(
+            SecurityScopeAttestation("03ffad9cd56fb7b8f5c90580d32db75f8ef06c0502aaedf1889f683780035758", 1),
+            SecurityScopeAttestation("15487caf1cc50f24d19fb843c4a553b8473d9fb63f0e3cbae853cfff903c048a", 1),
+            SecurityScopeAttestation("1f97a72df1e59046e9b632f0ab9d01deecdbfca300b0d86b92b9e09c3a1b97b2", 1),
+            SecurityScopeAttestation("2cf24e7c4e0991fd9cae84a578776e60e41b058e9a67a7be352976ed3f3b61c5", 1),
+            SecurityScopeAttestation("59e30dd9f61b76da01c5dae045b4b4e671436c5dfa93a11e7695ccb2d616ed85", 1),
+            SecurityScopeAttestation("af7b0c07c8c4544d4e5800ad94e3ab53537775c960105fc68d9e80628045e73f", 1),
+            SecurityScopeAttestation("fe25d3cd0d050418a98f7d71d06d7f0a927cb07acad269980dd165c59101ce1c", 1),
         ),
     ),
 }
@@ -405,6 +554,25 @@ def _node_fingerprint(node: ast.AST) -> str:
     return hashlib.sha256(repr(normalize(node)).encode("utf-8")).hexdigest()
 
 
+def _security_scope_counter(tree: ast.Module) -> Counter[str]:
+    scope_types = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)
+    top_level_dependency_types: tuple[type[ast.AST], ...] = (
+        ast.Import,
+        ast.ImportFrom,
+        ast.Assign,
+        ast.AnnAssign,
+        ast.AugAssign,
+    )
+    type_alias = getattr(ast, "TypeAlias", None)
+    if isinstance(type_alias, type):
+        top_level_dependency_types += (type_alias,)
+    nodes = [node for node in ast.walk(tree) if isinstance(node, scope_types)]
+    nodes.extend(
+        node for node in tree.body if isinstance(node, top_level_dependency_types)
+    )
+    return Counter(_node_fingerprint(node) for node in nodes)
+
+
 def _attested_node_ids(
     relative_path: str,
     tree: ast.Module,
@@ -426,9 +594,15 @@ def _attested_node_ids(
         for policy, nodes in capability_nodes.items()
         for node in nodes.values()
     )
+    expected_scopes = Counter(
+        approved.fingerprint
+        for approved in boundary.approved_security_scopes
+        for _ in range(approved.count)
+    )
     if (
         _node_fingerprint(tree) != boundary.module_fingerprint
         or observed != expected
+        or _security_scope_counter(tree) != expected_scopes
     ):
         findings.add("trusted-retention-boundary-modified")
         return allowed, findings
@@ -512,6 +686,101 @@ def _os_open_call_is_unsafe(
     return _dotted_name(flags) not in read_only_flag_names
 
 
+@dataclass
+class _LexicalScope:
+    kind: str
+    bound_names: set[str]
+    aliases: dict[str, str]
+    global_names: set[str]
+    nonlocal_names: set[str]
+
+
+class _LocalBindingCollector(ast.NodeVisitor):
+    def __init__(self) -> None:
+        self.bound_names: set[str] = set()
+        self.global_names: set[str] = set()
+        self.nonlocal_names: set[str] = set()
+
+    def visit_Name(self, node: ast.Name) -> None:
+        if isinstance(node.ctx, ast.Store):
+            self.bound_names.add(node.id)
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+        self.bound_names.add(node.name)
+
+    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+        self.bound_names.add(node.name)
+
+    def visit_ClassDef(self, node: ast.ClassDef) -> None:
+        self.bound_names.add(node.name)
+
+    def visit_Lambda(self, node: ast.Lambda) -> None:
+        return
+
+    def visit_ListComp(self, node: ast.ListComp) -> None:
+        return
+
+    def visit_SetComp(self, node: ast.SetComp) -> None:
+        return
+
+    def visit_DictComp(self, node: ast.DictComp) -> None:
+        return
+
+    def visit_GeneratorExp(self, node: ast.GeneratorExp) -> None:
+        return
+
+    def visit_Import(self, node: ast.Import) -> None:
+        self.bound_names.update(
+            alias.asname or alias.name.split(".", 1)[0] for alias in node.names
+        )
+
+    def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
+        self.bound_names.update(alias.asname or alias.name for alias in node.names)
+
+    def visit_ExceptHandler(self, node: ast.ExceptHandler) -> None:
+        if node.name is not None:
+            self.bound_names.add(node.name)
+        self.generic_visit(node)
+
+    def visit_Global(self, node: ast.Global) -> None:
+        self.global_names.update(node.names)
+
+    def visit_Nonlocal(self, node: ast.Nonlocal) -> None:
+        self.nonlocal_names.update(node.names)
+
+
+def _function_lexical_scope(
+    node: ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda,
+) -> _LexicalScope:
+    collector = _LocalBindingCollector()
+    body = [node.body] if isinstance(node, ast.Lambda) else node.body
+    for statement in body:
+        collector.visit(statement)
+    arguments = node.args
+    collector.bound_names.update(
+        argument.arg
+        for argument in (
+            *arguments.posonlyargs,
+            *arguments.args,
+            *arguments.kwonlyargs,
+        )
+    )
+    if arguments.vararg is not None:
+        collector.bound_names.add(arguments.vararg.arg)
+    if arguments.kwarg is not None:
+        collector.bound_names.add(arguments.kwarg.arg)
+    collector.bound_names.difference_update(
+        collector.global_names | collector.nonlocal_names
+    )
+    return _LexicalScope(
+        kind="function",
+        bound_names=collector.bound_names,
+        aliases={},
+        global_names=collector.global_names,
+        nonlocal_names=collector.nonlocal_names,
+    )
+
+
 class ArchitecturalSinkVisitor(ast.NodeVisitor):
     """Discover exact storage, logging, and dynamic capability AST nodes."""
 
@@ -520,18 +789,7 @@ class ArchitecturalSinkVisitor(ast.NodeVisitor):
             policy: {} for policy in CAPABILITY_RULES
         }
         self._module_aliases: dict[str, str] = {}
-        self._alias_kinds: dict[str, str] = {
-            "__import__": "dynamic",
-            "compile": "dynamic",
-            "eval": "dynamic",
-            "exec": "dynamic",
-            "globals": "dynamic",
-            "getattr": "getattr",
-            "open": "open",
-            "print": "print",
-            "locals": "dynamic",
-            "vars": "vars",
-        }
+        self._scopes: list[_LexicalScope] = []
         self._durable_receivers: set[AccessPath] = set()
         self._path_values: set[AccessPath] = set()
         self._memory_values: set[AccessPath] = set()
@@ -567,14 +825,11 @@ class ArchitecturalSinkVisitor(ast.NodeVisitor):
             return dotted
         return module if not separator else f"{module}.{suffix}"
 
-    def _callable_kind(self, node: ast.AST | None) -> str | None:
-        if isinstance(node, ast.Name) and node.id in self._alias_kinds:
-            return self._alias_kinds[node.id]
-        canonical = self._canonical_name(node)
+    def _canonical_callable_kind(self, canonical: str | None) -> str | None:
         if canonical in {"open", "builtins.open"} | READABLE_OPEN_CAPABILITIES:
             return "open"
-        if canonical in {"print", "builtins.print"}:
-            return "print"
+        if canonical in LOGGING_CANONICAL_CAPABILITIES:
+            return "logging"
         if canonical in {"getattr", "builtins.getattr"}:
             return "getattr"
         if canonical in {"vars", "builtins.vars"}:
@@ -584,6 +839,52 @@ class ArchitecturalSinkVisitor(ast.NodeVisitor):
         if canonical is not None and canonical.startswith("importlib."):
             return "dynamic"
         return None
+
+    def _resolved_name_kind(self, name: str) -> tuple[bool, str | None]:
+        if not self._scopes:
+            return False, BUILTIN_CALLABLE_KINDS.get(name)
+        current = self._scopes[-1]
+        if current.kind == "function" and name in current.global_names:
+            scopes = self._scopes[:1]
+        else:
+            scopes = self._scopes
+        crossed_function = False
+        for scope in reversed(scopes):
+            if scope.kind == "class" and crossed_function:
+                continue
+            if name in scope.aliases:
+                return True, scope.aliases[name]
+            if name in scope.bound_names:
+                return True, None
+            if scope.kind == "function":
+                crossed_function = True
+        if name in BUILTIN_CALLABLE_KINDS:
+            return True, BUILTIN_CALLABLE_KINDS[name]
+        return False, None
+
+    def _callable_kind(self, node: ast.AST | None) -> str | None:
+        if isinstance(node, ast.Name):
+            resolved, kind = self._resolved_name_kind(node.id)
+            if resolved:
+                return kind
+        return self._canonical_callable_kind(self._canonical_name(node))
+
+    def _binding_scope(self, name: str) -> _LexicalScope:
+        current = self._scopes[-1]
+        if current.kind == "function" and name in current.global_names:
+            return self._scopes[0]
+        if current.kind == "function" and name in current.nonlocal_names:
+            for scope in reversed(self._scopes[:-1]):
+                if scope.kind == "function" and name in scope.bound_names:
+                    return scope
+        return current
+
+    def _bind_name(self, name: str, kind: str | None = None) -> None:
+        scope = self._binding_scope(name)
+        scope.bound_names.add(name)
+        scope.aliases.pop(name, None)
+        if kind is not None:
+            scope.aliases[name] = kind
 
     def _identifier_is_durable(self, identifier: str) -> bool:
         return bool(DURABLE_RECEIVER_PATTERN.search(identifier))
@@ -669,6 +970,59 @@ class ArchitecturalSinkVisitor(ast.NodeVisitor):
                 return "durable"
         return None
 
+    def visit_Module(self, node: ast.Module) -> None:
+        self._scopes.append(
+            _LexicalScope("module", set(), {}, set(), set())
+        )
+        for statement in node.body:
+            self.visit(statement)
+        self._scopes.pop()
+
+    def _visit_function(
+        self, node: ast.FunctionDef | ast.AsyncFunctionDef
+    ) -> None:
+        for decorator in node.decorator_list:
+            self.visit(decorator)
+        self.visit(node.args)
+        if node.returns is not None:
+            self.visit(node.returns)
+        for type_parameter in getattr(node, "type_params", ()):
+            self.visit(type_parameter)
+        self._bind_name(node.name)
+        self._scopes.append(_function_lexical_scope(node))
+        for statement in node.body:
+            self.visit(statement)
+        self._scopes.pop()
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+        self._visit_function(node)
+
+    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+        self._visit_function(node)
+
+    def visit_ClassDef(self, node: ast.ClassDef) -> None:
+        for decorator in node.decorator_list:
+            self.visit(decorator)
+        for base in node.bases:
+            self.visit(base)
+        for keyword in node.keywords:
+            self.visit(keyword.value)
+        for type_parameter in getattr(node, "type_params", ()):
+            self.visit(type_parameter)
+        self._bind_name(node.name)
+        self._scopes.append(
+            _LexicalScope("class", set(), {}, set(), set())
+        )
+        for statement in node.body:
+            self.visit(statement)
+        self._scopes.pop()
+
+    def visit_Lambda(self, node: ast.Lambda) -> None:
+        self.visit(node.args)
+        self._scopes.append(_function_lexical_scope(node))
+        self.visit(node.body)
+        self._scopes.pop()
+
     def visit_Import(self, node: ast.Import) -> None:
         for alias in node.names:
             bound = alias.asname or alias.name.split(".", 1)[0]
@@ -681,8 +1035,9 @@ class ArchitecturalSinkVisitor(ast.NodeVisitor):
             if alias.name == "logging":
                 self._logging_receivers.add((bound,))
                 self._add_logging(node)
-            if root == "importlib":
+            if root in DYNAMIC_MODULE_ROOTS:
                 self._add_dynamic(node)
+            self._bind_name(bound)
 
     def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
         module = node.module or ""
@@ -691,9 +1046,7 @@ class ArchitecturalSinkVisitor(ast.NodeVisitor):
             bound = alias.asname or alias.name
             canonical = f"{module}.{alias.name}" if module else alias.name
             self._module_aliases[bound] = canonical
-            kind = self._callable_kind(ast.Name(id=bound))
-            if kind is not None:
-                self._alias_kinds[bound] = kind
+            kind = self._canonical_callable_kind(canonical)
             if root in DURABLE_MODULE_ROOTS:
                 self._durable_receivers.add((bound,))
                 self._add_durable(node)
@@ -705,15 +1058,16 @@ class ArchitecturalSinkVisitor(ast.NodeVisitor):
                 self._add_durable(node)
             if canonical in LOW_LEVEL_WRITE_CAPABILITIES:
                 self._add_durable(node)
-            if kind == "print":
+            if kind == "logging":
                 self._add_logging(node)
             if kind in {"getattr", "vars", "dynamic"}:
                 self._add_dynamic(node)
             if root == "logging" or module == "gunicorn.glogging":
                 self._logging_receivers.add((bound,))
                 self._add_logging(node)
-            if root == "importlib":
+            if root in DYNAMIC_MODULE_ROOTS:
                 self._add_dynamic(node)
+            self._bind_name(bound, kind)
 
     def _record_assignment(self, name: str, value: ast.AST) -> None:
         path = (name,)
@@ -722,7 +1076,6 @@ class ArchitecturalSinkVisitor(ast.NodeVisitor):
         self._memory_values.discard(path)
         self._reflection_maps.discard(path)
         self._logging_receivers.discard(path)
-        self._alias_kinds.pop(name, None)
 
         value_kind = self._value_kind(value)
         if value_kind == "durable":
@@ -737,8 +1090,7 @@ class ArchitecturalSinkVisitor(ast.NodeVisitor):
             self._reflection_maps.add(path)
 
         callable_kind = self._callable_kind(value)
-        if callable_kind is not None:
-            self._alias_kinds[name] = callable_kind
+        self._bind_name(name, callable_kind)
 
     def visit_Assign(self, node: ast.Assign) -> None:
         self.visit(node.value)
@@ -768,7 +1120,7 @@ class ArchitecturalSinkVisitor(ast.NodeVisitor):
             return
         if kind == "open":
             self._add_durable(node)
-        elif kind == "print":
+        elif kind == "logging":
             self._add_logging(node)
         else:
             self._add_dynamic(node)
@@ -785,7 +1137,7 @@ class ArchitecturalSinkVisitor(ast.NodeVisitor):
             canonical is not None and canonical.startswith("importlib.")
         ):
             self._add_dynamic(node)
-        if canonical in {"builtins.print"}:
+        if canonical in LOGGING_CANONICAL_CAPABILITIES:
             self._add_logging(node)
         if canonical in READABLE_OPEN_CAPABILITIES and not called:
             self._add_durable(node)
@@ -838,7 +1190,7 @@ class ArchitecturalSinkVisitor(ast.NodeVisitor):
         final = canonical.rsplit(".", 1)[-1] if canonical else None
         kind = self._callable_kind(node.func)
 
-        if kind == "print":
+        if kind == "logging":
             self._add_logging(node)
         elif kind in {"vars", "dynamic"}:
             self._add_dynamic(node)
