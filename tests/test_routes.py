@@ -248,6 +248,21 @@ def submit_pdf(client: Any, pdf_bytes: bytes = b"%PDF-private-bytes"):
     )
 
 
+def production_app(harness: Harness):
+    app = create_app(
+        settings(
+            app_env="production",
+            groq_api_key="configured-outside-source",
+            installation_signing_key="x" * 32,
+            redis_url="rediss://cache.internal:6380/0",
+            allowed_web_origins=("https://resume-ai.onrender.com",),
+        ),
+        harness.registry(),
+    )
+    app.config["TESTING"] = True
+    return app
+
+
 def parsed_error(response: Any) -> PublicErrorV1:
     return PublicErrorV1.model_validate(response.get_json())
 
@@ -298,6 +313,81 @@ def test_installation_issue_returns_a_versioned_token_without_caching(
     assert response.get_json() == {"schemaVersion": 1, "installationToken": TOKEN}
     assert harness.installation_tokens.issued == 1
     assert response.headers["Cache-Control"] == "no-store"
+
+
+def test_production_rate_limits_distinct_render_forwarded_clients_not_proxy_socket(
+    harness: Harness,
+    capsys: pytest.CaptureFixture[str],
+):
+    client = production_app(harness).test_client()
+
+    first = client.post(
+        "/v1/installations",
+        headers={"X-Forwarded-For": "203.0.113.17"},
+        environ_overrides={"REMOTE_ADDR": "10.20.30.40"},
+    )
+    second = client.post(
+        "/v1/installations",
+        headers={"X-Forwarded-For": "198.51.100.29"},
+        environ_overrides={"REMOTE_ADDR": "10.20.30.40"},
+    )
+
+    assert first.status_code == second.status_code == 201
+    assert harness.rate_limiter.issue_checks == [
+        "203.0.113.0/24",
+        "198.51.100.0/24",
+    ]
+    rendered_logs = capsys.readouterr().err
+    for direct_address in ("203.0.113.17", "198.51.100.29", "10.20.30.40"):
+        assert direct_address not in rendered_logs
+
+
+@pytest.mark.parametrize(
+    "forwarded_for",
+    [
+        None,
+        "",
+        " 203.0.113.17",
+        "203.0.113.17 ",
+        "203.000.113.017",
+        "2001:DB8::1",
+        "fe80::1%en0",
+        "203.0.113.17, 10.20.30.40",
+        "203.0.113.17,198.51.100.29",
+        "for=203.0.113.17",
+        "unknown",
+    ],
+)
+def test_production_rate_limit_fails_closed_for_untrusted_forwarded_chain(
+    harness: Harness,
+    forwarded_for: str | None,
+):
+    headers = {} if forwarded_for is None else {"X-Forwarded-For": forwarded_for}
+
+    response = production_app(harness).test_client().post(
+        "/v1/installations",
+        headers=headers,
+        environ_overrides={"REMOTE_ADDR": "10.20.30.40"},
+    )
+
+    assert response.status_code == 503
+    assert parsed_error(response).code is ErrorCode.SERVICE_UNAVAILABLE
+    assert harness.rate_limiter.issue_checks == []
+    assert harness.installation_tokens.issued == 0
+
+
+def test_testing_rate_limit_uses_explicit_socket_peer_not_forwarded_header(
+    client: Any,
+    harness: Harness,
+):
+    response = client.post(
+        "/v1/installations",
+        headers={"X-Forwarded-For": "203.0.113.17, 198.51.100.29"},
+        environ_overrides={"REMOTE_ADDR": "192.0.2.44"},
+    )
+
+    assert response.status_code == 201
+    assert harness.rate_limiter.issue_checks == ["192.0.2.0/24"]
 
 
 @pytest.mark.parametrize(

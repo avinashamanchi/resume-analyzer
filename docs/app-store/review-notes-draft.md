@@ -4,7 +4,7 @@ Resume.AI reviews a standard PDF or user-reviewed text after explicit consent. S
 
 The service returns deterministic readiness feedback and separate AI coaching. It is not an exact ATS or employment prediction, has no hiring guarantee, and is not professional, legal, or employment advice.
 
-No account is required. The server keeps no content or report history. Browser history is not kept. iOS reports are saved locally only when the user chooses; deletion controls are in Settings. An installation security identifier and coarse pseudonymous rate-limit key are used without advertising or tracking.
+No account is required. The server keeps no content or report history. Browser history is not kept. iOS reports use the app's local SQLite store only when the user chooses Save locally; deletion controls remove active local records. Depending on user and iOS settings, saved reports may be included in encrypted device or iCloud backups, and deleting active records does not guarantee removal from an existing backup. Shipping-binary backup and restore behavior is UNVERIFIED and remains a Task 17 gate. An installation security identifier and coarse pseudonymous rate-limit key are used without advertising or tracking.
 
 Provider disclosure: Groq retains usage metadata and may retain inference content for up to 30 days for reliability and abuse prevention unless Zero Data Retention is enabled. Zero Data Retention is **UNVERIFIED** in the authoritative Groq console and blocks release. Render application logs are retained for 7, 14, or 30 days by plan. App-controlled logs are content-free, while Render may retain provider-side connection and HTTP request metadata, Device/IP Data, and IP-based geolocation under its own policy.
 

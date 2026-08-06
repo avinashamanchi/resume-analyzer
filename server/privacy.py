@@ -86,3 +86,33 @@ def coarse_ip_key(raw_address: str | None) -> str:
         return "unknown"
     prefix_length = 24 if address.version == 4 else 64
     return str(ipaddress.ip_network((address, prefix_length), strict=False))
+
+
+def rate_limit_ip_key(
+    app_env: str,
+    *,
+    forwarded_for: str | None,
+    socket_address: str | None,
+) -> str:
+    """Resolve one trusted Render hop in production and the socket peer elsewhere."""
+    if app_env != "production":
+        return coarse_ip_key(socket_address)
+    # The production Blueprint exposes Gunicorn only through Render's ingress.
+    # Render supplies the client hop in X-Forwarded-For; an incoming spoof is
+    # appended into a multi-hop value, which this contract rejects wholesale.
+    if (
+        not isinstance(forwarded_for, str)
+        or not forwarded_for
+        or len(forwarded_for) > 64
+        or forwarded_for.strip() != forwarded_for
+        or "," in forwarded_for
+        or "%" in forwarded_for
+    ):
+        raise ValueError("trusted client address is unavailable")
+    try:
+        address = ipaddress.ip_address(forwarded_for)
+    except ValueError:
+        raise ValueError("trusted client address is unavailable") from None
+    if str(address) != forwarded_for:
+        raise ValueError("trusted client address is unavailable")
+    return coarse_ip_key(forwarded_for)

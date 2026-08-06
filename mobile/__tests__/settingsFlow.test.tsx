@@ -46,9 +46,17 @@ describe('native Settings, privacy, and support flows', () => {
   it('states local and transient boundaries without account claims', async () => {
     const context = values();
     const settings = await render(<AppControllerProvider value={context}><SettingsScreen /></AppControllerProvider>);
+    expect(settings.getByText(/usage metadata/i)).toBeTruthy();
+    expect(settings.getByText(/up to 30 days/i)).toBeTruthy();
+    expect(settings.getByText(/Zero Data Retention.*unverified/i)).toBeTruthy();
+    expect(settings.getByText(/7, 14, or 30 days/i)).toBeTruthy();
+    expect(settings.getByText(/encrypted device or iCloud backups/i)).toBeTruthy();
+    expect(settings.getByText(/existing backup/i)).toBeTruthy();
+    await act(async () => { settings.unmount(); });
     const privacy = await render(<AppControllerProvider value={context}><PrivacyScreen /></AppControllerProvider>);
-    const support = await render(<AppControllerProvider value={context}><SupportScreen /></AppControllerProvider>);
-    expect(privacy.getByText(/Reports are saved only on this device/i)).toBeTruthy();
+    expect(privacy.queryByText(/Reports are saved only on this device/i)).toBeNull();
+    expect(privacy.getByText(/may include saved reports in encrypted device or iCloud backups/i)).toBeTruthy();
+    expect(privacy.getByText(/deleting active app data does not guarantee removal from an existing backup/i)).toBeTruthy();
     expect(privacy.getAllByText(/Groq/i).length).toBeGreaterThan(0);
     expect(privacy.getByText(/The selected PDF is uploaded and processed before temporary cleanup runs/i)).toBeTruthy();
     expect(privacy.getByText(/does not show the analysis as successful and blocks future analysis/i)).toBeTruthy();
@@ -65,14 +73,12 @@ describe('native Settings, privacy, and support flows', () => {
     expect(privacy.getByText(/provider-side connection and HTTP request metadata/i)).toBeTruthy();
     expect(privacy.getByText(/Device\/IP Data and IP-based geolocation/i)).toBeTruthy();
     expect(privacy.getByText(/coarse pseudonymous rate-limit key/i)).toBeTruthy();
+    await act(async () => { privacy.unmount(); });
+    const support = await render(<AppControllerProvider value={context}><SupportScreen /></AppControllerProvider>);
     expect(support.getByText(/not an exact ATS or employment prediction/i)).toBeTruthy();
     expect(support.getByText(/no hiring guarantee/i)).toBeTruthy();
     expect(support.getByText(/not professional, legal, or employment advice/i)).toBeTruthy();
     expect(support.getByText(/Never post resumes, job descriptions, tokens, or private identifiers/i)).toBeTruthy();
-    expect(settings.getByText(/usage metadata/i)).toBeTruthy();
-    expect(settings.getByText(/up to 30 days/i)).toBeTruthy();
-    expect(settings.getByText(/Zero Data Retention.*unverified/i)).toBeTruthy();
-    expect(settings.getByText(/7, 14, or 30 days/i)).toBeTruthy();
     await act(async () => { fireEvent.press(support.getByRole('button', { name: 'Open public support' })); });
     expect(context.actions.openSupport).toHaveBeenCalledTimes(1);
   });

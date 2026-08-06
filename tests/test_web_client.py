@@ -103,6 +103,7 @@ def test_every_public_web_page_has_exact_privacy_boundaries(web_client):
         "Groq always retains usage metadata and may retain inference content for up to 30 days for reliability and abuse prevention unless Zero Data Retention is enabled; Resume.AI has not verified that setting.",
         "Render may retain provider-side connection and HTTP request metadata under its policy; Resume.AI controls only its content-free application logs.",
         "Render may process Device/IP Data and IP-based geolocation under its policy.",
+        "On iOS, saved reports may be included in encrypted device or iCloud backups depending on user and iOS settings; deleting active app data does not guarantee removal from an existing backup.",
     )
 
     for filename in ("index.html", "privacy.html", "support.html"):

@@ -115,7 +115,7 @@ export function ReportList({
                 accessibilityViewIsModal
                 style={styles.confirmation}>
                 <Text accessibilityRole="header" style={uiStyles.sectionTitle}>Delete saved report?</Text>
-                <Text style={uiStyles.muted}>This removes only this local report. It cannot be undone.</Text>
+                <Text style={uiStyles.muted}>This removes the report from active local history. An existing device or iCloud backup may still contain it.</Text>
                 {deleteError !== null ? (
                   <Text accessibilityRole="alert" accessibilityLiveRegion="assertive" style={styles.error}>{deleteError}</Text>
                 ) : null}

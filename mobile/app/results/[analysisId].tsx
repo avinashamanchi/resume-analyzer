@@ -301,7 +301,7 @@ function ResultsScreenContent({
     if (mounted.current) {
       publishReceipt(savedReport === null
         ? 'The report could not be saved locally.'
-        : 'Saved locally on this device.');
+        : 'Saved in the app’s local report store.');
     }
   };
 
@@ -394,7 +394,7 @@ function ResultsScreenContent({
         <Text style={uiStyles.muted}>Nothing saves automatically. A PDF is created only after you choose Share report, contains the bounded report rather than source material, and is removed when the share sheet closes or fails.</Text>
         <AppButton
           label={saved ? 'Saved locally' : 'Save locally'}
-          accessibilityHint={saved ? 'This report is already saved on this device.' : 'Saves this bounded report on this device.'}
+          accessibilityHint={saved ? 'This report is already in the local report store.' : 'Saves this bounded report in the local report store.'}
           onPress={() => { void save(); }}
           disabled={saved || sharing || deleting}
         />
@@ -446,7 +446,7 @@ function ResultsScreenContent({
           testID="delete-result-modal">
           <Card style={styles.deleteCard}>
             <Text accessibilityRole="header" style={uiStyles.sectionTitle}>Delete this local report?</Text>
-            <Text style={uiStyles.muted}>This cannot be undone.</Text>
+            <Text style={uiStyles.muted}>This removes the active local record. An existing device or iCloud backup may still contain it.</Text>
             {deleteError !== null ? (
               <Text
                 ref={deleteErrorRef}
@@ -467,7 +467,7 @@ function ResultsScreenContent({
             <AppButton
               label={deleting ? 'Deleting local report…' : 'Confirm delete report'}
               accessibilityLabel="Confirm delete report"
-              accessibilityHint="Permanently deletes this bounded report from local history."
+              accessibilityHint="Deletes this bounded report from active local history; an existing backup may still contain it."
               onPress={() => { void deleteReport(); }}
               disabled={deleting}
               tone="danger"

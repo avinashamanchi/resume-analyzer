@@ -22,14 +22,16 @@ function trackedFiles(repository) {
   return output.split('\0').filter(Boolean);
 }
 
+const exactGeneratedOrLockAllowlist = new Set([
+  'mobile/package-lock.json',
+  'mobile/src/domain/generated/unicode15.ts',
+  'requirements.txt',
+  'static/unicode_casefold.js',
+  'uv.lock',
+]);
+
 function isGeneratedOrLock(path) {
-  return (
-    path.endsWith('package-lock.json') ||
-    path === 'uv.lock' ||
-    path === 'requirements.txt' ||
-    path.includes('/generated/') ||
-    path === 'static/unicode_casefold.js'
-  );
+  return exactGeneratedOrLockAllowlist.has(path);
 }
 
 const globalRules = [
@@ -46,6 +48,91 @@ const productionRules = [
   ['request-header-log', /(?:log(?:ger|ging)?|print)\s*\.?(?:info|debug|warning|error)?\s*\([^\n]*(?:request\.(?:headers|cookies)|authorization)/i],
   ['request-body-log', /(?:log(?:ger|ging)?|print)\s*\.?(?:info|debug|warning|error)?\s*\([^\n]*request\.(?:get_json|data|form|files|body)/i],
 ];
+
+function renderStartCommands(content) {
+  const lines = content.split(/\r?\n/);
+  const commands = [];
+  for (let index = 0; index < lines.length; index += 1) {
+    const match = /^(\s*)startCommand:\s*(.*)$/.exec(lines[index]);
+    if (match === null) continue;
+    const fieldIndent = match[1].length;
+    const scalar = match[2].trim();
+    if (!/^[>|][+-]?$/.test(scalar)) {
+      commands.push(scalar);
+      continue;
+    }
+    const folded = [];
+    while (index + 1 < lines.length) {
+      const next = lines[index + 1];
+      if (!next.trim()) {
+        index += 1;
+        continue;
+      }
+      const indentation = /^\s*/.exec(next)?.[0].length ?? 0;
+      if (indentation <= fieldIndent) break;
+      folded.push(next.trim());
+      index += 1;
+    }
+    commands.push(folded.join(' '));
+  }
+  return commands;
+}
+
+function procfileWebCommands(content) {
+  const lines = content.split(/\r?\n/);
+  const commands = [];
+  for (let index = 0; index < lines.length; index += 1) {
+    const match = /^web:\s*(.*)$/.exec(lines[index]);
+    if (match === null) continue;
+    const parts = [match[1]];
+    while (index + 1 < lines.length && /^\s+/.test(lines[index + 1])) {
+      parts.push(lines[index + 1].trim());
+      index += 1;
+    }
+    commands.push(parts.join(' ').replace(/\\\s+/g, ' '));
+  }
+  return commands;
+}
+
+function hasUnsafeGunicornCommand(path, content) {
+  if (
+    path === 'render.yaml' &&
+    content.includes('gunicorn') &&
+    /^\s*startCommand:\s*\|[+-]?\s*$/m.test(content)
+  ) {
+    return true;
+  }
+  const extracted = path === 'Procfile'
+    ? procfileWebCommands(content)
+    : renderStartCommands(content);
+  const commands = extracted.filter(command => /(?:^|\s)gunicorn(?:\s|$)/.test(command));
+  const invocationCount = commands.reduce(
+    (count, command) => count + [...command.matchAll(/(?:^|\s)gunicorn(?:\s|$)/g)].length,
+    0,
+  );
+  if (content.includes('gunicorn') && invocationCount !== 1) return true;
+  return commands.some(command => {
+    const normalized = command.replace(/\s+/g, ' ').trim();
+    const accessLogValues = [
+      ...normalized.matchAll(/--access-logfile(?:=|\s+)(\S+)/g),
+    ].map(match => match[1]);
+    const loggerClassValues = [
+      ...normalized.matchAll(/--logger-class(?:=|\s+)(\S+)/g),
+    ].map(match => match[1]);
+    const logLevelValues = [
+      ...normalized.matchAll(/--log-level(?:=|\s+)(\S+)/g),
+    ].map(match => match[1]);
+    return (
+      accessLogValues.length !== 1 ||
+      accessLogValues[0] !== '/dev/null' ||
+      normalized.includes('--access-logformat') ||
+      logLevelValues.length !== 1 ||
+      logLevelValues[0] !== 'warning' ||
+      loggerClassValues.length !== 1 ||
+      loggerClassValues[0] !== 'server.gunicorn_logger.ContentFreeGunicornLogger'
+    );
+  });
+}
 
 function violationsFor(path, content) {
   const violations = [];
@@ -69,16 +156,15 @@ function violationsFor(path, content) {
     violations.push('production-placeholder-secret');
   }
   if (path === 'Procfile' || path === 'render.yaml') {
-    const gunicornCommands = content.split('\n').filter(line => line.includes('gunicorn'));
-    if (
-      gunicornCommands.some(line => /--access-logfile(?:=|\s+)-(?:\s|$)/.test(line)) ||
-      content.includes('--access-logformat') ||
-      (path === 'Procfile' && content.includes('gunicorn') && !content.includes('--access-logfile /dev/null'))
-    ) {
+    if (hasUnsafeGunicornCommand(path, content)) {
       violations.push('unsafe-gunicorn-access-log');
     }
   }
-  if ((path === '.env' || (/^\.env\./.test(path) && path !== '.env.example'))) {
+  const basename = path.split('/').at(-1);
+  if (
+    path !== '.env.example' &&
+    (basename === '.env' || basename?.startsWith('.env.'))
+  ) {
     violations.push('committed-env');
   }
   return violations;

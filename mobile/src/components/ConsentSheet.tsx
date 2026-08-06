@@ -54,7 +54,7 @@ export function ConsentSheet({
                 If cleanup cannot be verified, Resume.AI does not show the analysis as successful and blocks future analysis until cleanup succeeds. Cleanup cannot undo processing already completed by the Resume.AI server or Groq.
               </Text>
               <Text style={uiStyles.muted}>
-                Reports stay on this device only when you choose Save locally.
+                Reports use Resume.AI’s local SQLite store only when you choose Save locally. Depending on your settings, encrypted device or iCloud backups may include them.
               </Text>
             </ScrollView>
             <View testID="consent-actions" style={styles.actions}>

@@ -10,7 +10,7 @@ Evidence reviewed: https://console.groq.com/docs/your-data, https://render.com/d
 - Identifiers: an installation security identifier and coarse pseudonymous rate-limit key protect the service. They are not linked to an account and are not used for advertising or tracking.
 - Diagnostics: app-controlled logs contain only an app request ID, coarse status class, coarse response-size bucket, and bounded latency. They contain no resume text, job text, PDF, filename, token, IP address, header, cookie, authorization value, or body.
 
-The app server keeps no report or content history. Browser history is not kept. Optional iOS reports are local-only and omit source content and identifiers.
+The app server keeps no report or content history. Browser history is not kept. Optional iOS reports use the app's local SQLite store and omit source content and identifiers. Depending on user and iOS settings, saved reports may be included in encrypted device or iCloud backups. Deleting active app data does not guarantee removal from an existing backup. Shipping-binary backup and restore behavior is UNVERIFIED and blocks final App Store answers until Task 17 observes it.
 
 ## Third-party processing and retention
 

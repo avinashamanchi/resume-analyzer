@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Build and verify a native iOS Resume.AI application with transient resume processing, deterministic readiness scoring, bounded AI feedback, local-only report history, and truthful App Store release gates.
+**Goal:** Build and verify a native iOS Resume.AI application with transient resume processing, deterministic readiness scoring, bounded AI feedback, app-local report history with explicit iOS backup limits, and truthful App Store release gates.
 
 **Architecture:** Add an Expo SDK 57 TypeScript application in `mobile/`, retain Flask as a versioned transient-processing backend, and make a shared JSON contract the boundary between them. The backend owns deterministic scoring, bounded PDF extraction, rate limiting, and Groq validation; the iPhone owns consent, request lifecycle, local SQLite reports, export/share, and development-build Apple Vision fallback.
 
@@ -1463,7 +1463,8 @@ Expo Go records observed pass/fail for document picker, text PDF, pasted text,
 job description, consent, cancel, results, save/history, delete, export/share,
 offline history, 200% text, VoiceOver, Reduce Motion, and 320×568 scroll.
 Device checks add Vision OCR, SecureStore reinstall behavior, background/kill,
-network transitions, temp-file cleanup, icon, splash, and native permissions.
+network transitions, temp-file cleanup, icon, splash, native permissions,
+encrypted device and iCloud backup/restore behavior, and deletion behavior across existing backups.
 
 - [ ] **Step 2: Start Expo Go on LAN and run only supported checks**
 

@@ -10,7 +10,7 @@ from flask import Blueprint, Flask, Response, current_app, g, jsonify, request
 from .contracts import AnalysisResponseV1, InstallationResponseV1
 from .errors import ErrorCode, PublicServiceError
 from .installations import InstallationClaims
-from .privacy import coarse_ip_key
+from .privacy import rate_limit_ip_key
 from .request import (
     MAX_REQUEST_BYTES,
     ParsedAnalysisRequest,
@@ -80,6 +80,20 @@ def _admit(decision: Any) -> None:
     )
 
 
+def _client_rate_limit_key() -> str:
+    try:
+        return rate_limit_ip_key(
+            current_app.config["APP_ENV"],
+            forwarded_for=request.headers.get("X-Forwarded-For"),
+            socket_address=request.remote_addr,
+        )
+    except (TypeError, ValueError):
+        raise RouteError(
+            ErrorCode.SERVICE_UNAVAILABLE,
+            retryable=True,
+        ) from None
+
+
 @routes.post("/v1/installations")
 def issue_installation() -> tuple[Response, int]:
     content_length = request.content_length
@@ -94,7 +108,7 @@ def issue_installation() -> tuple[Response, int]:
     services = _services()
     _admit(
         services.rate_limiter.check_installation_issue(
-            coarse_ip_key(request.remote_addr)
+            _client_rate_limit_key()
         )
     )
     token = services.installation_tokens.issue()
@@ -127,7 +141,7 @@ def analyze_resume() -> tuple[Response, int]:
         _admit(
             services.rate_limiter.check(
                 claims.installation_id,
-                coarse_ip_key(request.remote_addr),
+                _client_rate_limit_key(),
             )
         )
         lease_ttl = max(

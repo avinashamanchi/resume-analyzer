@@ -8,7 +8,7 @@ Provider terms reviewed: [Groq Your Data](https://console.groq.com/docs/your-dat
 
 Selected standard PDFs are transiently sent to the Resume.AI server hosted on Render for text extraction. Raw PDF bytes are never sent to Groq. Reviewed, pasted, or extracted resume text and any optional job description are sent to Groq only after consent. On iOS, Vision OCR stays on-device until the user explicitly reviews the recognized text and consents to analysis.
 
-The app server keeps no report or content history. Browser report history is not kept. iOS reports are optional and local to the device; saved reports contain feedback and scores, not the source resume, PDF, filename, job description, installation token, or request identifier. Users can delete local iOS reports in Settings.
+The app server keeps no report or content history. Browser report history is not kept. Optional iOS reports use the app's local SQLite store; saved reports contain feedback and scores, not the source resume, PDF, filename, job description, installation token, or request identifier. Depending on user and iOS settings, the local store may be included in encrypted device or iCloud backups. Users can delete records from the active local store in Settings, but that does not guarantee removal from an existing backup. Shipping-binary backup and restore behavior is UNVERIFIED and remains a Task 17 release gate.
 
 Resume.AI uses an installation security identifier and a coarse pseudonymous rate-limit key to protect the service. They are not used for advertising, analytics, cross-app tracking, or user profiling. There are no ads or third-party analytics.
 

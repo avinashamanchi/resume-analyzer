@@ -1,14 +1,18 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import shlex
 import shutil
+import socket
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
+import yaml
 
 from server.app import create_app
 from server.config import ConfigurationError, Settings
@@ -63,6 +67,22 @@ def _retention_verifier(repository: Path) -> subprocess.CompletedProcess[str]:
         "--root",
         str(repository),
     )
+
+
+def _socket_request(port: int, payload: bytes) -> bytes:
+    with socket.create_connection(("127.0.0.1", port), timeout=1) as connection:
+        connection.settimeout(1)
+        connection.sendall(payload)
+        response = bytearray()
+        while True:
+            try:
+                chunk = connection.recv(65_536)
+            except TimeoutError:
+                break
+            if not chunk:
+                break
+            response.extend(chunk)
+        return bytes(response)
 
 
 def test_production_emits_one_content_free_request_log_with_exact_schema(capsys):
@@ -126,6 +146,7 @@ def test_procfile_uses_bounded_gunicorn_with_access_logging_disabled():
     assert arguments[arguments.index("--threads") + 1] == "4"
     assert arguments[arguments.index("--timeout") + 1] == "45"
     assert arguments[arguments.index("--access-logfile") + 1] == "/dev/null"
+    assert arguments[arguments.index("--log-level") + 1] == "warning"
     assert "--access-logformat" not in arguments
     assert "python" not in arguments
     assert shutil.which("gunicorn") is not None
@@ -133,6 +154,14 @@ def test_procfile_uses_bounded_gunicorn_with_access_logging_disabled():
 
 def test_render_blueprint_is_fail_closed_and_has_private_ephemeral_key_value():
     blueprint = (ROOT / "render.yaml").read_text()
+    parsed_blueprint = yaml.load(blueprint, Loader=yaml.BaseLoader)
+    key_values = [
+        service
+        for service in parsed_blueprint["services"]
+        if service["type"] == "keyvalue"
+    ]
+    assert len(key_values) == 1
+    key_value = key_values[0]
 
     required_fragments = (
         "runtime: python",
@@ -157,6 +186,92 @@ def test_render_blueprint_is_fail_closed_and_has_private_ephemeral_key_value():
     assert "disk:" not in blueprint
     assert "http://" not in blueprint
     assert "access-logfile -" not in blueprint
+    assert key_value["persistenceMode"] == "off"
+    assert key_value["maxmemoryPolicy"] == "noeviction"
+
+
+def test_real_gunicorn_parser_logs_never_emit_raw_request_material_or_client_ip():
+    command = (ROOT / "Procfile").read_text().strip().removeprefix("web: ")
+    arguments = shlex.split(command)
+    bind_index = arguments.index("--bind") + 1
+    with socket.socket() as reserved:
+        reserved.bind(("127.0.0.1", 0))
+        port = reserved.getsockname()[1]
+    arguments[bind_index] = f"127.0.0.1:{port}"
+    environment = os.environ.copy()
+    environment.update(
+        {
+            "APP_ENV": "production",
+            "DEBUG": "false",
+            "GROQ_API_KEY": "synthetic-runtime-key",
+            "INSTALLATION_SIGNING_KEY": "x" * 64,
+            "REDIS_URL": "rediss://cache.internal:6380/0",
+            "ALLOWED_WEB_ORIGINS": "https://resume-ai.onrender.com",
+        }
+    )
+    process = subprocess.Popen(
+        arguments,
+        cwd=ROOT,
+        env=environment,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    private_parts = (
+        "private-query",
+        "private-header",
+        "private-cookie",
+        "private-authorization",
+        "private-body",
+    )
+    try:
+        deadline = time.monotonic() + 8
+        while True:
+            try:
+                response = _socket_request(
+                    port,
+                    (
+                        b"GET /missing?private-query HTTP/1.1\r\n"
+                        b"Host: localhost\r\n"
+                        b"Authorization: private-authorization\r\n"
+                        b"Cookie: private-cookie\r\n"
+                        b"Connection: close\r\n\r\n"
+                    ),
+                )
+                break
+            except OSError:
+                if process.poll() is not None or time.monotonic() >= deadline:
+                    pytest.fail("Gunicorn did not accept the test request")
+                time.sleep(0.05)
+        assert b"404" in response
+        _socket_request(
+            port,
+            b"private-body / HTTP/1.1\r\nHost: localhost\r\n\r\n",
+        )
+        _socket_request(
+            port,
+            b"GET / HTTP/1.1\r\nprivate-header value: secret\r\n\r\n",
+        )
+    finally:
+        process.terminate()
+        try:
+            stdout, stderr = process.communicate(timeout=5)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            stdout, stderr = process.communicate(timeout=5)
+
+    rendered = stdout + stderr
+    for private_part in private_parts:
+        assert private_part not in rendered
+    assert "127.0.0.1" not in rendered
+    assert "Invalid request from ip=" not in rendered
+    app_records = [json.loads(line) for line in stderr.splitlines() if line.startswith("{")]
+    assert any(
+        set(record)
+        == {"request_id", "status_class", "response_size_bucket", "latency_ms"}
+        and record["status_class"] == "4xx"
+        for record in app_records
+    )
 
 
 def test_environment_example_cannot_pass_production_validation():
@@ -205,6 +320,7 @@ def test_secret_scanner_accepts_safe_tracked_files_and_ignores_untracked_content
         ("server/app.py", "logger.info(request.headers)"),
         ("server/app.py", "logger.info(request.get_json())"),
         (".env", "GROQ_API_KEY=" + "gsk_" + "B" * 52),
+        ("config/.env.production", "APP_ENV=development"),
     ],
 )
 def test_secret_scanner_rejects_unsafe_tracked_content_without_echoing_canary(
@@ -221,13 +337,14 @@ def test_secret_scanner_rejects_unsafe_tracked_content_without_echoing_canary(
     assert canary not in result.stdout + result.stderr
 
 
-def test_secret_scanner_skips_lock_and_generated_unicode_artifacts(tmp_path: Path):
+def test_secret_scanner_skips_only_exact_lock_and_generated_artifacts(tmp_path: Path):
     canary = "gsk_" + "C" * 52
     repository = _tracked_repo(
         tmp_path,
         {
-            "package-lock.json": json.dumps({"integrityFixture": canary}),
-            "server/generated/unicode_casefold.py": f"FIXTURE = {canary!r}\n",
+            "mobile/package-lock.json": json.dumps({"integrityFixture": canary}),
+            "mobile/src/domain/generated/unicode15.ts": f"export const value = {canary!r};\n",
+            "static/unicode_casefold.js": f"globalThis.value = {canary!r};\n",
         },
     )
 
@@ -236,6 +353,160 @@ def test_secret_scanner_skips_lock_and_generated_unicode_artifacts(tmp_path: Pat
     assert result.returncode == 0, result.stderr
     assert result.stdout == "Secret scan passed for 0 tracked files.\n"
     assert canary not in result.stdout + result.stderr
+
+
+def test_secret_scanner_rejects_nonallowlisted_generated_directory(tmp_path: Path):
+    canary = "gsk_" + "D" * 52
+    repository = _tracked_repo(
+        tmp_path,
+        {"server/generated/provider.py": f"VALUE = {canary!r}\n"},
+    )
+
+    result = _scanner(repository)
+
+    assert result.returncode == 1
+    assert "Secret scan failed" in result.stderr
+    assert canary not in result.stdout + result.stderr
+
+
+def test_secret_scanner_rejects_unsafe_multiline_gunicorn_command(tmp_path: Path):
+    repository = _tracked_repo(
+        tmp_path,
+        {
+            "render.yaml": (
+                "services:\n"
+                "  - type: web\n"
+                "    startCommand: >-\n"
+                "      gunicorn 'server.app:create_app()' --workers 2\n"
+                "      --access-logfile - --error-logfile -\n"
+            )
+        },
+    )
+
+    result = _scanner(repository)
+
+    assert result.returncode == 1
+    assert "unsafe-gunicorn-access-log" in result.stderr
+
+
+def test_secret_scanner_only_accepts_safety_flags_in_the_gunicorn_command(
+    tmp_path: Path,
+):
+    repository = _tracked_repo(
+        tmp_path,
+        {
+            "render.yaml": (
+                "services:\n"
+                "  - type: web\n"
+                "    startCommand: gunicorn 'server.app:create_app()' --workers 2\n"
+                "    envVars:\n"
+                "      - key: DECOY_ACCESS\n"
+                "        value: --access-logfile /dev/null\n"
+                "      - key: DECOY_LOGGER\n"
+                "        value: --logger-class server.gunicorn_logger.ContentFreeGunicornLogger\n"
+            )
+        },
+    )
+
+    result = _scanner(repository)
+
+    assert result.returncode == 1
+    assert "unsafe-gunicorn-access-log" in result.stderr
+
+
+def test_secret_scanner_rejects_ambiguous_multiple_gunicorn_commands(
+    tmp_path: Path,
+):
+    safe_flags = (
+        "--access-logfile /dev/null --error-logfile - --log-level warning "
+        "--logger-class server.gunicorn_logger.ContentFreeGunicornLogger"
+    )
+    repository = _tracked_repo(
+        tmp_path,
+        {
+            "render.yaml": (
+                "services:\n"
+                "  - type: web\n"
+                "    name: first\n"
+                f"    startCommand: gunicorn app:first {safe_flags}\n"
+                "  - type: web\n"
+                "    name: second\n"
+                "    startCommand: gunicorn app:second\n"
+            )
+        },
+    )
+
+    result = _scanner(repository)
+
+    assert result.returncode == 1
+    assert "unsafe-gunicorn-access-log" in result.stderr
+
+
+def test_secret_scanner_rejects_two_invocations_in_one_command_scalar(
+    tmp_path: Path,
+):
+    safe_flags = (
+        "--access-logfile /dev/null --error-logfile - --log-level warning "
+        "--logger-class server.gunicorn_logger.ContentFreeGunicornLogger"
+    )
+    repository = _tracked_repo(
+        tmp_path,
+        {
+            "render.yaml": (
+                "services:\n"
+                "  - type: web\n"
+                f"    startCommand: gunicorn app:first {safe_flags} && gunicorn app:second\n"
+            )
+        },
+    )
+
+    result = _scanner(repository)
+
+    assert result.returncode == 1
+    assert "unsafe-gunicorn-access-log" in result.stderr
+
+
+def test_secret_scanner_accepts_one_folded_content_free_gunicorn_command(
+    tmp_path: Path,
+):
+    repository = _tracked_repo(
+        tmp_path,
+        {
+            "render.yaml": (
+                "services:\n"
+                "  - type: web\n"
+                "    startCommand: >-\n"
+                "      gunicorn 'server.app:create_app()' --workers 2\n"
+                "      --access-logfile /dev/null --error-logfile - --log-level warning\n"
+                "      --logger-class server.gunicorn_logger.ContentFreeGunicornLogger\n"
+            )
+        },
+    )
+
+    result = _scanner(repository)
+
+    assert result.returncode == 0, result.stderr
+
+
+def test_secret_scanner_rejects_literal_gunicorn_command_blocks(tmp_path: Path):
+    repository = _tracked_repo(
+        tmp_path,
+        {
+            "render.yaml": (
+                "services:\n"
+                "  - type: web\n"
+                "    startCommand: |\n"
+                "      gunicorn 'server.app:create_app()' --workers 2\n"
+                "      --access-logfile /dev/null --error-logfile - --log-level warning\n"
+                "      --logger-class server.gunicorn_logger.ContentFreeGunicornLogger\n"
+            )
+        },
+    )
+
+    result = _scanner(repository)
+
+    assert result.returncode == 1
+    assert "unsafe-gunicorn-access-log" in result.stderr
 
 
 def test_retention_verifier_allows_request_local_sensitive_parsing(tmp_path: Path):
@@ -261,6 +532,22 @@ def test_retention_verifier_allows_request_local_sensitive_parsing(tmp_path: Pat
     assert result.returncode == 0, result.stderr
     assert result.stdout == "Sensitive-retention verification passed.\n"
     assert canary not in result.stdout + result.stderr
+
+
+def test_retention_verifier_allows_expiring_rate_limit_metadata(tmp_path: Path):
+    repository = _tracked_repo(
+        tmp_path,
+        {
+            "server/rate_limit.py": (
+                "def increment(redis_client, digest):\n"
+                "    return redis_client.set('rate:' + digest, 1, ex=60)\n"
+            )
+        },
+    )
+
+    result = _retention_verifier(repository)
+
+    assert result.returncode == 0, result.stderr
 
 
 @pytest.mark.parametrize(
@@ -310,6 +597,65 @@ def test_retention_verifier_rejects_durable_content_and_body_logging_without_ech
     assert content not in result.stdout + result.stderr
 
 
+@pytest.mark.parametrize(
+    ("relative_path", "content"),
+    [
+        (
+            "server/app.py",
+            "payload = request.get_json()\nalias = payload\nlogger.info(\n    alias\n)",
+        ),
+        (
+            "app.py",
+            "body = request.data\nforwarded = body\nlogging.warning(\n    forwarded\n)",
+        ),
+        (
+            "server/store.py",
+            "body = request.data\nalias = body\nredis_client.set(\n    'report',\n    alias,\n)",
+        ),
+        (
+            "server/store.py",
+            "resume_text = request.form['resume_text']\nout = open('reports.txt', 'w')\nout.write(\n    resume_text\n)",
+        ),
+        (
+            "app.py",
+            "import sqlite3\nconnection = sqlite3.connect(\n    'reports.db'\n)",
+        ),
+        (
+            "server/store.py",
+            "from pathlib import Path\nPath('reports.json').write_text(\n    'safe-looking metadata'\n)",
+        ),
+        (
+            "server/store.py",
+            "from pathlib import Path\nout = Path('reports.json').open(\n    'w'\n)\nout.close()",
+        ),
+        (
+            "server/store.py",
+            "candidate = request.data\ndef retain_from_closure():\n    logger.info(candidate)",
+        ),
+        (
+            "server/store.py",
+            "req = request\nbody = req.get_json()\nlog(body)",
+        ),
+        (
+            "server/store.py",
+            "from flask import request as incoming\nbody = incoming.get_json()\nlogger.info(body)",
+        ),
+    ],
+)
+def test_retention_verifier_tracks_multiline_aliases_into_prohibited_sinks(
+    tmp_path: Path,
+    relative_path: str,
+    content: str,
+):
+    repository = _tracked_repo(tmp_path, {relative_path: content + "\n"})
+
+    result = _retention_verifier(repository)
+
+    assert result.returncode == 1
+    assert "Sensitive-retention verification failed" in result.stderr
+    assert content not in result.stdout + result.stderr
+
+
 def test_release_docs_and_ci_cover_required_unverified_boundaries():
     required_docs = (
         ROOT / "docs" / "privacy-policy.md",
@@ -330,8 +676,16 @@ def test_release_docs_and_ci_cover_required_unverified_boundaries():
         "no hiring guarantee",
         "not professional, legal, or employment advice",
         "https://github.com/avinashamanchi/resume-analyzer/issues",
+        "encrypted device or iCloud backups",
+        "backup and restore behavior is UNVERIFIED",
     ):
         assert disclosure in combined
+
+    release_plan = (
+        ROOT / "docs" / "superpowers" / "plans" / "2026-08-04-resume-analyzer-ios.md"
+    ).read_text()
+    assert "encrypted device and iCloud backup/restore" in release_plan
+    assert "deletion behavior across existing backups" in release_plan
 
     workflow = (ROOT / ".github" / "workflows" / "verify.yml").read_text()
     for command in (

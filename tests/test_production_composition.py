@@ -157,7 +157,8 @@ def test_gunicorn_factory_auto_composes_once_and_reaches_health_and_analysis(
     client = app.test_client()
 
     health = client.get("/healthz")
-    installation = client.post("/v1/installations")
+    forwarded_headers = {"X-Forwarded-For": "203.0.113.17"}
+    installation = client.post("/v1/installations", headers=forwarded_headers)
     token = installation.get_json()["installationToken"]
     analysis = client.post(
         "/v1/analyses",
@@ -167,7 +168,10 @@ def test_gunicorn_factory_auto_composes_once_and_reaches_health_and_analysis(
             "request_id": str(uuid4()),
         },
         content_type="multipart/form-data",
-        headers={"Authorization": f"Installation {token}"},
+        headers={
+            "Authorization": f"Installation {token}",
+            **forwarded_headers,
+        },
     )
 
     assert health.status_code == 200

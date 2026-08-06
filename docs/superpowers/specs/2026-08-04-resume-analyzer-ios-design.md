@@ -36,7 +36,7 @@ compatibility with every ATS.
 - Deterministic, versioned resume-readiness checks.
 - Bounded AI feedback: strengths, improvements, keyword gaps, rewritten
   bullets, summary, and recruiter-style commentary.
-- Local-only result history without retaining raw PDFs, extracted resume text,
+- App-local result history, which may participate in encrypted iOS backups, without retaining raw PDFs, extracted resume text,
   filenames, or job descriptions.
 - Delete one result or all local history.
 - Explicit PDF report export and iOS share sheet.

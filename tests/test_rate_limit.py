@@ -8,6 +8,7 @@ from uuid import UUID
 import fakeredis
 import pytest
 from redis.exceptions import ConnectionError as RedisConnectionError
+from redis.exceptions import ResponseError
 from redis.exceptions import WatchError
 
 import server.rate_limit as rate_limit_module
@@ -142,6 +143,14 @@ class UnavailableRedis:
         raise RedisConnectionError("private redis host details")
 
 
+class OutOfMemoryRedis(UnavailableRedis):
+    def pipeline(self):
+        raise ResponseError("OOM private rate-limit metadata")
+
+    def set(self, *args: object, **kwargs: object):
+        raise ResponseError("OOM private lease metadata")
+
+
 def test_health_checks_verify_the_shared_store_without_exposing_outage_details(
     redis_client: fakeredis.FakeRedis,
 ):
@@ -182,6 +191,31 @@ def test_redis_outage_fails_closed_in_production_without_private_details():
     assert str(caught.value) == "service_unavailable"
     assert caught.value.__context__ is None
     assert caught.value.__cause__ is None
+
+
+def test_noeviction_oom_fails_closed_for_limits_and_leases_without_details():
+    limiter = RateLimiter(
+        OutOfMemoryRedis(),
+        key_secret=KEY_SECRET,
+        now=lambda: 1_800_000_000,
+        production=True,
+    )
+    leases = RedisRequestLeaseStore(
+        OutOfMemoryRedis(),
+        key_secret=KEY_SECRET,
+        production=True,
+    )
+
+    for operation in (
+        lambda: limiter.check(INSTALLATION_ID, "203.0.113.0/24"),
+        lambda: leases.acquire(INSTALLATION_ID, REQUEST_ID, 45),
+    ):
+        with pytest.raises(PublicServiceError) as caught:
+            operation()
+        assert caught.value.code is ErrorCode.SERVICE_UNAVAILABLE
+        assert "OOM" not in str(caught.value)
+        assert caught.value.__context__ is None
+        assert caught.value.__cause__ is None
 
 
 def test_development_can_use_an_injected_fake_redis(redis_client: fakeredis.FakeRedis):
