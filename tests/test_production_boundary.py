@@ -1313,6 +1313,8 @@ def test_release_docs_and_ci_cover_required_unverified_boundaries():
         "npm run lint",
         "expo-doctor@latest",
         "expo export --platform ios",
+        "expo prebuild --platform ios --no-install --clean",
+        "git diff --exit-code -- package.json package-lock.json",
         "npm audit --audit-level=high",
         "python scripts/check_committed_whitespace.py",
     ):
@@ -1324,6 +1326,7 @@ def test_release_docs_and_ci_cover_required_unverified_boundaries():
     assert "continue-on-error" not in workflow
     assert "enable-cache: false" in workflow
     assert "cache: npm" not in workflow
+    assert "eas submit" not in workflow
     parsed_workflow = yaml.safe_load(workflow)
     checkout = parsed_workflow["jobs"]["verify"]["steps"][0]
     assert checkout["with"]["fetch-depth"] == 0

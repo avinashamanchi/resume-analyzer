@@ -72,6 +72,14 @@ jobs:
         working-directory: mobile
         run: npx expo export --platform ios
 
+      - name: Generate native iOS project
+        working-directory: mobile
+        run: npx expo prebuild --platform ios --no-install --clean
+
+      - name: Verify native generation is manifest-stable
+        working-directory: mobile
+        run: git diff --exit-code -- package.json package-lock.json
+
       - name: Audit mobile dependencies
         working-directory: mobile
         run: npm audit --audit-level=high
