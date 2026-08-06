@@ -86,24 +86,57 @@ REQUEST_SOURCE_MEMBERS = frozenset(
 LOG_METHODS = frozenset(
     {"critical", "debug", "error", "exception", "info", "log", "warning"}
 )
-PERSISTENCE_METHODS = frozenset(
+REDIS_PERSISTENCE_METHODS = frozenset(
     {
         "append",
-        "execute",
-        "executemany",
         "hset",
-        "insert",
         "lpush",
+        "mset",
         "put",
         "rpush",
-        "save",
+        "sadd",
         "set",
         "setex",
-        "write",
-        "write_bytes",
-        "write_text",
+        "xadd",
+        "zadd",
     }
 )
+DATABASE_PERSISTENCE_METHODS = frozenset(
+    {
+        "add",
+        "add_all",
+        "bulk_save_objects",
+        "execute",
+        "executemany",
+        "insert",
+        "merge",
+        "put",
+        "save",
+    }
+)
+FILE_PERSISTENCE_METHODS = frozenset({"write", "writelines"})
+PATH_PERSISTENCE_METHODS = frozenset({"touch", "write_bytes", "write_text"})
+SHELVE_PERSISTENCE_METHODS = frozenset({"setdefault", "update"})
+LOCAL_MUTATION_METHODS = frozenset(
+    {"append", "extend", "insert", "put", "write", "writelines"}
+)
+DURABLE_RECEIVER_KINDS = frozenset({"database", "file", "path", "redis", "shelve"})
+LOCAL_RECEIVER_CONSTRUCTORS = frozenset(
+    {
+        "BytesIO",
+        "LifoQueue",
+        "PriorityQueue",
+        "Queue",
+        "SimpleQueue",
+        "StringIO",
+        "bytearray",
+        "deque",
+        "dict",
+        "list",
+        "set",
+    }
+)
+FILE_OPEN_CALLS = frozenset({"io.open", "open"})
 NEW_STORE_CALLS = frozenset(
     {
         "create_engine",
@@ -116,6 +149,15 @@ SENSITIVE_NAME_PATTERN = re.compile(
     r"(?:resume_text|job_description|filename|pdf_base64)",
     re.IGNORECASE,
 )
+REDIS_RECEIVER_PATTERN = re.compile(r"(?:^|_)redis(?:_|$)", re.IGNORECASE)
+DATABASE_RECEIVER_PATTERN = re.compile(
+    r"(?:^|_)(?:db|database|sql|sqlite|sqlalchemy)(?:_|$)", re.IGNORECASE
+)
+DATABASE_RECEIVER_NAMES = frozenset({"connection", "cursor", "engine", "session"})
+SHELVE_RECEIVER_PATTERN = re.compile(r"(?:^|_)(?:shelf|shelve)(?:_|$)", re.IGNORECASE)
+
+AccessPath = tuple[str, ...]
+WILDCARD_SUBSCRIPT_COMPONENT = "key:*"
 
 
 def _dotted_name(node: ast.AST) -> str | None:
@@ -127,109 +169,418 @@ def _dotted_name(node: ast.AST) -> str | None:
     return None
 
 
-def _assigned_names(node: ast.AST) -> set[str]:
+def _subscript_component(node: ast.AST) -> str | None:
+    if isinstance(node, ast.Constant) and isinstance(node.value, (str, int)):
+        return f"key:{type(node.value).__name__}:{node.value!r}"
+    return None
+
+
+def _access_path(node: ast.AST | None) -> AccessPath | None:
     if isinstance(node, ast.Name):
-        return {node.id}
-    if isinstance(node, (ast.List, ast.Tuple)):
-        return set().union(*(_assigned_names(element) for element in node.elts))
+        return (node.id,)
     if isinstance(node, ast.Attribute):
-        return _assigned_names(node.value)
+        parent = _access_path(node.value)
+        return None if parent is None else (*parent, f"attr:{node.attr}")
     if isinstance(node, ast.Subscript):
-        return _assigned_names(node.value)
-    return set()
+        parent = _access_path(node.value)
+        component = _subscript_component(node.slice)
+        if parent is None or component is None:
+            return None
+        return (*parent, component)
+    return None
 
 
-def _assigned_paths(node: ast.AST) -> set[str]:
-    dotted = _dotted_name(node)
-    if dotted is not None:
-        return {dotted}
+def _call_lookup_path(node: ast.AST | None) -> AccessPath | None:
+    if (
+        not isinstance(node, ast.Call)
+        or not isinstance(node.func, ast.Attribute)
+        or node.func.attr != "get"
+        or not node.args
+    ):
+        return None
+    parent = _access_path(node.func.value)
+    component = _subscript_component(node.args[0])
+    if parent is None or component is None:
+        return None
+    return (*parent, component)
+
+
+def _assigned_paths(node: ast.AST) -> set[AccessPath]:
+    path = _access_path(node)
+    if path is not None:
+        return {path}
     if isinstance(node, (ast.List, ast.Tuple)):
         return set().union(*(_assigned_paths(element) for element in node.elts))
-    if isinstance(node, ast.Subscript):
-        return _assigned_paths(node.value)
     return set()
+
+
+def _path_is_prefix(prefix: AccessPath, path: AccessPath) -> bool:
+    return len(prefix) <= len(path) and path[: len(prefix)] == prefix
+
+
+def _path_matches(pattern: AccessPath, path: AccessPath) -> bool:
+    return len(pattern) == len(path) and all(
+        expected == actual or expected == WILDCARD_SUBSCRIPT_COMPONENT
+        for expected, actual in zip(pattern, path, strict=True)
+    )
+
+
+def _path_identifier(path: AccessPath) -> str:
+    final = path[-1]
+    return final.removeprefix("attr:") if final.startswith("attr:") else final
 
 
 class PythonRetentionVisitor(ast.NodeVisitor):
     """Conservatively follow request content into logs and durable sinks."""
 
-    def __init__(self, tainted_functions: set[str] | None = None) -> None:
+    def __init__(
+        self,
+        tainted_functions: set[str] | None = None,
+        request_functions: set[str] | None = None,
+    ) -> None:
         self.findings: set[str] = set()
-        self._tainted_names: set[str] = set()
-        self._sink_aliases: dict[str, str] = {}
-        self._request_aliases: set[str] = {"request"}
+        self._tainted_paths: set[AccessPath] = set()
+        self._sink_aliases: dict[AccessPath, str] = {}
+        self._request_paths: set[AccessPath] = {("request",)}
+        self._durable_receivers: dict[AccessPath, str] = {}
         self._flask_module_aliases: set[str] = {"flask"}
+        self._path_constructor_aliases: set[str] = {"Path"}
         self.tainted_functions: set[str] = set(tainted_functions or ())
+        self.request_functions: set[str] = set(request_functions or ())
         self._function_stack: list[str] = []
 
-    def _name_is_request_object(self, dotted: str | None) -> bool:
-        return dotted is not None and (
-            dotted in self._request_aliases
-            or any(
-                dotted == f"{module_alias}.request"
-                for module_alias in self._flask_module_aliases
-            )
+    def _path_is_request_object(self, path: AccessPath | None) -> bool:
+        if path is None:
+            return False
+        if any(_path_matches(request_path, path) for request_path in self._request_paths):
+            return True
+        return (
+            len(path) == 2
+            and path[0] in self._flask_module_aliases
+            and path[1] == "attr:request"
         )
 
-    def _expression_is_request_object(self, node: ast.AST | None) -> bool:
-        dotted = _dotted_name(node) if node is not None else None
-        return self._name_is_request_object(dotted)
-
-    def _call_returns_tainted(self, node: ast.Call) -> bool:
+    @staticmethod
+    def _summary_contains(node: ast.Call, summaries: set[str]) -> bool:
         dotted = _dotted_name(node.func)
         if dotted is None:
             return False
-        return (
-            dotted in self.tainted_functions
-            or dotted.rsplit(".", maxsplit=1)[-1] in self.tainted_functions
+        return dotted in summaries or dotted.rsplit(".", maxsplit=1)[-1] in summaries
+
+    def _expression_is_request_object(self, node: ast.AST | None) -> bool:
+        if node is None:
+            return False
+        path = _access_path(node)
+        if self._path_is_request_object(path):
+            return True
+        if self._path_is_request_object(_call_lookup_path(node)):
+            return True
+        return isinstance(node, ast.Call) and self._summary_contains(
+            node, self.request_functions
         )
+
+    def _call_returns_tainted(self, node: ast.Call) -> bool:
+        return self._summary_contains(node, self.tainted_functions)
+
+    def _path_is_tainted(self, path: AccessPath) -> bool:
+        return any(
+            _path_is_prefix(tainted, path) or _path_is_prefix(path, tainted)
+            for tainted in self._tainted_paths
+        )
+
+    def _path_reads_request_content(self, path: AccessPath) -> bool:
+        for index in range(1, len(path)):
+            member = path[index]
+            if not member.startswith("attr:"):
+                continue
+            if (
+                self._path_is_request_object(path[:index])
+                and member.removeprefix("attr:") in REQUEST_SOURCE_MEMBERS
+            ):
+                return True
+        return False
 
     def _expression_is_tainted(self, node: ast.AST | None) -> bool:
         if node is None:
             return False
-        for child in ast.walk(node):
-            if isinstance(child, ast.Call) and self._call_returns_tainted(child):
+
+        path = _access_path(node)
+        if path is not None:
+            return (
+                self._path_is_tainted(path)
+                or self._path_reads_request_content(path)
+                or any(SENSITIVE_NAME_PATTERN.search(component) for component in path)
+            )
+
+        if isinstance(node, ast.Constant):
+            return isinstance(node.value, str) and bool(
+                SENSITIVE_NAME_PATTERN.search(node.value)
+            )
+
+        if isinstance(node, ast.Call):
+            if self._call_returns_tainted(node):
                 return True
-            if isinstance(child, ast.Name) and (
-                child.id in self._tainted_names
-                or SENSITIVE_NAME_PATTERN.search(child.id)
+            lookup_path = _call_lookup_path(node)
+            if lookup_path is not None:
+                return (
+                    self._path_is_tainted(lookup_path)
+                    or self._path_reads_request_content(lookup_path)
+                    or any(
+                        SENSITIVE_NAME_PATTERN.search(component)
+                        for component in lookup_path
+                    )
+                    or any(
+                        self._expression_is_tainted(value)
+                        for value in (
+                            *node.args[1:],
+                            *(keyword.value for keyword in node.keywords),
+                        )
+                    )
+                )
+            if isinstance(node.func, ast.Attribute):
+                if (
+                    node.func.attr in REQUEST_SOURCE_MEMBERS
+                    and self._expression_is_request_object(node.func.value)
+                ):
+                    return True
+                if self._expression_is_tainted(node.func.value):
+                    return True
+            return any(
+                self._expression_is_tainted(value)
+                for value in (*node.args, *(keyword.value for keyword in node.keywords))
+            )
+
+        if isinstance(node, ast.Attribute):
+            if (
+                node.attr in REQUEST_SOURCE_MEMBERS
+                and self._expression_is_request_object(node.value)
             ):
                 return True
-            if isinstance(child, ast.Constant) and isinstance(child.value, str):
-                if SENSITIVE_NAME_PATTERN.search(child.value):
-                    return True
-            dotted = _dotted_name(child)
-            if dotted is not None:
-                parts = dotted.split(".")
-                for index in range(1, len(parts)):
-                    if (
-                        self._name_is_request_object(".".join(parts[:index]))
-                        and any(
-                            part in REQUEST_SOURCE_MEMBERS
-                            for part in parts[index:]
-                        )
-                    ):
-                        return True
-        return False
+            return self._expression_is_tainted(node.value)
 
-    def _sink_kind(self, node: ast.AST) -> str | None:
-        dotted = _dotted_name(node)
-        if dotted is None:
+        if isinstance(node, ast.Subscript):
+            return self._expression_is_tainted(node.value)
+
+        return any(
+            self._expression_is_tainted(child) for child in ast.iter_child_nodes(node)
+        )
+
+    def _receiver_kind_for_path(self, path: AccessPath | None) -> str | None:
+        if path is None:
             return None
-        if dotted in self._sink_aliases:
-            return self._sink_aliases[dotted]
-        final_name = dotted.rsplit(".", maxsplit=1)[-1]
-        if dotted == "print" or final_name in LOG_METHODS:
-            return "request-content-log"
-        if "." in dotted and final_name in PERSISTENCE_METHODS:
-            return "durable-content-sink"
+        if path in self._durable_receivers:
+            return self._durable_receivers[path]
+        identifier = _path_identifier(path)
+        if REDIS_RECEIVER_PATTERN.search(identifier):
+            return "redis"
+        if DATABASE_RECEIVER_PATTERN.search(identifier):
+            return "database"
+        if identifier.casefold() in DATABASE_RECEIVER_NAMES:
+            return "database"
+        if SHELVE_RECEIVER_PATTERN.search(identifier):
+            return "shelve"
         return None
 
+    def _expression_durable_kind(self, node: ast.AST | None) -> str | None:
+        if node is None:
+            return None
+        path_kind = self._receiver_kind_for_path(_access_path(node))
+        if path_kind is not None:
+            return path_kind
+        if isinstance(
+            node,
+            (
+                ast.Dict,
+                ast.DictComp,
+                ast.List,
+                ast.ListComp,
+                ast.Set,
+                ast.SetComp,
+                ast.Tuple,
+            ),
+        ):
+            return "local"
+        if not isinstance(node, ast.Call):
+            return None
+        dotted = _dotted_name(node.func)
+        if dotted in {"sqlite3.connect", "create_engine", "sqlalchemy.create_engine"}:
+            return "database"
+        if dotted == "shelve.open":
+            return "shelve"
+        if dotted in FILE_OPEN_CALLS and _open_call_writes(node):
+            return "file"
+        final_name = dotted.rsplit(".", maxsplit=1)[-1] if dotted else None
+        if final_name in LOCAL_RECEIVER_CONSTRUCTORS:
+            return "local"
+        if final_name in {"Redis", "StrictRedis"}:
+            return "redis"
+        if dotted is not None and dotted.rsplit(".", maxsplit=1)[-1] in (
+            self._path_constructor_aliases
+        ):
+            return "path"
+        if isinstance(node.func, ast.Attribute):
+            receiver_kind = self._expression_durable_kind(node.func.value)
+            if receiver_kind == "redis" and node.func.attr in {"from_url", "pipeline"}:
+                return "redis"
+            if receiver_kind == "database" and node.func.attr in {
+                "begin",
+                "connect",
+                "cursor",
+                "session",
+            }:
+                return "database"
+            if (
+                receiver_kind == "path"
+                and node.func.attr == "open"
+                and _path_open_call_writes(node)
+            ):
+                return "file"
+        return None
+
+    def _sink_kind(self, node: ast.AST) -> str | None:
+        path = _access_path(node)
+        if path is not None and path in self._sink_aliases:
+            return self._sink_aliases[path]
+        dotted = _dotted_name(node)
+        final_name = dotted.rsplit(".", maxsplit=1)[-1] if dotted else None
+        if dotted == "print" or final_name in LOG_METHODS:
+            return "request-content-log"
+        if isinstance(node, ast.Attribute):
+            receiver_name = _dotted_name(node.value)
+            if (
+                node.attr in FILE_PERSISTENCE_METHODS
+                and receiver_name in {"stderr", "stdout", "sys.stderr", "sys.stdout"}
+            ):
+                return "request-content-log"
+            receiver_kind = self._expression_durable_kind(node.value)
+            methods_by_kind = {
+                "database": DATABASE_PERSISTENCE_METHODS,
+                "file": FILE_PERSISTENCE_METHODS,
+                "path": PATH_PERSISTENCE_METHODS,
+                "redis": REDIS_PERSISTENCE_METHODS,
+                "shelve": SHELVE_PERSISTENCE_METHODS,
+            }
+            if node.attr in methods_by_kind.get(receiver_kind, frozenset()):
+                return "durable-content-sink"
+        return None
+
+    def _clear_target(self, path: AccessPath) -> None:
+        self._tainted_paths = {
+            candidate
+            for candidate in self._tainted_paths
+            if not _path_is_prefix(path, candidate)
+        }
+        self._request_paths = {
+            candidate
+            for candidate in self._request_paths
+            if not _path_is_prefix(path, candidate)
+        }
+        self._sink_aliases = {
+            candidate: kind
+            for candidate, kind in self._sink_aliases.items()
+            if not _path_is_prefix(path, candidate)
+        }
+        self._durable_receivers = {
+            candidate: kind
+            for candidate, kind in self._durable_receivers.items()
+            if not _path_is_prefix(path, candidate)
+        }
+
+    def _copy_taint_paths(self, target: AccessPath, source: AccessPath) -> bool:
+        copied = False
+        for tainted in tuple(self._tainted_paths):
+            if _path_is_prefix(tainted, source):
+                self._tainted_paths.add(target)
+                copied = True
+            elif _path_is_prefix(source, tainted):
+                self._tainted_paths.add((*target, *tainted[len(source) :]))
+                copied = True
+        return copied
+
+    def _copy_request_paths(self, target: AccessPath, source: AccessPath) -> None:
+        for request_path in tuple(self._request_paths):
+            if request_path == source:
+                self._request_paths.add(target)
+            elif _path_is_prefix(source, request_path):
+                self._request_paths.add((*target, *request_path[len(source) :]))
+
+    def _propagate_structured_value(
+        self, target: AccessPath, value: ast.AST
+    ) -> bool:
+        if isinstance(value, ast.Dict):
+            for key, item in zip(value.keys, value.values, strict=True):
+                component = _subscript_component(key) if key is not None else None
+                if component is None:
+                    if self._expression_is_tainted(item):
+                        self._tainted_paths.add(target)
+                    if self._expression_is_request_object(item):
+                        self._request_paths.add(target)
+                else:
+                    self._propagate_value((*target, component), item)
+            return True
+        if isinstance(value, (ast.List, ast.Tuple)):
+            for index, item in enumerate(value.elts):
+                component = f"key:int:{index!r}"
+                self._propagate_value((*target, component), item)
+            return True
+        return False
+
+    def _propagate_value(self, target: AccessPath, value: ast.AST) -> None:
+        if self._propagate_structured_value(target, value):
+            self._durable_receivers[target] = "local"
+            return
+        source = _access_path(value)
+        copied_taint = False
+        if source is not None:
+            copied_taint = self._copy_taint_paths(target, source)
+            self._copy_request_paths(target, source)
+        if self._expression_is_request_object(value):
+            self._request_paths.add(target)
+        if self._expression_is_tainted(value) and not copied_taint:
+            self._tainted_paths.add(target)
+        durable_kind = self._expression_durable_kind(value)
+        if durable_kind is not None:
+            self._durable_receivers[target] = durable_kind
+        sink_kind = self._sink_kind(value)
+        if sink_kind is not None:
+            self._sink_aliases[target] = sink_kind
+        if (
+            len(target) == 1
+            and isinstance(value, ast.Name)
+            and value.id in self._flask_module_aliases
+        ):
+            self._flask_module_aliases.add(target[0])
+
+    def _assign_target(self, target: ast.AST, value: ast.AST) -> None:
+        if (
+            isinstance(target, (ast.List, ast.Tuple))
+            and isinstance(value, (ast.List, ast.Tuple))
+            and len(target.elts) == len(value.elts)
+        ):
+            for destination, item in zip(target.elts, value.elts, strict=True):
+                self._assign_target(destination, item)
+            return
+        for path in _assigned_paths(target):
+            self._clear_target(path)
+            self._propagate_value(path, value)
+
+    def _record_durable_subscript_assignment(
+        self, target: ast.AST, value: ast.AST
+    ) -> None:
+        if (
+            isinstance(target, ast.Subscript)
+            and self._expression_durable_kind(target.value) == "shelve"
+            and self._expression_is_tainted(value)
+        ):
+            self.findings.add("durable-content-sink")
+
     def _visit_function_scope(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> None:
-        previous_taint = self._tainted_names
+        previous_taint = self._tainted_paths
         previous_aliases = self._sink_aliases
-        previous_request_aliases = self._request_aliases
+        previous_request_paths = self._request_paths
+        previous_receivers = self._durable_receivers
         previous_flask_aliases = self._flask_module_aliases
+        previous_path_aliases = self._path_constructor_aliases
         parameter_names = {
             argument.arg
             for argument in (
@@ -242,21 +593,25 @@ class PythonRetentionVisitor(ast.NodeVisitor):
             parameter_names.add(node.args.vararg.arg)
         if node.args.kwarg is not None:
             parameter_names.add(node.args.kwarg.arg)
-        self._tainted_names = set(previous_taint)
-        self._tainted_names.update(
-            name for name in parameter_names if SENSITIVE_NAME_PATTERN.search(name)
+        self._tainted_paths = set(previous_taint)
+        self._tainted_paths.update(
+            (name,) for name in parameter_names if SENSITIVE_NAME_PATTERN.search(name)
         )
         self._sink_aliases = dict(previous_aliases)
-        self._request_aliases = set(previous_request_aliases)
+        self._request_paths = set(previous_request_paths)
+        self._durable_receivers = dict(previous_receivers)
         self._flask_module_aliases = set(previous_flask_aliases)
+        self._path_constructor_aliases = set(previous_path_aliases)
         self._function_stack.append(node.name)
         for statement in node.body:
             self.visit(statement)
         self._function_stack.pop()
-        self._tainted_names = previous_taint
+        self._tainted_paths = previous_taint
         self._sink_aliases = previous_aliases
-        self._request_aliases = previous_request_aliases
+        self._request_paths = previous_request_paths
+        self._durable_receivers = previous_receivers
         self._flask_module_aliases = previous_flask_aliases
+        self._path_constructor_aliases = previous_path_aliases
 
     def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
         self._visit_function_scope(node)
@@ -266,46 +621,35 @@ class PythonRetentionVisitor(ast.NodeVisitor):
 
     def visit_Assign(self, node: ast.Assign) -> None:
         self.visit(node.value)
-        names = set().union(*(_assigned_names(target) for target in node.targets))
-        paths = set().union(*(_assigned_paths(target) for target in node.targets))
-        if self._expression_is_tainted(node.value):
-            self._tainted_names.update(names)
-        if self._expression_is_request_object(node.value):
-            self._request_aliases.update(paths)
-        sink_kind = self._sink_kind(node.value)
-        if sink_kind is not None:
-            self._sink_aliases.update({path: sink_kind for path in paths})
-        if isinstance(node.value, ast.Call) and _dotted_name(node.value.func) == "open":
-            if _open_call_writes(node.value):
-                self.findings.add("new-server-retention-store")
+        for target in node.targets:
+            self._record_durable_subscript_assignment(target, node.value)
+            self._assign_target(target, node.value)
 
     def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
         if node.value is None:
             return
         self.visit(node.value)
-        names = _assigned_names(node.target)
-        paths = _assigned_paths(node.target)
-        if self._expression_is_tainted(node.value):
-            self._tainted_names.update(names)
-        if self._expression_is_request_object(node.value):
-            self._request_aliases.update(paths)
-        sink_kind = self._sink_kind(node.value)
-        if sink_kind is not None:
-            self._sink_aliases.update({path: sink_kind for path in paths})
-        if isinstance(node.value, ast.Call) and _dotted_name(node.value.func) == "open":
-            if _open_call_writes(node.value):
-                self.findings.add("new-server-retention-store")
+        self._record_durable_subscript_assignment(node.target, node.value)
+        self._assign_target(node.target, node.value)
 
     def visit_NamedExpr(self, node: ast.NamedExpr) -> None:
         self.visit(node.value)
-        if self._expression_is_tainted(node.value):
-            self._tainted_names.update(_assigned_names(node.target))
-        if self._expression_is_request_object(node.value):
-            self._request_aliases.update(_assigned_paths(node.target))
+        self._assign_target(node.target, node.value)
+
+    def visit_AugAssign(self, node: ast.AugAssign) -> None:
+        target_tainted = self._expression_is_tainted(node.target)
+        value_tainted = self._expression_is_tainted(node.value)
+        self.visit(node.value)
+        for path in _assigned_paths(node.target):
+            self._clear_target(path)
+            if target_tainted or value_tainted:
+                self._tainted_paths.add(path)
 
     def visit_Return(self, node: ast.Return) -> None:
         if self._function_stack and self._expression_is_tainted(node.value):
             self.tainted_functions.add(self._function_stack[-1])
+        if self._function_stack and self._expression_is_request_object(node.value):
+            self.request_functions.add(self._function_stack[-1])
         if node.value is not None:
             self.visit(node.value)
 
@@ -318,29 +662,81 @@ class PythonRetentionVisitor(ast.NodeVisitor):
 
     def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
         if node.module == "flask":
-            self._request_aliases.update(
-                alias.asname or alias.name
+            self._request_paths.update(
+                ((alias.asname or alias.name),)
                 for alias in node.names
                 if alias.name == "request"
             )
+        if node.module == "pathlib":
+            self._path_constructor_aliases.update(
+                alias.asname or alias.name
+                for alias in node.names
+                if alias.name == "Path"
+            )
+
+    def _visit_with(self, node: ast.With | ast.AsyncWith) -> None:
+        for item in node.items:
+            self.visit(item.context_expr)
+            if item.optional_vars is not None:
+                self._assign_target(item.optional_vars, item.context_expr)
+        for statement in node.body:
+            self.visit(statement)
+
+    def visit_With(self, node: ast.With) -> None:
+        self._visit_with(node)
+
+    def visit_AsyncWith(self, node: ast.AsyncWith) -> None:
+        self._visit_with(node)
+
+    def visit_Delete(self, node: ast.Delete) -> None:
+        for target in node.targets:
+            for path in _assigned_paths(target):
+                self._clear_target(path)
 
     def visit_Call(self, node: ast.Call) -> None:
         dotted = _dotted_name(node.func)
         if dotted in NEW_STORE_CALLS:
             self.findings.add("new-server-retention-store")
-        if dotted == "open" and _open_call_writes(node):
+        if dotted in FILE_OPEN_CALLS and _open_call_writes(node):
             self.findings.add("new-server-retention-store")
+        receiver_kind = None
         if isinstance(node.func, ast.Attribute):
-            if node.func.attr in {"touch", "write_bytes", "write_text"}:
+            receiver_kind = self._expression_durable_kind(node.func.value)
+            if (
+                receiver_kind == "path"
+                and node.func.attr in PATH_PERSISTENCE_METHODS
+            ):
                 self.findings.add("new-server-retention-store")
-            if node.func.attr == "open" and _path_open_call_writes(node):
+            if (
+                receiver_kind == "path"
+                and node.func.attr == "open"
+                and _path_open_call_writes(node)
+            ):
                 self.findings.add("new-server-retention-store")
         sink_kind = self._sink_kind(node.func)
         values = (*node.args, *(keyword.value for keyword in node.keywords))
-        if sink_kind is not None and any(
-            self._expression_is_tainted(value) for value in values
-        ):
+        has_tainted_value = any(self._expression_is_tainted(value) for value in values)
+        if sink_kind is not None and has_tainted_value:
             self.findings.add(sink_kind)
+        if (
+            isinstance(node.func, ast.Attribute)
+            and node.func.attr in LOCAL_MUTATION_METHODS
+            and receiver_kind not in DURABLE_RECEIVER_KINDS
+            and has_tainted_value
+        ):
+            receiver_path = _access_path(node.func.value)
+            if receiver_path is not None:
+                self._tainted_paths.add(receiver_path)
+        if (
+            isinstance(node.func, ast.Attribute)
+            and node.func.attr in {"append", "put"}
+            and any(self._expression_is_request_object(value) for value in values)
+        ):
+            receiver_path = _access_path(node.func.value)
+            if receiver_path is not None:
+                self._request_paths.add(
+                    (*receiver_path, WILDCARD_SUBSCRIPT_COMPONENT)
+                )
         self.generic_visit(node)
 
 
@@ -370,18 +766,23 @@ def python_findings(content: str) -> set[str]:
     except (SyntaxError, ValueError):
         return {"unparseable-production-python"}
     tainted_functions: set[str] = set()
+    request_functions: set[str] = set()
     findings: set[str] = set()
     function_count = sum(
         isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
         for node in ast.walk(parsed)
     )
     for _ in range(function_count + 1):
-        visitor = PythonRetentionVisitor(tainted_functions)
+        visitor = PythonRetentionVisitor(tainted_functions, request_functions)
         visitor.visit(parsed)
         findings.update(visitor.findings)
-        if visitor.tainted_functions <= tainted_functions:
+        if (
+            visitor.tainted_functions <= tainted_functions
+            and visitor.request_functions <= request_functions
+        ):
             break
         tainted_functions.update(visitor.tainted_functions)
+        request_functions.update(visitor.request_functions)
     return findings
 
 

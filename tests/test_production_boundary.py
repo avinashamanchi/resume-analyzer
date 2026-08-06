@@ -825,6 +825,314 @@ def test_retention_verifier_tracks_multiline_aliases_into_prohibited_sinks(
     assert content not in result.stdout + result.stderr
 
 
+@pytest.mark.parametrize(
+    ("relative_path", "content"),
+    [
+        (
+            "server/helper_json.py",
+            "def active_request():\n"
+            "    return request\n"
+            "body = active_request().get_json()\n"
+            "logger.info(body)",
+        ),
+        (
+            "server/helper_data.py",
+            "import flask\n"
+            "def active_request():\n"
+            "    return flask.request\n"
+            "body = active_request().data\n"
+            "redis_client.set('report', body)",
+        ),
+        (
+            "server/helper_form.py",
+            "from flask import request as incoming\n"
+            "def active_request():\n"
+            "    return incoming\n"
+            "body = active_request().form\n"
+            "database.execute('INSERT INTO reports VALUES (?)', body)",
+        ),
+        (
+            "server/helper_files.py",
+            "def active_request():\n"
+            "    alias = request\n"
+            "    return alias\n"
+            "uploads = active_request().files\n"
+            "logging.warning(uploads)",
+        ),
+        (
+            "server/attribute_alias.py",
+            "class Holder:\n"
+            "    pass\n"
+            "holder = Holder()\n"
+            "holder.active = request\n"
+            "uploads = holder.active.files\n"
+            "db.execute('INSERT INTO reports VALUES (?)', uploads)",
+        ),
+        (
+            "server/subscript_alias.py",
+            "bucket = {}\n"
+            "bucket['active'] = request\n"
+            "body = bucket['active'].get_json()\n"
+            "logger.info(body)",
+        ),
+        (
+            "server/dict_alias.py",
+            "bucket = {'active': request}\n"
+            "body = bucket['active'].data\n"
+            "redis_client.hset('reports', 'body', body)",
+        ),
+        (
+            "server/list_alias.py",
+            "import flask as f\n"
+            "requests = [f.request]\n"
+            "body = requests[0].form\n"
+            "logger.error(body)",
+        ),
+        (
+            "server/fixed_point_helper.py",
+            "def outer_request():\n"
+            "    return inner_request()\n"
+            "def inner_request():\n"
+            "    return request\n"
+            "body = outer_request().data\n"
+            "logger.info(body)",
+        ),
+        (
+            "server/aggregate_log.py",
+            "class Holder:\n"
+            "    pass\n"
+            "holder = Holder()\n"
+            "holder.body = request.data\n"
+            "logger.info(holder)",
+        ),
+        (
+            "server/appended_request_alias.py",
+            "items = []\n"
+            "items.append(request)\n"
+            "body = items[0].data\n"
+            "logger.info(body)",
+        ),
+        (
+            "server/logged_ephemeral_buffer.py",
+            "import io\n"
+            "output = io.BytesIO()\n"
+            "output.write(request.data)\n"
+            "logger.info(output.getvalue())",
+        ),
+        (
+            "server/dict_get_alias.py",
+            "bucket = {'active': request}\n"
+            "uploads = bucket.get('active').files\n"
+            "log(uploads)",
+        ),
+        (
+            "server/stderr_log.py",
+            "import sys\n"
+            "body = request.data\n"
+            "sys.stderr.write(body)",
+        ),
+    ],
+)
+def test_retention_verifier_tracks_request_objects_through_helpers_and_containers(
+    tmp_path: Path,
+    relative_path: str,
+    content: str,
+):
+    repository = _tracked_repo(tmp_path, {relative_path: content + "\n"})
+
+    result = _retention_verifier(repository)
+
+    assert result.returncode == 1
+    assert "Sensitive-retention verification failed" in result.stderr
+    assert content not in result.stdout + result.stderr
+
+
+@pytest.mark.parametrize(
+    ("relative_path", "content"),
+    [
+        (
+            "server/attribute_sibling.py",
+            "class Holder:\n"
+            "    pass\n"
+            "holder = Holder()\n"
+            "holder.body = request.data\n"
+            "holder.status = 'ready'\n"
+            "logger.info(holder.status)",
+        ),
+        (
+            "server/subscript_sibling.py",
+            "holder = {}\n"
+            "holder['body'] = request.get_json()\n"
+            "holder['status'] = 'ready'\n"
+            "logger.info(holder['status'])",
+        ),
+        (
+            "server/ephemeral_buffers.py",
+            "import io\n"
+            "def parse(request):\n"
+            "    chunks = []\n"
+            "    chunks.append(request.data)\n"
+            "    buffered = bytearray()\n"
+            "    buffered.extend(request.data)\n"
+            "    buffered.append(request.data[0])\n"
+            "    output = io.BytesIO()\n"
+            "    output.write(request.data)\n"
+            "    return chunks, bytes(buffered), output.getvalue()",
+        ),
+        (
+            "server/current_parser_shapes.py",
+            "import io\n"
+            "def parse(request, stream):\n"
+            "    values = request.form.getlist('resume_text')\n"
+            "    opened_pages = []\n"
+            "    opened_pages.append(values[0])\n"
+            "    page_text = []\n"
+            "    page_text.append(values[0].strip())\n"
+            "    buffered = bytearray()\n"
+            "    chunk = stream.read(1024)\n"
+            "    buffered.extend(chunk)\n"
+            "    pdf_stream = io.BytesIO(bytes(buffered))\n"
+            "    pdf_stream.write(request.data)\n"
+            "    return opened_pages, page_text, pdf_stream.getvalue()",
+        ),
+        (
+            "server/local_queue.py",
+            "import queue\n"
+            "def parse(request):\n"
+            "    work_queue = queue.SimpleQueue()\n"
+            "    work_queue.put(request.data)\n"
+            "    return work_queue.get()",
+        ),
+        (
+            "server/dict_get_sibling.py",
+            "holder = {}\n"
+            "holder['body'] = request.data\n"
+            "holder['status'] = 'ready'\n"
+            "logger.info(holder.get('status'))",
+        ),
+        (
+            "server/local_list_named_redis.py",
+            "redis_chunks = []\n"
+            "redis_chunks.append(request.data)\n"
+            "return_value = len(redis_chunks)",
+        ),
+        (
+            "server/local_list_named_database.py",
+            "database_values = []\n"
+            "database_values.insert(0, request.data)\n"
+            "return_value = len(database_values)",
+        ),
+        (
+            "server/local_queue_named_database.py",
+            "import queue\n"
+            "database_queue = queue.SimpleQueue()\n"
+            "database_queue.put(request.data)\n"
+            "return_value = database_queue.qsize()",
+        ),
+        (
+            "server/local_bytearray_named_redis.py",
+            "redis_bytes = bytearray()\n"
+            "redis_bytes.append(request.data[0])\n"
+            "return_value = bytes(redis_bytes)",
+        ),
+    ],
+)
+def test_retention_verifier_allows_precise_siblings_and_ephemeral_accumulators(
+    tmp_path: Path,
+    relative_path: str,
+    content: str,
+):
+    repository = _tracked_repo(tmp_path, {relative_path: content + "\n"})
+
+    result = _retention_verifier(repository)
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "Sensitive-retention verification passed.\n"
+    assert content not in result.stdout + result.stderr
+
+
+@pytest.mark.parametrize(
+    ("relative_path", "content"),
+    [
+        (
+            "server/redis_store.py",
+            "body = request.data\n"
+            "cache = redis_client\n"
+            "cache.set('report', body)",
+        ),
+        (
+            "server/database_store.py",
+            "body = request.form\n"
+            "database.execute('INSERT INTO reports VALUES (?)', body)",
+        ),
+        (
+            "server/file_store.py",
+            "body = request.data\n"
+            "with open('report.bin', 'wb') as output:\n"
+            "    output.write(body)",
+        ),
+        (
+            "server/path_store.py",
+            "from pathlib import Path\n"
+            "body = request.data\n"
+            "Path('report.bin').write_bytes(body)",
+        ),
+        (
+            "server/shelve_store.py",
+            "import shelve\n"
+            "body = request.get_json()\n"
+            "store = shelve.open('reports')\n"
+            "store['body'] = body",
+        ),
+        (
+            "server/aliased_file_store.py",
+            "body = request.data\n"
+            "with open('report.bin', 'wb') as output:\n"
+            "    persist = output.write\n"
+            "    persist(body)",
+        ),
+        (
+            "server/aliased_path_store.py",
+            "from pathlib import Path as OutputPath\n"
+            "body = request.data\n"
+            "OutputPath('report.bin').write_bytes(body)",
+        ),
+        (
+            "server/aliased_database_store.py",
+            "body = request.form\n"
+            "persist = database.execute\n"
+            "persist('INSERT INTO reports VALUES (?)', body)",
+        ),
+        (
+            "server/io_file_store.py",
+            "import io\n"
+            "body = request.data\n"
+            "output = io.open('report.bin', 'wb')\n"
+            "output.write(body)",
+        ),
+    ],
+)
+def test_retention_verifier_rejects_known_durable_receivers(
+    tmp_path: Path,
+    relative_path: str,
+    content: str,
+):
+    repository = _tracked_repo(tmp_path, {relative_path: content + "\n"})
+
+    result = _retention_verifier(repository)
+
+    assert result.returncode == 1
+    assert "Sensitive-retention verification failed" in result.stderr
+    assert content not in result.stdout + result.stderr
+
+
+def test_retention_verifier_accepts_current_server_patterns():
+    result = _retention_verifier(ROOT)
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "Sensitive-retention verification passed.\n"
+
+
 def test_release_docs_and_ci_cover_required_unverified_boundaries():
     required_docs = (
         ROOT / "docs" / "privacy-policy.md",
