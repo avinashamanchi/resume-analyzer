@@ -21,6 +21,9 @@ function component(label: string, value: number | null, maximum: number): string
 
 export function buildReportHtml(report: ReportRecord): string {
   const hasKeywords = report.score.components.keywords !== null;
+  const methodology = hasKeywords
+    ? `The deterministic ${escapeReportHtml(report.score.scoreVersion)} method assigns structure up to 25 points, impact up to 30 points, readability up to 20 points, and keyword alignment up to 25 points. These components total at most 100 points.`
+    : `The deterministic ${escapeReportHtml(report.score.scoreVersion)} method assigns structure up to 30 points, impact up to 40 points, and readability up to 30 points. No job-description component is included in this score.`;
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -68,7 +71,7 @@ export function buildReportHtml(report: ReportRecord): string {
     </section>
     <section aria-labelledby="method-heading">
       <h2 id="method-heading">Score methodology</h2>
-      <p>The deterministic ${escapeReportHtml(report.score.scoreVersion)} method assigns structure up to 30 points, impact up to 40 points, and readability up to 30 points. When a job description is supplied, keyword alignment contributes up to 25 points and the total remains capped at 100. AI feedback cannot alter this score or its components.</p>
+      <p>${methodology} AI feedback cannot alter this score or its components.</p>
     </section>
     <section aria-labelledby="summary-heading"><h2 id="summary-heading">Editorial summary</h2><p>${escapeReportHtml(report.feedback.summary)}</p></section>
     <section aria-labelledby="matched-heading"><h2 id="matched-heading">Matched keywords</h2>${list(report.feedback.matchedKeywords, hasKeywords ? 'No matched terms were identified.' : 'Not scored because no job description was supplied.')}</section>

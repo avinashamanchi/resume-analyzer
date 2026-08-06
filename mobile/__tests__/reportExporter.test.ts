@@ -106,6 +106,36 @@ describe('native report exporter', () => {
       .toBeLessThan(print.printToFileAsync.mock.invocationCallOrder[0]);
   });
 
+  it('describes the 30/40/30 score weights when no job description was scored', async () => {
+    const { exporter, print } = exporterHarness();
+    await exporter.export(fixtureReport({
+      score: {
+        ...validFixture.score,
+        readinessScore: 85,
+        components: { structure: 30, impact: 30, readability: 25, keywords: null },
+      } as ReportRecord['score'],
+    }));
+
+    const html = print.printToFileAsync.mock.calls[0][0].html;
+    expect(html).toContain(
+      'assigns structure up to 30 points, impact up to 40 points, and readability up to 30 points',
+    );
+    expect(html).toContain('No job-description component is included in this score.');
+    expect(html).not.toContain('assigns structure up to 25 points');
+  });
+
+  it('describes the 25/30/20/25 score weights when a job description was scored', async () => {
+    const { exporter, print } = exporterHarness();
+    await exporter.export(fixtureReport());
+
+    const html = print.printToFileAsync.mock.calls[0][0].html;
+    expect(html).toContain(
+      'assigns structure up to 25 points, impact up to 30 points, readability up to 20 points, and keyword alignment up to 25 points',
+    );
+    expect(html).toContain('These components total at most 100 points.');
+    expect(html).not.toContain('assigns structure up to 30 points');
+  });
+
   it('opens sharing only from share and deletes after completion or cancellation', async () => {
     const { exporter, sharing, files } = exporterHarness();
     const receipt = await exporter.export(fixtureReport());
@@ -119,6 +149,31 @@ describe('native report exporter', () => {
     });
     expect(files.delete).toHaveBeenCalledWith(PRINT_URI);
     await expect(exporter.share(receipt)).rejects.toMatchObject({ code: 'invalid_receipt' });
+  });
+
+  it('discards an issued report with verified deletion without opening sharing', async () => {
+    const { exporter, sharing, files } = exporterHarness();
+    const receipt = await exporter.export(fixtureReport());
+
+    await exporter.discard(receipt);
+
+    expect(sharing.isAvailableAsync).not.toHaveBeenCalled();
+    expect(sharing.shareAsync).not.toHaveBeenCalled();
+    expect(files.delete).toHaveBeenCalledWith(PRINT_URI);
+    await expect(exporter.discard(receipt)).rejects.toMatchObject({ code: 'invalid_receipt' });
+  });
+
+  it('fails closed when discarded-report deletion cannot be verified', async () => {
+    const { exporter, sharing } = exporterHarness({
+      deleteFailure: new Error(`cannot delete ${PRINT_URI}`),
+    });
+    const receipt = await exporter.export(fixtureReport());
+
+    await expect(exporter.discard(receipt)).rejects.toEqual(
+      new ReportExportError('cleanup_failed'),
+    );
+    expect(sharing.shareAsync).not.toHaveBeenCalled();
+    await expect(exporter.discard(receipt)).rejects.toMatchObject({ code: 'invalid_receipt' });
   });
 
   it('deletes the generated report when sharing rejects without leaking its private cause', async () => {

@@ -29,7 +29,7 @@ type LoadedReport = Readonly<{
   exportRecord: ReportRecord;
 }>;
 
-type ReceiptNotice = Readonly<{ sequence: number; message: string }>;
+type ReceiptNotice = Readonly<{ sequence: number; routeEpoch: number; message: string }>;
 
 function analysisFromDisplay(value: DisplayReport): AnalysisResponse | null {
   const direct = AnalysisResponseSchema.safeParse(value);
@@ -83,11 +83,19 @@ export function ResultsScreen({
   const id = Array.isArray(params.analysisId) ? params.analysisId[0] : params.analysisId;
   const [loadedReport, setLoadedReport] = useState<LoadedReport | null>(null);
   const [loaded, setLoaded] = useState(false);
+  const [loadedId, setLoadedId] = useState<string | undefined>(undefined);
   const [receipt, setReceipt] = useState<ReceiptNotice | null>(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
-  const [exporting, setExporting] = useState(false);
+  const [sharing, setSharing] = useState(false);
+  const [preparingPdf, setPreparingPdf] = useState(false);
   const mounted = useRef(true);
+  const routeAuthority = useRef({ analysisId: id, epoch: 0 });
+  if (routeAuthority.current.analysisId !== id) {
+    routeAuthority.current = { analysisId: id, epoch: routeAuthority.current.epoch + 1 };
+  }
+  const routeEpoch = routeAuthority.current.epoch;
+  const shareAuthority = useRef<symbol | null>(null);
   const headingRef = useRef<View | null>(null);
   const receiptRef = useRef<Text | null>(null);
   const deleteErrorRef = useRef<Text | null>(null);
@@ -99,7 +107,31 @@ export function ResultsScreen({
 
   const publishReceipt = (message: string) => {
     receiptSequence.current += 1;
-    setReceipt({ sequence: receiptSequence.current, message });
+    setReceipt({ sequence: receiptSequence.current, routeEpoch, message });
+  };
+
+  const routeIsCurrent = (analysisId: string | undefined, epoch: number): boolean => (
+    mounted.current &&
+    routeAuthority.current.analysisId === analysisId &&
+    routeAuthority.current.epoch === epoch
+  );
+
+  const beginShare = (kind: 'text' | 'pdf'): symbol | null => {
+    if (shareAuthority.current !== null) return null;
+    const authority = Symbol('results-share');
+    shareAuthority.current = authority;
+    setSharing(true);
+    setPreparingPdf(kind === 'pdf');
+    return authority;
+  };
+
+  const finishShare = (authority: symbol): void => {
+    if (shareAuthority.current !== authority) return;
+    shareAuthority.current = null;
+    if (mounted.current) {
+      setSharing(false);
+      setPreparingPdf(false);
+    }
   };
 
   useEffect(() => {
@@ -117,13 +149,18 @@ export function ResultsScreen({
 
   useEffect(() => {
     let active = true;
+    setConfirmDelete(false);
+    setDeleteError(null);
     if (typeof id !== 'string') {
+      setLoadedReport(null);
+      setLoadedId(id);
       setLoaded(true);
       return () => { active = false; };
     }
     void history.get(id).then(value => {
       if (!active) return;
       setLoadedReport(value === null ? null : loadedFromDisplay(value));
+      setLoadedId(id);
       setLoaded(true);
     });
     return () => { active = false; };
@@ -134,12 +171,12 @@ export function ResultsScreen({
   }, [loadedReport]);
 
   useEffect(() => {
-    if (receipt === null) return;
+    if (receipt === null || receipt.routeEpoch !== routeEpoch) return;
     AccessibilityInfo.announceForAccessibility(receipt.message);
     focusNode(deleteError === null ? receiptRef.current : deleteErrorRef.current);
-  }, [deleteError, receipt]);
+  }, [deleteError, receipt, routeEpoch]);
 
-  if (!loaded) {
+  if (!loaded || loadedId !== id) {
     return <Screen><Eyebrow>Resume.AI</Eyebrow><Title>Opening report…</Title></Screen>;
   }
   if (loadedReport === null) {
@@ -169,33 +206,45 @@ export function ResultsScreen({
   };
 
   const shareText = async () => {
+    const authority = beginShare('text');
+    if (authority === null) return;
+    const actionId = id;
+    const actionEpoch = routeEpoch;
     try {
       await actions.shareSummary(result);
-      if (mounted.current) publishReceipt('Text share sheet closed.');
+      if (routeIsCurrent(actionId, actionEpoch)) publishReceipt('Text share sheet closed.');
     } catch {
-      if (mounted.current) publishReceipt('The text summary was not shared.');
+      if (routeIsCurrent(actionId, actionEpoch)) publishReceipt('The text summary was not shared.');
+    } finally {
+      finishShare(authority);
     }
   };
 
   const sharePdf = async () => {
-    if (exporting) return;
-    setExporting(true);
+    const authority = beginShare('pdf');
+    if (authority === null) return;
+    const actionId = id;
+    const actionEpoch = routeEpoch;
     publishReceipt('Preparing a PDF report…');
     try {
       const exportReceipt = await exporter.export(exportRecord);
+      if (!routeIsCurrent(actionId, actionEpoch)) {
+        await exporter.discard(exportReceipt);
+        return;
+      }
       await exporter.share(exportReceipt);
-      if (mounted.current) {
+      if (routeIsCurrent(actionId, actionEpoch)) {
         publishReceipt('Share sheet closed. The temporary PDF was removed.');
       }
     } catch (error) {
-      if (!mounted.current) return;
+      if (!routeIsCurrent(actionId, actionEpoch)) return;
       publishReceipt(
         error instanceof ReportExportError && error.code === 'cleanup_failed'
           ? 'The temporary PDF could not be verified as removed. Reopen this report to retry cleanup.'
           : 'The PDF report was not shared.',
       );
     } finally {
-      if (mounted.current) setExporting(false);
+      finishShare(authority);
     }
   };
 
@@ -247,28 +296,28 @@ export function ResultsScreen({
           label={saved ? 'Saved locally' : 'Save locally'}
           accessibilityHint={saved ? 'This report is already saved on this device.' : 'Saves this bounded report on this device.'}
           onPress={() => { void save(); }}
-          disabled={saved || exporting}
+          disabled={saved || sharing}
         />
         <AppButton
           label="Share text summary"
           accessibilityHint="Opens the system share sheet with a bounded text summary."
           onPress={() => { void shareText(); }}
-          disabled={exporting}
+          disabled={sharing}
           tone="secondary"
         />
         <AppButton
-          label={exporting ? 'Preparing PDF report…' : 'Share PDF report'}
+          label={preparingPdf ? 'Preparing PDF report…' : 'Share PDF report'}
           accessibilityLabel="Share report"
           accessibilityHint="Creates a PDF report, opens the system share sheet, then removes the temporary file."
           onPress={() => { void sharePdf(); }}
-          disabled={exporting}
+          disabled={sharing}
           tone="secondary"
         />
         <AppButton
           label="New analysis"
           accessibilityHint="Clears the current analysis and returns to Analyze."
           onPress={() => { void startNew(); }}
-          disabled={exporting}
+          disabled={sharing}
           tone="quiet"
         />
         {saved ? (
@@ -276,12 +325,12 @@ export function ResultsScreen({
             label="Delete saved report"
             accessibilityHint="Opens a confirmation before deleting this local report."
             onPress={() => { setDeleteError(null); setConfirmDelete(true); }}
-            disabled={exporting}
+            disabled={sharing}
             tone="danger"
           />
         ) : null}
       </Card>
-      {receipt !== null ? (
+      {receipt !== null && receipt.routeEpoch === routeEpoch ? (
         <Text
           ref={receiptRef}
           accessibilityRole="alert"

@@ -164,6 +164,7 @@ export interface ReportExporterPort {
   cleanupAbandoned(): Promise<number>;
   export(report: ReportRecord): Promise<ExportReceipt>;
   share(receipt: ExportReceipt): Promise<void>;
+  discard(receipt: ExportReceipt): Promise<void>;
 }
 
 const expoPrint: ReportPrintPort = {
@@ -268,6 +269,20 @@ export class ReportExporter implements ReportExporterPort {
         throw new ReportExportError('cleanup_failed');
       }
       if (shareFailure !== null) throw shareFailure;
+    });
+  }
+
+  discard(receipt: ExportReceipt): Promise<void> {
+    return this.enqueue(async () => {
+      const uri = this.receipts.get(receipt);
+      if (uri === undefined) throw new ReportExportError('invalid_receipt');
+      this.receipts.delete(receipt);
+      this.activeUris.delete(uri);
+      try {
+        await this.files.delete(uri);
+      } catch {
+        throw new ReportExportError('cleanup_failed');
+      }
     });
   }
 

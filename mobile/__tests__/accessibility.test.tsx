@@ -8,8 +8,12 @@ import { ResultsScreen } from '../app/results/[analysisId]';
 import { AppControllerProvider } from '../src/controllers/AppController';
 import type { ExportReceipt, ReportExporterPort } from '../src/export/reportExporter';
 
+const REPORT_A_ID = '8ec8a3bc-7a15-4b75-9f94-a5353a2a2f9b';
+const REPORT_B_ID = '9ec8a3bc-7a15-4b75-9f94-a5353a2a2f9b';
+let mockAnalysisId = REPORT_A_ID;
+
 jest.mock('expo-router', () => ({
-  useLocalSearchParams: () => ({ analysisId: '8ec8a3bc-7a15-4b75-9f94-a5353a2a2f9b' }),
+  useLocalSearchParams: () => ({ analysisId: mockAnalysisId }),
   useRouter: () => ({ replace: jest.fn() }),
 }));
 
@@ -21,6 +25,26 @@ const report = {
   score: validFixture.score,
   feedback: validFixture.feedback,
 };
+
+const reportB = {
+  ...report,
+  id: REPORT_B_ID,
+  title: 'Second resume analysis',
+  feedback: {
+    ...validFixture.feedback,
+    summary: 'Second report summary.',
+  },
+};
+
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
 
 function context(deleteResult = true) {
   return {
@@ -46,12 +70,29 @@ function exporter() {
       cleanupAbandoned: jest.fn(async () => 0),
       export: jest.fn(async () => receipt),
       share: jest.fn(async () => undefined),
+      discard: jest.fn(async () => undefined),
     } satisfies ReportExporterPort,
   };
 }
 
+function pressHandler(view: Awaited<ReturnType<typeof render>>, label: string): () => void {
+  const button = view.getByRole('button', { name: label });
+  if (typeof button.props.onClick !== 'function') {
+    throw new Error(`Missing press handler for ${label}.`);
+  }
+  return () => button.props.onClick({
+    currentTarget: button,
+    target: button,
+    nativeEvent: {},
+    stopPropagation: jest.fn(),
+  });
+}
+
 describe('Results accessibility gates', () => {
-  afterEach(() => { jest.restoreAllMocks(); });
+  afterEach(() => {
+    mockAnalysisId = REPORT_A_ID;
+    jest.restoreAllMocks();
+  });
 
   it('gives report actions separate names, hints, roles, and 48-point targets', async () => {
     const app = context();
@@ -118,6 +159,114 @@ describe('Results accessibility gates', () => {
     expect(status.props.accessibilityLiveRegion).toBe('polite');
     expect(announce).toHaveBeenCalledWith('Share sheet closed. The temporary PDF was removed.');
     expect(JSON.stringify(announce.mock.calls)).not.toMatch(/file:|\/Print\//i);
+  });
+
+  it('authorizes only one PDF share when two press callbacks arrive in the same render turn', async () => {
+    const app = context();
+    const pdf = exporter();
+    const pendingExport = deferred<ExportReceipt>();
+    pdf.value.export.mockImplementation(async () => pendingExport.promise);
+    const view = await render(
+      <AppControllerProvider value={app}>
+        <ResultsScreen exporter={pdf.value} />
+      </AppControllerProvider>,
+    );
+    await waitFor(() => view.getByRole('button', { name: 'Share report' }));
+    const press = pressHandler(view, 'Share report');
+
+    await act(async () => {
+      press();
+      press();
+    });
+    pendingExport.resolve(pdf.receipt);
+    await waitFor(() => expect(pdf.value.share).toHaveBeenCalled());
+
+    expect(pdf.value.export).toHaveBeenCalledTimes(1);
+    expect(pdf.value.share).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not start PDF sharing while text sharing owns the native action boundary', async () => {
+    const app = context();
+    const pendingTextShare = deferred<undefined>();
+    app.actions.shareSummary.mockImplementation(async () => pendingTextShare.promise);
+    const pdf = exporter();
+    const view = await render(
+      <AppControllerProvider value={app}>
+        <ResultsScreen exporter={pdf.value} />
+      </AppControllerProvider>,
+    );
+    await waitFor(() => view.getByRole('button', { name: 'Share text summary' }));
+    const shareText = pressHandler(view, 'Share text summary');
+    const sharePdf = pressHandler(view, 'Share report');
+
+    await act(async () => {
+      shareText();
+      sharePdf();
+    });
+    pendingTextShare.resolve(undefined);
+    await act(async () => { await pendingTextShare.promise; });
+
+    expect(app.actions.shareSummary).toHaveBeenCalledTimes(1);
+    expect(pdf.value.export).not.toHaveBeenCalled();
+    expect(pdf.value.share).not.toHaveBeenCalled();
+  });
+
+  it('hides the prior report and discards its late PDF when the route changes', async () => {
+    const app = context();
+    const pendingReport = deferred<typeof reportB>();
+    app.history.get.mockImplementation(async (analysisId: string) => (
+      analysisId === REPORT_A_ID ? report : pendingReport.promise
+    ));
+    const pdf = exporter();
+    const pendingExport = deferred<ExportReceipt>();
+    pdf.value.export.mockImplementation(async () => pendingExport.promise);
+    const view = await render(
+      <AppControllerProvider value={app}>
+        <ResultsScreen exporter={pdf.value} />
+      </AppControllerProvider>,
+    );
+    await waitFor(() => expect(view.getByRole('button', { name: 'Share report' })).toBeTruthy());
+    fireEvent.press(view.getByRole('button', { name: 'Share report' }));
+    await waitFor(() => expect(pdf.value.export).toHaveBeenCalledTimes(1));
+
+    mockAnalysisId = REPORT_B_ID;
+    await view.rerender(
+      <AppControllerProvider value={app}>
+        <ResultsScreen exporter={pdf.value} />
+      </AppControllerProvider>,
+    );
+    const showedOpeningState = view.queryByText('Opening report…') !== null;
+    const exposedStaleShare = view.queryByRole('button', { name: 'Share report' }) !== null;
+
+    pendingReport.resolve(reportB);
+    pendingExport.resolve(pdf.receipt);
+    await waitFor(() => expect(view.getByText('Second report summary.')).toBeTruthy());
+    await waitFor(() => expect(pdf.value.discard).toHaveBeenCalledWith(pdf.receipt));
+
+    expect(showedOpeningState).toBe(true);
+    expect(exposedStaleShare).toBe(false);
+    expect(pdf.value.share).not.toHaveBeenCalled();
+  });
+
+  it('discards a late PDF without sharing after the results screen unmounts', async () => {
+    const app = context();
+    const pdf = exporter();
+    const pendingExport = deferred<ExportReceipt>();
+    pdf.value.export.mockImplementation(async () => pendingExport.promise);
+    const view = await render(
+      <AppControllerProvider value={app}>
+        <ResultsScreen exporter={pdf.value} />
+      </AppControllerProvider>,
+    );
+    await waitFor(() => expect(view.getByRole('button', { name: 'Share report' })).toBeTruthy());
+    fireEvent.press(view.getByRole('button', { name: 'Share report' }));
+    await waitFor(() => expect(pdf.value.export).toHaveBeenCalledTimes(1));
+
+    await view.unmount();
+    pendingExport.resolve(pdf.receipt);
+    await waitFor(() => expect(pdf.value.discard).toHaveBeenCalledWith(pdf.receipt));
+
+    expect(pdf.value.share).not.toHaveBeenCalled();
   });
 
   it('keeps delete failure recoverable and announces a stable non-color error', async () => {
