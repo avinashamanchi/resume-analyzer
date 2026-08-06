@@ -1,6 +1,6 @@
 services:
   - type: web
-    name: resume-ai
+    name: resume-analyzer-al3g
     runtime: python
     plan: starter
     region: oregon
@@ -34,7 +34,7 @@ services:
           name: resume-ai-rate-limit
           property: connectionString
       - key: ALLOWED_WEB_ORIGINS
-        value: https://resume-ai.onrender.com
+        value: https://resume-analyzer-al3g.onrender.com
       - key: PROVIDER_DEADLINE_SECONDS
         value: "8"
       - key: REQUEST_DEADLINE_SECONDS

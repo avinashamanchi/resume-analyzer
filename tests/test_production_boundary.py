@@ -172,6 +172,7 @@ def test_render_blueprint_is_fail_closed_and_has_private_ephemeral_key_value():
     assert len(key_values) == 1
     assert len(web_services) == 1
     web_service = web_services[0]
+    assert web_service["name"] == "resume-analyzer-al3g"
     key_value = key_values[0]
 
     required_fragments = (
@@ -182,7 +183,7 @@ def test_render_blueprint_is_fail_closed_and_has_private_ephemeral_key_value():
         "DEBUG",
         "value: \"false\"",
         "ALLOWED_WEB_ORIGINS",
-        "value: https://resume-ai.onrender.com",
+        "value: https://resume-analyzer-al3g.onrender.com",
         "GROQ_API_KEY",
         "sync: false",
         "INSTALLATION_SIGNING_KEY",
