@@ -1627,6 +1627,138 @@ def test_retention_verifier_allows_overwritten_and_safe_callable_controls(
     assert result.stdout == "Sensitive-retention verification passed.\n"
 
 
+@pytest.mark.parametrize(
+    "files",
+    [
+        {
+            "server/app.py": (
+                "reader = lambda: request.data\n"
+                "forward = reader\n"
+                "redis_client.set('report', forward())\n"
+            ),
+        },
+        {
+            "server/helpers.py": "def extract():\n    return request.data\n",
+            "server/__init__.py": "from server.helpers import extract\n",
+            "server/app.py": (
+                "from server import extract\n"
+                "database.execute('INSERT INTO report VALUES (?)', extract())\n"
+            ),
+        },
+        {
+            "server/helpers.py": "def extract():\n    return request.data\n",
+            "server/app.py": (
+                "from server.helpers import *\n"
+                "redis_client.set('report', extract())\n"
+            ),
+        },
+        {
+            "server/helpers.py": "def extract():\n    return request.data\n",
+            "server/app.py": (
+                "import server.helpers as helpers\n"
+                "reader = getattr(helpers, 'extract')\n"
+                "redis_client.set('report', reader())\n"
+            ),
+        },
+        {
+            "server/app.py": (
+                "def extract():\n    return request.data\n"
+                "def make_reader():\n    return extract\n"
+                "reader = make_reader()\n"
+                "redis_client.set('report', reader())\n"
+            ),
+        },
+        {
+            "server/helpers.py": (
+                "class Unsafe:\n"
+                "    @staticmethod\n"
+                "    def read():\n"
+                "        return request.data\n"
+            ),
+            "server/app.py": (
+                "import server.helpers as helpers\n"
+                "redis_client.set('report', helpers.Unsafe.read())\n"
+            ),
+        },
+        {
+            "server/app.py": (
+                "def unresolved():\n"
+                "    return project_transform()\n"
+                "redis_client.set('report', unresolved())\n"
+            ),
+        },
+        {
+            "server/app.py": (
+                "def make_reader():\n"
+                "    return lambda: request.data\n"
+                "reader = make_reader()\n"
+                "database.execute('INSERT INTO report VALUES (?)', reader())\n"
+            ),
+        },
+        {
+            "server/app.py": (
+                "def unresolved():\n"
+                "    return project_transform()\n"
+                "logger.info(unresolved())\n"
+            ),
+        },
+    ],
+)
+def test_retention_verifier_rejects_advanced_project_callable_flows(
+    tmp_path: Path,
+    files: dict[str, str],
+):
+    repository = _tracked_repo(tmp_path, files)
+
+    result = _retention_verifier(repository)
+
+    assert result.returncode == 1
+    assert "content-" in result.stderr
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        (
+            "reader = lambda: b'safe'\n"
+            "redis_client.set('report', reader())\n"
+        ),
+        (
+            "class Unsafe:\n"
+            "    @staticmethod\n"
+            "    def read():\n"
+            "        return request.data\n"
+            "class Safe:\n"
+            "    @staticmethod\n"
+            "    def read():\n"
+            "        return b'safe'\n"
+            "redis_client.set('report', Safe().read())\n"
+        ),
+        (
+            "def read():\n"
+            "    return request.data\n"
+            "def read():\n"
+            "    return b'safe'\n"
+            "redis_client.set('report', read())\n"
+        ),
+        (
+            "def persist(reader):\n"
+            "    redis_client.set('report', reader())\n"
+        ),
+    ],
+)
+def test_retention_verifier_keeps_scope_and_safe_callable_controls(
+    tmp_path: Path,
+    content: str,
+):
+    repository = _tracked_repo(tmp_path, {"server/app.py": content})
+
+    result = _retention_verifier(repository)
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "Sensitive-retention verification passed.\n"
+
+
 def test_release_docs_and_ci_cover_required_unverified_boundaries():
     required_docs = (
         ROOT / "docs" / "privacy-policy.md",

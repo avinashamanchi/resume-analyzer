@@ -230,10 +230,18 @@ class PythonRetentionVisitor(ast.NodeVisitor):
         self,
         tainted_functions: set[str] | None = None,
         request_functions: set[str] | None = None,
+        safe_functions: set[str] | None = None,
+        callable_returns: dict[str, str] | None = None,
         *,
         module_name: str = "app",
         project_modules: set[str] | None = None,
-        local_callable_names: set[str] | None = None,
+        project_callables: set[str] | None = None,
+        initial_callables: dict[str, str] | None = None,
+        public_callables: dict[str, str] | None = None,
+        class_members: dict[tuple[str, str], str] | None = None,
+        class_identities: set[str] | None = None,
+        node_identities: dict[int, str] | None = None,
+        module_exports: dict[str, dict[str, str]] | None = None,
     ) -> None:
         self.findings: set[str] = set()
         self._tainted_paths: set[AccessPath] = set()
@@ -248,14 +256,26 @@ class PythonRetentionVisitor(ast.NodeVisitor):
         self._path_constructor_aliases: set[str] = {"Path"}
         self.tainted_functions: set[str] = set(tainted_functions or ())
         self.request_functions: set[str] = set(request_functions or ())
+        self.safe_functions: set[str] = set(safe_functions or ())
+        self.callable_returns: dict[str, str] = dict(callable_returns or {})
         self._module_name = module_name
         self._project_modules = set(project_modules or ())
+        self._project_callables = set(project_callables or ())
+        self._public_callables = dict(public_callables or {})
+        self._class_members = dict(class_members or {})
+        self._class_identities = set(class_identities or ())
+        self._node_identities = dict(node_identities or {})
+        self._module_exports = {
+            module: dict(exports) for module, exports in (module_exports or {}).items()
+        }
         self._function_stack: list[str] = []
-        for name in local_callable_names or ():
+        self._scope_stack: list[str] = []
+        self._function_return_states: dict[str, set[str]] = {}
+        for name, identity in (initial_callables or {}).items():
             path = (name,)
             self._bound_paths.add(path)
             self._callable_factories[path] = "local"
-            self._callable_aliases[path] = f"{self._module_name}.{name}"
+            self._callable_aliases[path] = identity
 
     def _path_is_request_object(self, path: AccessPath | None) -> bool:
         if path is None:
@@ -274,14 +294,59 @@ class PythonRetentionVisitor(ast.NodeVisitor):
             return self._callable_aliases[path]
         canonical_member = self._canonical_module_member(node)
         if canonical_member is not None:
-            return canonical_member
+            resolved = self._public_callables.get(canonical_member)
+            if resolved is not None:
+                return resolved
         if isinstance(node, ast.Attribute):
-            local_candidate = f"{self._module_name}.{node.attr}"
-            if (
-                local_candidate in self.tainted_functions
-                or local_candidate in self.request_functions
-            ):
-                return local_candidate
+            receiver_identity: str | None = None
+            if isinstance(node.value, ast.Call):
+                receiver_identity = self._callable_identity(node.value.func)
+            else:
+                receiver_identity = self._callable_identity(node.value)
+            if receiver_identity is not None:
+                member = self._class_members.get((receiver_identity, node.attr))
+                if member is not None:
+                    return member
+        return None
+
+    def _register_lambda(self, node: ast.Lambda) -> str:
+        scope = ".".join(self._scope_stack)
+        prefix = f"{self._module_name}.{scope}." if scope else f"{self._module_name}."
+        identity = f"{prefix}<lambda>@{node.lineno}:{node.col_offset}"
+        self._project_callables.add(identity)
+        if self._expression_is_request_object(node.body):
+            self.request_functions.add(identity)
+        if self._expression_is_tainted(node.body):
+            self.tainted_functions.add(identity)
+        elif self._expression_is_demonstrably_safe(node.body):
+            self.safe_functions.add(identity)
+        return identity
+
+    def _resolve_callable_value(self, node: ast.AST | None) -> str | None:
+        if node is None:
+            return None
+        if isinstance(node, ast.Lambda):
+            return self._register_lambda(node)
+        identity = self._callable_identity(node)
+        if identity is not None:
+            return identity
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "getattr"
+            and len(node.args) >= 2
+            and isinstance(node.args[1], ast.Constant)
+            and isinstance(node.args[1].value, str)
+        ):
+            synthetic = ast.Attribute(value=node.args[0], attr=node.args[1].value)
+            return self._callable_identity(synthetic)
+        if isinstance(node, ast.Call):
+            called = self._callable_identity(node.func)
+            if called is not None:
+                if called in self.callable_returns:
+                    return self.callable_returns[called]
+                if called in self._class_identities:
+                    return called
         return None
 
     def _summary_contains(self, node: ast.Call, summaries: set[str]) -> bool:
@@ -302,6 +367,38 @@ class PythonRetentionVisitor(ast.NodeVisitor):
 
     def _call_returns_tainted(self, node: ast.Call) -> bool:
         return self._summary_contains(node, self.tainted_functions)
+
+    def _expression_is_demonstrably_safe(self, node: ast.AST | None) -> bool:
+        if node is None or isinstance(node, ast.Constant):
+            return True
+        if isinstance(node, (ast.List, ast.Set, ast.Tuple)):
+            return all(self._expression_is_demonstrably_safe(item) for item in node.elts)
+        if isinstance(node, ast.Dict):
+            return all(
+                (key is None or self._expression_is_demonstrably_safe(key))
+                and self._expression_is_demonstrably_safe(value)
+                for key, value in zip(node.keys, node.values, strict=True)
+            )
+        if isinstance(node, ast.Lambda):
+            identity = self._register_lambda(node)
+            return identity in self.safe_functions
+        if isinstance(node, ast.Call):
+            identity = self._callable_identity(node.func)
+            return identity is not None and identity in self.safe_functions
+        return False
+
+    def _expression_is_potentially_sensitive(self, node: ast.AST | None) -> bool:
+        if self._expression_is_tainted(node):
+            return True
+        if isinstance(node, ast.Call):
+            identity = self._callable_identity(node.func)
+            if (
+                identity is not None
+                and identity in self._project_callables
+                and identity not in self.safe_functions
+            ):
+                return True
+        return False
 
     def _path_is_tainted(self, path: AccessPath) -> bool:
         return any(
@@ -628,8 +725,9 @@ class PythonRetentionVisitor(ast.NodeVisitor):
             self._callable_factories[target] = factory_kind
         if source is not None and source in self._module_aliases:
             self._module_aliases[target] = self._module_aliases[source]
-        if source is not None and source in self._callable_aliases:
-            self._callable_aliases[target] = self._callable_aliases[source]
+        callable_identity = self._resolve_callable_value(value)
+        if callable_identity is not None:
+            self._callable_aliases[target] = callable_identity
         sink_kind = self._sink_kind(value)
         if sink_kind is not None:
             self._sink_aliases[target] = sink_kind
@@ -654,12 +752,15 @@ class PythonRetentionVisitor(ast.NodeVisitor):
             self._propagate_value(path, value)
             self._bound_paths.add(path)
 
-    def _bind_local_callable(self, name: str) -> None:
+    def _bind_local_callable(self, name: str, identity: str | None = None) -> str:
         path = (name,)
         self._clear_target(path)
         self._bound_paths.add(path)
         self._callable_factories[path] = "local"
-        self._callable_aliases[path] = f"{self._module_name}.{name}"
+        resolved = identity or f"{self._module_name}.{name}@local"
+        self._callable_aliases[path] = resolved
+        self._project_callables.add(resolved)
+        return resolved
 
     def _bind_import(self, name: str) -> AccessPath:
         path = (name,)
@@ -677,7 +778,11 @@ class PythonRetentionVisitor(ast.NodeVisitor):
         ):
             self.findings.add("durable-content-sink")
 
-    def _visit_function_scope(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> None:
+    def _visit_function_scope(
+        self,
+        node: ast.FunctionDef | ast.AsyncFunctionDef,
+        identity: str,
+    ) -> None:
         previous_taint = self._tainted_paths
         previous_aliases = self._sink_aliases
         previous_request_paths = self._request_paths
@@ -719,10 +824,16 @@ class PythonRetentionVisitor(ast.NodeVisitor):
         self._tainted_paths.update(
             (name,) for name in parameter_names if SENSITIVE_NAME_PATTERN.search(name)
         )
-        self._function_stack.append(node.name)
+        self._function_stack.append(identity)
+        self._function_return_states[identity] = set()
+        self._scope_stack.append(node.name)
         for statement in node.body:
             self.visit(statement)
+        self._scope_stack.pop()
         self._function_stack.pop()
+        states = self._function_return_states[identity]
+        if not states or states <= {"safe", "callable"}:
+            self.safe_functions.add(identity)
         self._tainted_paths = previous_taint
         self._sink_aliases = previous_aliases
         self._request_paths = previous_request_paths
@@ -735,19 +846,28 @@ class PythonRetentionVisitor(ast.NodeVisitor):
         self._path_constructor_aliases = previous_path_aliases
 
     def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
-        self._bind_local_callable(node.name)
-        self._visit_function_scope(node)
+        identity = self._bind_local_callable(
+            node.name,
+            self._node_identities.get(id(node)),
+        )
+        self._visit_function_scope(node, identity)
 
     def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
-        self._bind_local_callable(node.name)
-        self._visit_function_scope(node)
+        identity = self._bind_local_callable(
+            node.name,
+            self._node_identities.get(id(node)),
+        )
+        self._visit_function_scope(node, identity)
 
     def visit_ClassDef(self, node: ast.ClassDef) -> None:
         for expression in (*node.decorator_list, *node.bases):
             self.visit(expression)
         for keyword in node.keywords:
             self.visit(keyword.value)
-        self._bind_local_callable(node.name)
+        identity = self._bind_local_callable(
+            node.name,
+            self._node_identities.get(id(node)),
+        )
         previous_taint = self._tainted_paths
         previous_aliases = self._sink_aliases
         previous_request_paths = self._request_paths
@@ -768,8 +888,10 @@ class PythonRetentionVisitor(ast.NodeVisitor):
         self._bound_paths = set(previous_bound_paths)
         self._flask_module_aliases = set(previous_flask_aliases)
         self._path_constructor_aliases = set(previous_path_aliases)
+        self._scope_stack.append(node.name)
         for statement in node.body:
             self.visit(statement)
+        self._scope_stack.pop()
         self._tainted_paths = previous_taint
         self._sink_aliases = previous_aliases
         self._request_paths = previous_request_paths
@@ -809,14 +931,23 @@ class PythonRetentionVisitor(ast.NodeVisitor):
             self._bound_paths.add(path)
 
     def visit_Return(self, node: ast.Return) -> None:
-        if self._function_stack and self._expression_is_tainted(node.value):
-            self.tainted_functions.add(
-                f"{self._module_name}.{self._function_stack[-1]}"
-            )
-        if self._function_stack and self._expression_is_request_object(node.value):
-            self.request_functions.add(
-                f"{self._module_name}.{self._function_stack[-1]}"
-            )
+        if self._function_stack:
+            identity = self._function_stack[-1]
+            states = self._function_return_states[identity]
+            if self._expression_is_request_object(node.value):
+                self.request_functions.add(identity)
+                states.add("request")
+            if self._expression_is_tainted(node.value):
+                self.tainted_functions.add(identity)
+                states.add("tainted")
+            callable_identity = self._resolve_callable_value(node.value)
+            if callable_identity is not None:
+                self.callable_returns[identity] = callable_identity
+                states.add("callable")
+            elif self._expression_is_demonstrably_safe(node.value):
+                states.add("safe")
+            else:
+                states.add("unknown")
         if node.value is not None:
             self.visit(node.value)
 
@@ -835,6 +966,12 @@ class PythonRetentionVisitor(ast.NodeVisitor):
         imported_module = self._resolve_import_from_module(node)
         for alias in node.names:
             if alias.name == "*":
+                for name, identity in self._module_exports.get(
+                    imported_module, {}
+                ).items():
+                    if not name.startswith("_"):
+                        target = self._bind_import(name)
+                        self._callable_aliases[target] = identity
                 continue
             target = self._bind_import(alias.asname or alias.name)
             if node.module == "flask" and alias.name == "request":
@@ -849,8 +986,11 @@ class PythonRetentionVisitor(ast.NodeVisitor):
                 self._callable_factories[target] = "file"
             elif node.module == "io" and alias.name in LOCAL_RECEIVER_CONSTRUCTORS:
                 self._callable_factories[target] = "local"
-            if imported_module in self._project_modules:
-                self._callable_aliases[target] = f"{imported_module}.{alias.name}"
+            imported_identity = self._module_exports.get(imported_module, {}).get(
+                alias.name
+            )
+            if imported_identity is not None:
+                self._callable_aliases[target] = imported_identity
 
     def _resolve_import_from_module(self, node: ast.ImportFrom) -> str:
         if node.level == 0:
@@ -905,7 +1045,10 @@ class PythonRetentionVisitor(ast.NodeVisitor):
         sink_kind = self._sink_kind(node.func)
         values = (*node.args, *(keyword.value for keyword in node.keywords))
         has_tainted_value = any(self._expression_is_tainted(value) for value in values)
-        if sink_kind is not None and has_tainted_value:
+        has_potentially_sensitive_value = any(
+            self._expression_is_potentially_sensitive(value) for value in values
+        )
+        if sink_kind is not None and has_potentially_sensitive_value:
             self.findings.add(sink_kind)
         if (
             isinstance(node.func, ast.Attribute)
@@ -954,6 +1097,132 @@ def _module_name(relative_path: str) -> str:
     return path.removesuffix(".__init__")
 
 
+def _resolve_import_module(
+    current_module: str,
+    imported_module: str | None,
+    level: int,
+) -> str:
+    if level == 0:
+        return imported_module or ""
+    package = current_module.split(".")[:-1]
+    ascend = max(level - 1, 0)
+    if ascend:
+        package = package[:-ascend]
+    if imported_module:
+        package.extend(imported_module.split("."))
+    return ".".join(package)
+
+
+def _definition_catalog(
+    parsed_modules: dict[str, ast.Module],
+    modules_by_path: dict[str, str],
+) -> tuple[
+    dict[str, dict[str, str]],
+    dict[str, str],
+    dict[tuple[str, str], str],
+    set[str],
+    set[str],
+    dict[str, dict[int, str]],
+]:
+    exports: dict[str, dict[str, str]] = {
+        module: {} for module in modules_by_path.values()
+    }
+    public_callables: dict[str, str] = {}
+    class_members: dict[tuple[str, str], str] = {}
+    class_identities: set[str] = set()
+    project_callables: set[str] = set()
+    identities_by_path: dict[str, dict[int, str]] = {
+        path: {} for path in parsed_modules
+    }
+
+    def register(
+        relative_path: str,
+        node: ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef,
+        scope: tuple[str, ...],
+    ) -> str:
+        module = modules_by_path[relative_path]
+        public_name = ".".join((module, *scope, node.name))
+        identity = f"{public_name}@{node.lineno}"
+        identities_by_path[relative_path][id(node)] = identity
+        public_callables[public_name] = identity
+        project_callables.add(identity)
+        if isinstance(node, ast.ClassDef):
+            class_identities.add(identity)
+            for child in node.body:
+                if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    child_identity = register(
+                        relative_path,
+                        child,
+                        (*scope, node.name),
+                    )
+                    class_members[(identity, child.name)] = child_identity
+        return identity
+
+    for relative_path, parsed in parsed_modules.items():
+        module = modules_by_path[relative_path]
+        for node in parsed.body:
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                exports[module][node.name] = register(relative_path, node, ())
+            elif (
+                isinstance(node, (ast.Assign, ast.AnnAssign))
+                and isinstance(node.value, ast.Lambda)
+            ):
+                targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+                for target in targets:
+                    if isinstance(target, ast.Name):
+                        identity = (
+                            f"{module}.<lambda>@{node.value.lineno}:"
+                            f"{node.value.col_offset}"
+                        )
+                        exports[module][target.id] = identity
+                        public_callables[f"{module}.{target.id}"] = identity
+                        project_callables.add(identity)
+
+    for _ in range(len(parsed_modules) + 1):
+        changed = False
+        for relative_path, parsed in parsed_modules.items():
+            module = modules_by_path[relative_path]
+            for node in parsed.body:
+                if not isinstance(node, ast.ImportFrom):
+                    continue
+                source_module = _resolve_import_module(
+                    module,
+                    node.module,
+                    node.level,
+                )
+                source_exports = exports.get(source_module, {})
+                for alias in node.names:
+                    if alias.name == "*":
+                        imported = {
+                            name: identity
+                            for name, identity in source_exports.items()
+                            if not name.startswith("_")
+                        }
+                    else:
+                        identity = source_exports.get(alias.name)
+                        imported = (
+                            {alias.asname or alias.name: identity}
+                            if identity is not None
+                            else {}
+                        )
+                    for name, identity in imported.items():
+                        if exports[module].get(name) != identity:
+                            exports[module][name] = identity
+                            public_callables[f"{module}.{name}"] = identity
+                            changed = True
+        if not changed:
+            break
+
+    return (
+        exports,
+        public_callables,
+        class_members,
+        class_identities,
+        project_callables,
+        identities_by_path,
+    )
+
+
 def python_project_findings(contents: dict[str, str]) -> dict[str, set[str]]:
     parsed_modules: dict[str, ast.Module] = {}
     findings = {relative_path: set() for relative_path in contents}
@@ -967,42 +1236,70 @@ def python_project_findings(contents: dict[str, str]) -> dict[str, set[str]]:
             findings[relative_path].add("unparseable-production-python")
 
     project_modules = set(modules_by_path.values())
+    (
+        module_exports,
+        public_callables,
+        class_members,
+        class_identities,
+        project_callables,
+        identities_by_path,
+    ) = _definition_catalog(parsed_modules, modules_by_path)
     tainted_functions: set[str] = set()
     request_functions: set[str] = set()
+    safe_functions: set[str] = set()
+    callable_returns: dict[str, str] = {}
     function_count = sum(
         isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
         for parsed in parsed_modules.values()
         for node in ast.walk(parsed)
     )
-    for _ in range(function_count + 1):
+    iteration_findings = {relative_path: set() for relative_path in contents}
+    for _ in range(function_count + len(project_callables) + 2):
         discovered_tainted = set(tainted_functions)
         discovered_request = set(request_functions)
+        discovered_safe = set(safe_functions)
+        discovered_callable_returns = dict(callable_returns)
+        iteration_findings = {relative_path: set() for relative_path in contents}
         for relative_path, parsed in parsed_modules.items():
+            module_name = modules_by_path[relative_path]
             visitor = PythonRetentionVisitor(
                 tainted_functions,
                 request_functions,
-                module_name=modules_by_path[relative_path],
+                safe_functions,
+                callable_returns,
+                module_name=module_name,
                 project_modules=project_modules,
-                local_callable_names={
-                    node.name
-                    for node in parsed.body
-                    if isinstance(
-                        node,
-                        (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef),
-                    )
-                },
+                project_callables=project_callables,
+                initial_callables=module_exports.get(module_name, {}),
+                public_callables=public_callables,
+                class_members=class_members,
+                class_identities=class_identities,
+                node_identities=identities_by_path.get(relative_path, {}),
+                module_exports=module_exports,
             )
             visitor.visit(parsed)
-            findings[relative_path].update(visitor.findings)
+            iteration_findings[relative_path].update(visitor.findings)
             discovered_tainted.update(visitor.tainted_functions)
             discovered_request.update(visitor.request_functions)
+            discovered_safe.update(visitor.safe_functions)
+            discovered_callable_returns.update(visitor.callable_returns)
+            project_callables.update(visitor._project_callables)
         if (
             discovered_tainted == tainted_functions
             and discovered_request == request_functions
+            and discovered_safe == safe_functions
+            and discovered_callable_returns == callable_returns
         ):
+            for relative_path, rules in iteration_findings.items():
+                findings[relative_path].update(rules)
             break
         tainted_functions = discovered_tainted
         request_functions = discovered_request
+        safe_functions = discovered_safe
+        callable_returns = discovered_callable_returns
+    else:
+        for relative_path, rules in iteration_findings.items():
+            findings[relative_path].update(rules)
     return findings
 
 
