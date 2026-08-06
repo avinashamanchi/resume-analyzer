@@ -1,6 +1,6 @@
 import { act, fireEvent, render, waitFor } from '@testing-library/react-native';
 import React from 'react';
-import { Keyboard, StyleSheet } from 'react-native';
+import { AccessibilityInfo, Keyboard, StyleSheet } from 'react-native';
 
 declare const require: (id: string) => unknown;
 declare const __dirname: string;
@@ -16,10 +16,24 @@ import { createRuntimeComposition } from '../src/controllers/runtime';
 import type { AnalysisState } from '../src/analysis/analysisReducer';
 
 const mockReplace = jest.fn();
-jest.mock('expo-router', () => ({
-  useLocalSearchParams: () => ({ analysisId: '8ec8a3bc-7a15-4b75-9f94-a5353a2a2f9b' }),
-  useRouter: () => ({ push: jest.fn(), replace: mockReplace, back: jest.fn() }),
-}));
+let mockRouteBlur: (() => void) | null = null;
+jest.mock('expo-router', () => {
+  const React = require('react') as typeof import('react');
+  return {
+    useFocusEffect: (effect: () => void | (() => void)) => {
+      React.useEffect(() => {
+        const cleanup = effect();
+        mockRouteBlur = typeof cleanup === 'function' ? cleanup : null;
+        return () => {
+          if (mockRouteBlur === cleanup) mockRouteBlur = null;
+          if (typeof cleanup === 'function') cleanup();
+        };
+      }, [effect]);
+    },
+    useLocalSearchParams: () => ({ analysisId: '8ec8a3bc-7a15-4b75-9f94-a5353a2a2f9b' }),
+    useRouter: () => ({ push: jest.fn(), replace: mockReplace, back: jest.fn() }),
+  };
+});
 
 const readyState: AnalysisState = {
   status: 'ready',
@@ -62,6 +76,9 @@ function harness(overrides: Record<string, unknown> = {}): any {
     commands: {
       selectSource: jest.fn(async () => ({ committed: true, sourceIdentity: null, generation: 2 })),
       setJobDescription: jest.fn(async () => ({ committed: true, generation: 3 })),
+      isVisionAvailable: jest.fn(() => false),
+      extractVisionDraft: jest.fn(async () => ({ completed: false })),
+      cancelVisionExtraction: jest.fn(async () => undefined),
       analyze: jest.fn(async () => undefined),
       grantConsent: jest.fn(async () => undefined),
       declineConsent: jest.fn(async () => undefined),
@@ -135,6 +152,229 @@ describe('native Analyze and Results flows', () => {
     expect(values.analysis.commands.analyze).not.toHaveBeenCalled();
     await act(async () => { fireEvent.press(view.getByRole('button', { name: 'Not now' })); });
     expect(values.analysis.commands.declineConsent).toHaveBeenCalledTimes(1);
+  });
+
+  it('truthfully routes scan-required PDFs to paste text in Expo Go', async () => {
+    const source = pdfSource(Symbol('scan-pdf'));
+    const values = harness({
+      analysis: {
+        ...harness().analysis,
+        state: {
+          ...readyState,
+          status: 'failed',
+          source,
+          error: {
+            category: 'service',
+            code: 'scan_required',
+            message: 'The service could not complete the request.',
+            retryable: false,
+          },
+        },
+      },
+    });
+    values.analysis.commands.isVisionAvailable.mockReturnValue(false);
+    const view = await render(<AppControllerProvider value={values}><AnalyzeScreen /></AppControllerProvider>);
+
+    expect(view.queryByRole('button', { name: 'Extract on this iPhone' })).toBeNull();
+    expect(view.getByText(/isn't available in Expo Go/i)).toBeTruthy();
+    expect(view.getByText(/requires a Resume\.AI development build/i)).toBeTruthy();
+
+    await act(async () => {
+      fireEvent.press(view.getByRole('button', { name: 'Paste resume text instead' }));
+    });
+
+    expect(values.analysis.commands.reset).toHaveBeenCalledTimes(1);
+    expect(values.analysis.commands.extractVisionDraft).not.toHaveBeenCalled();
+    expect(values.analysis.commands.analyze).not.toHaveBeenCalled();
+    expect(view.getByLabelText('Paste resume text')).toBeTruthy();
+    await view.unmount();
+  });
+
+  it('requires editable explicit OCR review and never submits from extraction or Review complete', async () => {
+    const announce = jest.spyOn(AccessibilityInfo, 'announceForAccessibility');
+    const source = pdfSource(Symbol('scan-pdf'));
+    const values = harness({
+      analysis: {
+        ...harness().analysis,
+        state: {
+          ...readyState,
+          status: 'failed',
+          source,
+          error: {
+            category: 'service',
+            code: 'scan_required',
+            message: 'The service could not complete the request.',
+            retryable: false,
+          },
+        },
+      },
+    });
+    values.analysis.commands.isVisionAvailable.mockReturnValue(true);
+    values.analysis.commands.extractVisionDraft.mockResolvedValueOnce({
+      completed: true,
+      generation: 1,
+      draft: {
+        kind: 'vision_text',
+        text: 'Unreviewed OCR draft',
+        reviewed: false,
+        pageCount: 2,
+      },
+    });
+    const view = await render(<AppControllerProvider value={values}><AnalyzeScreen /></AppControllerProvider>);
+
+    const extract = view.getByRole('button', { name: 'Extract on this iPhone' });
+    expect(extract.props.accessibilityHint).toMatch(/on-device text recognition/i);
+    await act(async () => { fireEvent.press(extract); });
+
+    const editor = await view.findByLabelText('Review extracted resume text');
+    expect(editor.props.accessibilityHint).toMatch(/Edit recognition mistakes/i);
+    expect(editor.props.multiline).toBe(true);
+    expect(view.getByText('20 / 30,000')).toBeTruthy();
+    expect(view.getByTestId('vision-review-status').props.accessibilityLiveRegion).toBe('polite');
+    expect(announce).toHaveBeenCalledWith('OCR draft ready. Review and edit the extracted text.');
+    expect(values.analysis.commands.analyze).not.toHaveBeenCalled();
+    expect(values.analysis.commands.selectSource).not.toHaveBeenCalled();
+
+    await act(async () => {
+      fireEvent.changeText(editor, 'Corrected OCR resume text');
+    });
+    expect(view.getByDisplayValue('Corrected OCR resume text')).toBeTruthy();
+    await act(async () => {
+      fireEvent.press(view.getByRole('button', { name: 'Review complete' }));
+    });
+
+    expect(values.analysis.commands.selectSource).toHaveBeenCalledWith({
+      kind: 'vision_text',
+      text: 'Corrected OCR resume text',
+      reviewed: true,
+      pageCount: 2,
+    });
+    expect(values.analysis.commands.analyze).not.toHaveBeenCalled();
+    expect(view.getByText('Reviewed scan ready')).toBeTruthy();
+    await view.unmount();
+  });
+
+  it('cancels OCR review explicitly and clears its in-memory text', async () => {
+    const values = harness({
+      analysis: {
+        ...harness().analysis,
+        state: {
+          ...readyState,
+          status: 'failed',
+          source: pdfSource(Symbol('scan-pdf')),
+          error: {
+            category: 'service',
+            code: 'scan_required',
+            message: 'The service could not complete the request.',
+            retryable: false,
+          },
+        },
+      },
+    });
+    values.analysis.commands.isVisionAvailable.mockReturnValue(true);
+    values.analysis.commands.extractVisionDraft.mockResolvedValueOnce({
+      completed: true,
+      generation: 1,
+      draft: { kind: 'vision_text', text: 'private OCR text', reviewed: false, pageCount: 1 },
+    });
+    const view = await render(<AppControllerProvider value={values}><AnalyzeScreen /></AppControllerProvider>);
+    await act(async () => {
+      fireEvent.press(view.getByRole('button', { name: 'Extract on this iPhone' }));
+    });
+
+    await act(async () => {
+      fireEvent.press(view.getByRole('button', { name: 'Cancel OCR review' }));
+    });
+
+    expect(values.analysis.commands.reset).toHaveBeenCalledTimes(1);
+    expect(view.queryByDisplayValue('private OCR text')).toBeNull();
+    expect(values.analysis.commands.selectSource).not.toHaveBeenCalled();
+    expect(values.analysis.commands.analyze).not.toHaveBeenCalled();
+    await view.unmount();
+  });
+
+  it('revokes pending OCR on unmount and ignores its late private draft', async () => {
+    const pending = deferred<{
+      completed: true;
+      generation: number;
+      draft: { kind: 'vision_text'; text: string; reviewed: false; pageCount: number };
+    }>();
+    const values = harness({
+      analysis: {
+        ...harness().analysis,
+        state: {
+          ...readyState,
+          status: 'failed',
+          source: pdfSource(Symbol('scan-pdf')),
+          error: {
+            category: 'service',
+            code: 'scan_required',
+            message: 'The service could not complete the request.',
+            retryable: false,
+          },
+        },
+      },
+    });
+    values.analysis.commands.isVisionAvailable.mockReturnValue(true);
+    values.analysis.commands.extractVisionDraft.mockReturnValueOnce(pending.promise);
+    const view = await render(<AppControllerProvider value={values}><AnalyzeScreen /></AppControllerProvider>);
+    await act(async () => {
+      fireEvent.press(view.getByRole('button', { name: 'Extract on this iPhone' }));
+    });
+    await view.unmount();
+    pending.resolve({
+      completed: true,
+      generation: 1,
+      draft: { kind: 'vision_text', text: 'late private OCR', reviewed: false, pageCount: 1 },
+    });
+    await pending.promise;
+
+    expect(values.analysis.commands.cancelVisionExtraction).toHaveBeenCalledTimes(1);
+    expect(values.analysis.commands.selectSource).not.toHaveBeenCalled();
+    expect(values.analysis.commands.analyze).not.toHaveBeenCalled();
+  });
+
+  it('revokes pending OCR when the Analyze route loses focus without unmounting', async () => {
+    const pending = deferred<{
+      completed: true;
+      generation: number;
+      draft: { kind: 'vision_text'; text: string; reviewed: false; pageCount: number };
+    }>();
+    const values = harness({
+      analysis: {
+        ...harness().analysis,
+        state: {
+          ...readyState,
+          status: 'failed',
+          source: pdfSource(Symbol('scan-pdf')),
+          error: {
+            category: 'service',
+            code: 'scan_required',
+            message: 'The service could not complete the request.',
+            retryable: false,
+          },
+        },
+      },
+    });
+    values.analysis.commands.isVisionAvailable.mockReturnValue(true);
+    values.analysis.commands.extractVisionDraft.mockReturnValueOnce(pending.promise);
+    const view = await render(<AppControllerProvider value={values}><AnalyzeScreen /></AppControllerProvider>);
+    await act(async () => {
+      fireEvent.press(view.getByRole('button', { name: 'Extract on this iPhone' }));
+    });
+
+    await act(async () => { mockRouteBlur?.(); });
+    pending.resolve({
+      completed: true,
+      generation: 1,
+      draft: { kind: 'vision_text', text: 'late route draft', reviewed: false, pageCount: 1 },
+    });
+    await pending.promise;
+
+    expect(values.analysis.commands.cancelVisionExtraction).toHaveBeenCalledTimes(1);
+    expect(values.analysis.commands.selectSource).not.toHaveBeenCalled();
+    expect(values.analysis.commands.analyze).not.toHaveBeenCalled();
+    await view.unmount();
   });
 
   it('shows a PDF filename only from an authoritative committed-source identity', async () => {

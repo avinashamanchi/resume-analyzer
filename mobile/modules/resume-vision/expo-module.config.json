@@ -1,0 +1,7 @@
+{
+  "platforms": ["apple"],
+  "apple": {
+    "modules": ["ResumeVisionModule"],
+    "podspecPath": "./ios/ResumeVision.podspec"
+  }
+}

@@ -20,6 +20,7 @@ export type AnalysisMutation =
   | 'none'
   | 'selecting'
   | 'editing'
+  | 'extracting'
   | 'resetting'
   | 'consent';
 
@@ -49,7 +50,12 @@ export type AnalysisState = Readonly<{
 export type AnalysisEvent =
   | Readonly<{ type: 'initializationReady' }>
   | Readonly<{ type: 'initializationFailed'; error: PublicAnalysisError }>
-  | Readonly<{ type: 'privacyBlocked'; generation: number; error: PublicAnalysisError }>
+  | Readonly<{
+      type: 'privacyBlocked';
+      generation: number;
+      error: PublicAnalysisError;
+      consumeSource?: boolean;
+    }>
   | Readonly<{ type: 'privacyRecovered'; generation: number }>
   | Readonly<{ type: 'lifecycleInvalidated'; lifecycleEpoch: number }>
   | Readonly<{ type: 'generationAdvanced'; generation: number }>
@@ -65,6 +71,7 @@ export type AnalysisEvent =
       jobDescription: string;
       consumeSource?: boolean;
     }>
+  | Readonly<{ type: 'visionDraftReady'; generation: number }>
   | Readonly<{ type: 'consentRequired'; generation: number }>
   | Readonly<{
       type: 'consentDeclined';
@@ -143,6 +150,7 @@ export function analysisReducer(state: AnalysisState, event: AnalysisEvent): Ana
         ...state,
         status: 'failed',
         privacyReadiness: 'blocked',
+        source: event.consumeSource === true ? null : state.source,
         result: null,
         error: event.error,
         generation: event.generation,
@@ -232,6 +240,21 @@ export function analysisReducer(state: AnalysisState, event: AnalysisEvent): Ana
         error: null,
         activation: null,
         cleanupPending: event.consumeSource === true ? false : state.cleanupPending,
+        mutation: 'none',
+      };
+    case 'visionDraftReady':
+      if (
+        event.generation !== state.generation ||
+        state.mutation !== 'extracting'
+      ) return state;
+      return {
+        ...state,
+        status: 'idle',
+        source: null,
+        result: null,
+        error: null,
+        activation: null,
+        cleanupPending: false,
         mutation: 'none',
       };
     case 'consentRequired':

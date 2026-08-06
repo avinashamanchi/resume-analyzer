@@ -7,6 +7,7 @@ import { ResumeApi } from '../api/resumeApi';
 import { ResumeApiError } from '../domain/errors';
 import { DocumentSourceService } from '../documents/documentSource';
 import { TempFileRegistry } from '../documents/tempFileRegistry';
+import { VisionAdapter } from '../documents/visionAdapter';
 import { ConsentStore } from '../security/consentStore';
 import { InstallationTokenStore } from '../security/installationToken';
 import { ReportRepository } from '../storage/reportRepository';
@@ -34,6 +35,7 @@ export function createRuntimeComposition(
 ): RuntimeComposition {
   const registry = new TempFileRegistry();
   const documents = new DocumentSourceService({ registry });
+  const vision = new VisionAdapter();
   const consent = new ConsentStore();
   let serviceAvailable = false;
   let api: AnalysisApiPort = new UnavailableApi();
@@ -53,6 +55,7 @@ export function createRuntimeComposition(
     consentStore: consent,
     tempFiles: registry,
     pdfOwnership: registry,
+    vision,
   });
   const services: AppServices = {
     documents,

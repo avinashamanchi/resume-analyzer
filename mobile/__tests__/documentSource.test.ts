@@ -543,11 +543,19 @@ describe('pasted resume text', () => {
 });
 
 describe('VisionAdapter capability boundary', () => {
+  const source = {
+    kind: 'pdf' as const,
+    requestId: REQUEST_ID,
+    uri: `${NAMESPACE_URI}/${REQUEST_ID}/${FILE_ID}.pdf`,
+    size: 128,
+    lease: Symbol('vision-source'),
+  };
+
   it('is Expo Go-safe and routes an absent native module to paste text', async () => {
     const adapter = new VisionAdapter({ lookup: () => null });
 
     expect(adapter.isAvailable()).toBe(false);
-    await expect(adapter.extractReviewedText(PROVIDER_URI)).rejects.toMatchObject({
+    await expect(adapter.extractReviewedText(source)).rejects.toMatchObject({
       category: 'unsupported_pdf',
       developmentBuildRequired: true,
       route: 'paste_text',
@@ -562,7 +570,7 @@ describe('VisionAdapter capability boundary', () => {
     });
 
     expect(adapter.isAvailable()).toBe(true);
-    await expect(adapter.extractReviewedText(PROVIDER_URI)).resolves.toEqual({
+    await expect(adapter.extractReviewedText(source)).resolves.toEqual({
       kind: 'vision_text',
       text: 'OCR draft',
       reviewed: false,

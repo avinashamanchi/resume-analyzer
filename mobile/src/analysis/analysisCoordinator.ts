@@ -10,7 +10,7 @@ import {
   MAX_RESUME_CODE_POINTS,
   trimPythonWhitespace,
 } from '../domain/limits';
-import type { PdfSource, ResumeSource } from '../documents/documentSource';
+import type { PdfSource, ResumeSource, VisionTextSource } from '../documents/documentSource';
 import type { CleanupReceipt, TempFileLease } from '../documents/tempFileRegistry';
 import {
   analysisReducer,
@@ -50,11 +50,21 @@ export type PdfOwnershipPort = Readonly<{
   }>;
 }>;
 
+export type VisionExtractionPort = Readonly<{
+  isAvailable(): boolean;
+  extractReviewedText(source: PdfSource): Promise<VisionTextSource>;
+}>;
+
+export type VisionDraftReceipt =
+  | Readonly<{ completed: false }>
+  | Readonly<{ completed: true; draft: VisionTextSource; generation: number }>;
+
 export type AnalysisCoordinatorOptions = Readonly<{
   api: AnalysisApiPort;
   consentStore: AnalysisConsentStorePort;
   tempFiles: AnalysisTempFilesPort;
   pdfOwnership: PdfOwnershipPort;
+  vision?: VisionExtractionPort;
   cleanupTimeoutMs?: number;
 }>;
 
@@ -70,6 +80,9 @@ export type AnalysisCommands = Readonly<{
   ): Promise<SourceSelectionReceipt>;
   selectSource(source: ResumeSource): Promise<SourceSelectionReceipt>;
   setJobDescription(value: string): Promise<JobDescriptionCommitReceipt>;
+  isVisionAvailable(): boolean;
+  extractVisionDraft(): Promise<VisionDraftReceipt>;
+  cancelVisionExtraction(): Promise<void>;
   analyze(): Promise<void>;
   grantConsent(): Promise<void>;
   declineConsent(): Promise<void>;
@@ -134,6 +147,17 @@ type PendingPdfPick = Readonly<{
   onAbort: () => void;
 }>;
 
+type VisionExtraction = {
+  readonly id: number;
+  readonly generation: number;
+  readonly sourceRevision: number;
+  readonly lifecycleEpoch: number;
+  readonly source: PdfSource;
+  readonly claim: PdfClaim;
+  readonly controller: AbortController;
+  promise: Promise<VisionDraftReceipt>;
+};
+
 class CoordinatorAbort extends Error {}
 class CleanupTimeout extends Error {}
 
@@ -158,9 +182,21 @@ function consentStorageError(): PublicAnalysisError {
   };
 }
 
-function validationError(): PublicAnalysisError {
-  return { category: 'validation', message: PUBLIC_MESSAGES.validation, retryable: false };
+function validationError(code?: string): PublicAnalysisError {
+  return {
+    category: 'validation',
+    message: PUBLIC_MESSAGES.validation,
+    retryable: false,
+    ...(code === undefined ? {} : { code }),
+  };
 }
+
+const NO_VISION: VisionExtractionPort = Object.freeze({
+  isAvailable: () => false,
+  async extractReviewedText(): Promise<never> {
+    throw new Error('unsupported');
+  },
+});
 
 function publicApiError(error: unknown): PublicAnalysisError {
   if (error instanceof ResumeApiError) {
@@ -236,6 +272,26 @@ function snapshotNonPdfSource(source: unknown): ResumeSource | null {
   return null;
 }
 
+function snapshotVisionDraft(value: unknown): VisionTextSource | null {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return null;
+  const candidate = value as Record<string, unknown>;
+  if (
+    !hasExactKeys(candidate, ['kind', 'text', 'reviewed', 'pageCount']) ||
+    candidate.kind !== 'vision_text' ||
+    candidate.reviewed !== false ||
+    !validText(candidate.text) ||
+    !Number.isSafeInteger(candidate.pageCount) ||
+    (candidate.pageCount as number) <= 0 ||
+    (candidate.pageCount as number) > 10
+  ) return null;
+  return Object.freeze({
+    kind: 'vision_text',
+    text: candidate.text,
+    reviewed: false,
+    pageCount: candidate.pageCount as number,
+  });
+}
+
 function raceWithAbort<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
   if (signal.aborted) return Promise.reject(new CoordinatorAbort());
   return new Promise<T>((resolve, reject) => {
@@ -259,12 +315,15 @@ export class AnalysisCoordinator {
   private readonly consentStore: AnalysisConsentStorePort;
   private readonly tempFiles: AnalysisTempFilesPort;
   private readonly pdfOwnership: PdfOwnershipPort;
+  private readonly vision: VisionExtractionPort;
   private readonly cleanupTimeoutMs: number;
   private generation = 0;
   private sourceRevision = 0;
   private lifecycleEpoch = 0;
   private nextActivation = 0;
+  private nextVisionExtraction = 0;
   private active: Activation | null = null;
+  private visionExtraction: VisionExtraction | null = null;
   private consentContinuation: ConsentContinuation | null = null;
   private initialization: Promise<void> | null = null;
   private disposal: Promise<void> | null = null;
@@ -303,6 +362,12 @@ export class AnalysisCoordinator {
       this.releasePendingPdfPick();
       return this.setJobDescription(value);
     },
+    isVisionAvailable: () => this.isVisionAvailable(),
+    extractVisionDraft: () => {
+      this.releasePendingPdfPick();
+      return this.extractVisionDraft();
+    },
+    cancelVisionExtraction: () => this.cancelVisionExtraction(),
     analyze: () => {
       this.releasePendingPdfPick();
       return this.analyze();
@@ -334,6 +399,7 @@ export class AnalysisCoordinator {
     this.consentStore = options.consentStore;
     this.tempFiles = options.tempFiles;
     this.pdfOwnership = options.pdfOwnership;
+    this.vision = options.vision ?? NO_VISION;
     this.cleanupTimeoutMs = options.cleanupTimeoutMs ?? 2_000;
     if (
       !Number.isSafeInteger(this.cleanupTimeoutMs) ||
@@ -403,15 +469,18 @@ export class AnalysisCoordinator {
     if (!this.mounted) return Promise.resolve();
     const priorMutation = this.mutationTail;
     const previousActivation = this.active;
+    const previousVisionExtraction = this.visionExtraction;
     const generation = ++this.generation;
     this.sourceRevision += 1;
     this.consentContinuation = null;
     previousActivation?.controller.abort();
+    previousVisionExtraction?.controller.abort();
 
     const changed = this.apply({ type: 'mutationStarted', generation, mutation });
     const operation = (async () => {
       await priorMutation;
       if (previousActivation !== null) await previousActivation.promise;
+      if (previousVisionExtraction !== null) await previousVisionExtraction.promise;
       try {
         await work({ generation, previousActivation });
       } catch {
@@ -645,14 +714,19 @@ export class AnalysisCoordinator {
     this.refreshDisposedState();
   }
 
-  private blockPrivacy(): void {
+  private blockPrivacy(consumeSource = false): void {
     if (!this.mounted) return;
     this.releasePendingPdfPick();
     this.active?.controller.abort();
     this.generation += 1;
     this.sourceRevision += 1;
     this.consentContinuation = null;
-    this.dispatch({ type: 'privacyBlocked', generation: this.generation, error: privacyError() });
+    this.dispatch({
+      type: 'privacyBlocked',
+      generation: this.generation,
+      error: privacyError(),
+      consumeSource,
+    });
   }
 
   private refreshDisposedState(): void {
@@ -1040,6 +1114,109 @@ export class AnalysisCoordinator {
     return activation;
   }
 
+  private isVisionAvailable(): boolean {
+    try {
+      return this.vision.isAvailable() === true;
+    } catch {
+      return false;
+    }
+  }
+
+  private visionExtractionIsCurrent(operation: VisionExtraction): boolean {
+    return this.mounted &&
+      this.visionExtraction === operation &&
+      operation.generation === this.generation &&
+      operation.sourceRevision === this.sourceRevision &&
+      operation.lifecycleEpoch === this.lifecycleEpoch &&
+      this.state.mutation === 'extracting';
+  }
+
+  private extractVisionDraft(): Promise<VisionDraftReceipt> {
+    const current = this.visionExtraction;
+    if (current !== null && this.visionExtractionIsCurrent(current)) return current.promise;
+    const source = this.state.source;
+    const claim = this.committedPdfClaim;
+    if (
+      !this.mounted ||
+      !this.isVisionAvailable() ||
+      this.state.privacyReadiness !== 'ready' ||
+      this.state.status !== 'failed' ||
+      this.state.error?.code !== 'scan_required' ||
+      this.state.mutation !== 'none' ||
+      source?.kind !== 'pdf' ||
+      claim === null ||
+      claim.requestId !== source.requestId ||
+      claim.uri !== source.uri ||
+      claim.lease !== source.lease ||
+      !this.isPdfClaimCurrent(claim)
+    ) return Promise.resolve(Object.freeze({ completed: false }));
+
+    const generation = ++this.generation;
+    this.sourceRevision += 1;
+    this.consentContinuation = null;
+    const operation: VisionExtraction = {
+      id: ++this.nextVisionExtraction,
+      generation,
+      sourceRevision: this.sourceRevision,
+      lifecycleEpoch: this.lifecycleEpoch,
+      source,
+      claim,
+      controller: new AbortController(),
+      promise: Promise.resolve(Object.freeze({ completed: false })),
+    };
+    this.visionExtraction = operation;
+    const changed = this.apply({ type: 'mutationStarted', generation, mutation: 'extracting' });
+    operation.promise = this.performVisionExtraction(operation);
+    if (changed) this.notifyListeners();
+    return operation.promise;
+  }
+
+  private async performVisionExtraction(
+    operation: VisionExtraction,
+  ): Promise<VisionDraftReceipt> {
+    let draft: VisionTextSource | null = null;
+    let liveBefore = false;
+    let liveAfter = false;
+    try {
+      liveBefore = await this.verifyLivePdfClaim(operation.source, operation.claim);
+      if (liveBefore && !operation.controller.signal.aborted) {
+        try {
+          draft = snapshotVisionDraft(
+            await this.vision.extractReviewedText(operation.source),
+          );
+        } catch {
+          draft = null;
+        }
+      }
+      if (draft !== null && !operation.controller.signal.aborted) {
+        liveAfter = await this.verifyLivePdfClaim(operation.source, operation.claim);
+      }
+
+      const cleaned = await this.cleanupClaim(operation.claim);
+      const current = this.visionExtractionIsCurrent(operation) &&
+        !operation.controller.signal.aborted;
+      if (!cleaned) {
+        if (current) this.blockPrivacy(true);
+        return Object.freeze({ completed: false });
+      }
+      if (!current) return Object.freeze({ completed: false });
+      if (!liveBefore || !liveAfter || draft === null) {
+        this.dispatch({
+          type: 'analysisFailed',
+          generation: operation.generation,
+          error: validationError('vision_extraction_failed'),
+          consumeSource: true,
+        });
+        return Object.freeze({ completed: false });
+      }
+
+      this.dispatch({ type: 'visionDraftReady', generation: operation.generation });
+      return Object.freeze({ completed: true, draft, generation: operation.generation });
+    } finally {
+      if (this.visionExtraction === operation) this.visionExtraction = null;
+    }
+  }
+
   private analyze(): Promise<void> {
     if (this.active !== null && this.activationIsCurrent(this.active)) return this.active.promise;
     if (
@@ -1069,6 +1246,25 @@ export class AnalysisCoordinator {
     const activation = this.newActivation(this.state.source, 'consentRead');
     activation.promise = this.checkConsentAndAnalyze(activation);
     return activation.promise;
+  }
+
+  private cancelVisionExtraction(): Promise<void> {
+    if (this.visionExtraction !== null && this.visionExtractionIsCurrent(this.visionExtraction)) {
+      return this.reset();
+    }
+    if (
+      this.mounted &&
+      this.state.mutation === 'selecting' &&
+      this.state.source === null
+    ) return this.reset();
+    if (
+      this.mounted &&
+      this.state.mutation === 'none' &&
+      this.state.status === 'failed' &&
+      this.state.error?.code === 'scan_required' &&
+      this.state.source?.kind === 'pdf'
+    ) return this.reset();
+    return Promise.resolve();
   }
 
   private async checkConsentAndAnalyze(activation: Activation): Promise<void> {
@@ -1219,8 +1415,13 @@ export class AnalysisCoordinator {
       failure = error;
     }
 
+    const retainsPdfForVision = activation.source.kind === 'pdf' &&
+      failure instanceof ResumeApiError &&
+      failure.category === 'service' &&
+      failure.code === 'scan_required' &&
+      !activation.controller.signal.aborted;
     let consumed = false;
-    if (activation.source.kind === 'pdf') {
+    if (activation.source.kind === 'pdf' && !retainsPdfForVision) {
       consumed = activation.claim !== null && await this.cleanupClaim(activation.claim);
       activation.sourceConsumed = consumed;
       if (!consumed) {
@@ -1299,6 +1500,9 @@ export class AnalysisCoordinator {
   }
 
   private cancel(): Promise<void> {
+    if (this.visionExtraction !== null && this.visionExtractionIsCurrent(this.visionExtraction)) {
+      return this.reset();
+    }
     const active = this.active;
     if (active !== null && this.activationIsCurrent(active)) {
       active.controller.abort();
@@ -1343,7 +1547,11 @@ export class AnalysisCoordinator {
     this.releasePendingPdfPick();
     this.lifecycleEpoch += 1;
     this.dispatch({ type: 'lifecycleInvalidated', lifecycleEpoch: this.lifecycleEpoch });
-    if (this.state.mutation === 'selecting' || this.state.mutation === 'editing') {
+    if (
+      this.state.mutation === 'selecting' ||
+      this.state.mutation === 'editing' ||
+      this.state.mutation === 'extracting'
+    ) {
       await this.reset();
       return;
     }
@@ -1375,6 +1583,7 @@ export class AnalysisCoordinator {
   private async performDisposal(): Promise<void> {
     this.releasePendingPdfPick();
     const active = this.active;
+    const visionExtraction = this.visionExtraction;
     const privacyRecoveries = [...this.privacyRecoveries.values()];
     this.disposalPrivacyReadiness = this.state.privacyReadiness;
     this.mounted = false;
@@ -1382,14 +1591,17 @@ export class AnalysisCoordinator {
     this.sourceRevision += 1;
     this.consentContinuation = null;
     active?.controller.abort();
+    visionExtraction?.controller.abort();
     await this.mutationTail;
     if (active !== null) await active.promise;
+    if (visionExtraction !== null) await visionExtraction.promise;
     if (privacyRecoveries.length > 0) await Promise.all(privacyRecoveries);
     if (this.initialization !== null) await this.initialization;
     await this.cleanupAllOwned(true);
     const abandonedEpoch = this.currentAbandonedCleanupEpoch;
     if (abandonedEpoch !== null) await this.cleanupAbandonedEpoch(abandonedEpoch);
     this.active = null;
+    this.visionExtraction = null;
     this.listeners.clear();
     this.committedPdfClaim = null;
     this.refreshDisposedState();
