@@ -1126,6 +1126,132 @@ def test_retention_verifier_rejects_known_durable_receivers(
     assert content not in result.stdout + result.stderr
 
 
+@pytest.mark.parametrize(
+    ("relative_path", "content"),
+    [
+        (
+            "server/aliased_stderr.py",
+            "import sys\n"
+            "out = sys.stderr\n"
+            "out.write(request.data)",
+        ),
+        (
+            "server/aliased_stdout.py",
+            "import sys\n"
+            "out = sys.stdout\n"
+            "forwarded = out\n"
+            "forwarded.write(request.form)",
+        ),
+        (
+            "server/aliased_io_open.py",
+            "import io\n"
+            "open_file = io.open\n"
+            "factory = open_file\n"
+            "factory('report.bin', 'wb').write(request.data)",
+        ),
+        (
+            "server/aliased_builtin_open.py",
+            "open_file = open\n"
+            "output = open_file('report.bin', 'wb')\n"
+            "output.write(request.data)",
+        ),
+        (
+            "server/aliased_path_text.py",
+            "from pathlib import Path\n"
+            "OutputPath = Path\n"
+            "OutputPath('report.txt').write_text(request.data.decode())",
+        ),
+        (
+            "server/aliased_path_bytes.py",
+            "from pathlib import Path\n"
+            "OutputPath = Path\n"
+            "ForwardPath = OutputPath\n"
+            "ForwardPath('report.bin').write_bytes(request.data)",
+        ),
+        (
+            "server/aliased_shelve.py",
+            "from shelve import open as shelf_open\n"
+            "open_store = shelf_open\n"
+            "factory = open_store\n"
+            "store = factory('reports')\n"
+            "store['body'] = request.get_json()",
+        ),
+    ],
+)
+def test_retention_verifier_rejects_aliased_output_and_store_factories(
+    tmp_path: Path,
+    relative_path: str,
+    content: str,
+):
+    repository = _tracked_repo(tmp_path, {relative_path: content + "\n"})
+
+    result = _retention_verifier(repository)
+
+    assert result.returncode == 1
+    assert "Sensitive-retention verification failed" in result.stderr
+    assert content not in result.stdout + result.stderr
+
+
+@pytest.mark.parametrize(
+    ("relative_path", "content"),
+    [
+        (
+            "server/aliased_bytes_writer.py",
+            "import io\n"
+            "stream = io.BytesIO()\n"
+            "write = stream.write\n"
+            "write(request.data)\n"
+            "value = stream.getvalue()",
+        ),
+        (
+            "server/aliased_text_writer.py",
+            "import io\n"
+            "stream = io.StringIO()\n"
+            "write = stream.write\n"
+            "write(request.form.get('resume_text'))\n"
+            "value = stream.getvalue()",
+        ),
+        (
+            "server/aliased_bytes_factory.py",
+            "import io\n"
+            "stream_factory = io.BytesIO\n"
+            "factory = stream_factory\n"
+            "stream = factory()\n"
+            "stream.write(request.data)",
+        ),
+        (
+            "server/local_open_file.py",
+            "import io\n"
+            "def open_file(*_args):\n"
+            "    return io.BytesIO()\n"
+            "output = open_file('report.bin', 'wb')\n"
+            "output.write(request.data)",
+        ),
+        (
+            "server/local_factory_alias.py",
+            "import io\n"
+            "def make_stream():\n"
+            "    return io.BytesIO()\n"
+            "factory = make_stream\n"
+            "output = factory()\n"
+            "output.write(request.data)",
+        ),
+    ],
+)
+def test_retention_verifier_allows_local_stream_and_callable_aliases(
+    tmp_path: Path,
+    relative_path: str,
+    content: str,
+):
+    repository = _tracked_repo(tmp_path, {relative_path: content + "\n"})
+
+    result = _retention_verifier(repository)
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "Sensitive-retention verification passed.\n"
+    assert content not in result.stdout + result.stderr
+
+
 def test_retention_verifier_accepts_current_server_patterns():
     result = _retention_verifier(ROOT)
 

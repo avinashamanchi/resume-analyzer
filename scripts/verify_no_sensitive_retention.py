@@ -120,7 +120,9 @@ SHELVE_PERSISTENCE_METHODS = frozenset({"setdefault", "update"})
 LOCAL_MUTATION_METHODS = frozenset(
     {"append", "extend", "insert", "put", "write", "writelines"}
 )
-DURABLE_RECEIVER_KINDS = frozenset({"database", "file", "path", "redis", "shelve"})
+DURABLE_RECEIVER_KINDS = frozenset(
+    {"database", "file", "output", "path", "redis", "shelve"}
+)
 LOCAL_RECEIVER_CONSTRUCTORS = frozenset(
     {
         "BytesIO",
@@ -243,6 +245,7 @@ class PythonRetentionVisitor(ast.NodeVisitor):
         self._sink_aliases: dict[AccessPath, str] = {}
         self._request_paths: set[AccessPath] = {("request",)}
         self._durable_receivers: dict[AccessPath, str] = {}
+        self._callable_factories: dict[AccessPath, str] = {}
         self._flask_module_aliases: set[str] = {"flask"}
         self._path_constructor_aliases: set[str] = {"Path"}
         self.tainted_functions: set[str] = set(tainted_functions or ())
@@ -370,6 +373,11 @@ class PythonRetentionVisitor(ast.NodeVisitor):
             return None
         if path in self._durable_receivers:
             return self._durable_receivers[path]
+        if path in {
+            ("sys", "attr:stderr"),
+            ("sys", "attr:stdout"),
+        }:
+            return "output"
         identifier = _path_identifier(path)
         if REDIS_RECEIVER_PATTERN.search(identifier):
             return "redis"
@@ -379,6 +387,28 @@ class PythonRetentionVisitor(ast.NodeVisitor):
             return "database"
         if SHELVE_RECEIVER_PATTERN.search(identifier):
             return "shelve"
+        return None
+
+    def _callable_factory_kind(self, node: ast.AST | None) -> str | None:
+        if node is None:
+            return None
+        path = _access_path(node)
+        if path is not None and path in self._callable_factories:
+            return self._callable_factories[path]
+        dotted = _dotted_name(node)
+        if dotted in FILE_OPEN_CALLS:
+            return "file"
+        if dotted == "shelve.open":
+            return "shelve"
+        if dotted in {"sqlite3.connect", "create_engine", "sqlalchemy.create_engine"}:
+            return "database"
+        final_name = dotted.rsplit(".", maxsplit=1)[-1] if dotted else None
+        if final_name in LOCAL_RECEIVER_CONSTRUCTORS:
+            return "local"
+        if final_name in {"Redis", "StrictRedis"}:
+            return "redis"
+        if final_name in self._path_constructor_aliases:
+            return "path"
         return None
 
     def _expression_durable_kind(self, node: ast.AST | None) -> str | None:
@@ -402,6 +432,11 @@ class PythonRetentionVisitor(ast.NodeVisitor):
             return "local"
         if not isinstance(node, ast.Call):
             return None
+        factory_kind = self._callable_factory_kind(node.func)
+        if factory_kind == "file":
+            return "file" if _open_call_writes(node) else None
+        if factory_kind is not None:
+            return factory_kind
         dotted = _dotted_name(node.func)
         if dotted in {"sqlite3.connect", "create_engine", "sqlalchemy.create_engine"}:
             return "database"
@@ -449,17 +484,23 @@ class PythonRetentionVisitor(ast.NodeVisitor):
             receiver_name = _dotted_name(node.value)
             if (
                 node.attr in FILE_PERSISTENCE_METHODS
-                and receiver_name in {"stderr", "stdout", "sys.stderr", "sys.stdout"}
+                and receiver_name in {"sys.stderr", "sys.stdout"}
             ):
                 return "request-content-log"
             receiver_kind = self._expression_durable_kind(node.value)
             methods_by_kind = {
                 "database": DATABASE_PERSISTENCE_METHODS,
                 "file": FILE_PERSISTENCE_METHODS,
+                "output": frozenset(),
                 "path": PATH_PERSISTENCE_METHODS,
                 "redis": REDIS_PERSISTENCE_METHODS,
                 "shelve": SHELVE_PERSISTENCE_METHODS,
             }
+            if (
+                receiver_kind == "output"
+                and node.attr in FILE_PERSISTENCE_METHODS
+            ):
+                return "request-content-log"
             if node.attr in methods_by_kind.get(receiver_kind, frozenset()):
                 return "durable-content-sink"
         return None
@@ -485,6 +526,13 @@ class PythonRetentionVisitor(ast.NodeVisitor):
             for candidate, kind in self._durable_receivers.items()
             if not _path_is_prefix(path, candidate)
         }
+        self._callable_factories = {
+            candidate: kind
+            for candidate, kind in self._callable_factories.items()
+            if not _path_is_prefix(path, candidate)
+        }
+        if len(path) == 1:
+            self._path_constructor_aliases.discard(path[0])
 
     def _copy_taint_paths(self, target: AccessPath, source: AccessPath) -> bool:
         copied = False
@@ -541,6 +589,9 @@ class PythonRetentionVisitor(ast.NodeVisitor):
         durable_kind = self._expression_durable_kind(value)
         if durable_kind is not None:
             self._durable_receivers[target] = durable_kind
+        factory_kind = self._callable_factory_kind(value)
+        if factory_kind is not None:
+            self._callable_factories[target] = factory_kind
         sink_kind = self._sink_kind(value)
         if sink_kind is not None:
             self._sink_aliases[target] = sink_kind
@@ -579,6 +630,7 @@ class PythonRetentionVisitor(ast.NodeVisitor):
         previous_aliases = self._sink_aliases
         previous_request_paths = self._request_paths
         previous_receivers = self._durable_receivers
+        previous_factories = self._callable_factories
         previous_flask_aliases = self._flask_module_aliases
         previous_path_aliases = self._path_constructor_aliases
         parameter_names = {
@@ -600,6 +652,7 @@ class PythonRetentionVisitor(ast.NodeVisitor):
         self._sink_aliases = dict(previous_aliases)
         self._request_paths = set(previous_request_paths)
         self._durable_receivers = dict(previous_receivers)
+        self._callable_factories = dict(previous_factories)
         self._flask_module_aliases = set(previous_flask_aliases)
         self._path_constructor_aliases = set(previous_path_aliases)
         self._function_stack.append(node.name)
@@ -610,6 +663,7 @@ class PythonRetentionVisitor(ast.NodeVisitor):
         self._sink_aliases = previous_aliases
         self._request_paths = previous_request_paths
         self._durable_receivers = previous_receivers
+        self._callable_factories = previous_factories
         self._flask_module_aliases = previous_flask_aliases
         self._path_constructor_aliases = previous_path_aliases
 
@@ -668,11 +722,36 @@ class PythonRetentionVisitor(ast.NodeVisitor):
                 if alias.name == "request"
             )
         if node.module == "pathlib":
-            self._path_constructor_aliases.update(
-                alias.asname or alias.name
-                for alias in node.names
-                if alias.name == "Path"
+            self._callable_factories.update(
+                {
+                    ((alias.asname or alias.name),): "path"
+                    for alias in node.names
+                    if alias.name == "Path"
+                }
             )
+        if node.module == "sys":
+            self._durable_receivers.update(
+                {
+                    ((alias.asname or alias.name),): "output"
+                    for alias in node.names
+                    if alias.name in {"stderr", "stdout"}
+                }
+            )
+        if node.module == "shelve":
+            self._callable_factories.update(
+                {
+                    ((alias.asname or alias.name),): "shelve"
+                    for alias in node.names
+                    if alias.name == "open"
+                }
+            )
+        if node.module == "io":
+            for alias in node.names:
+                target = ((alias.asname or alias.name),)
+                if alias.name == "open":
+                    self._callable_factories[target] = "file"
+                elif alias.name in LOCAL_RECEIVER_CONSTRUCTORS:
+                    self._callable_factories[target] = "local"
 
     def _visit_with(self, node: ast.With | ast.AsyncWith) -> None:
         for item in node.items:
@@ -695,9 +774,12 @@ class PythonRetentionVisitor(ast.NodeVisitor):
 
     def visit_Call(self, node: ast.Call) -> None:
         dotted = _dotted_name(node.func)
+        factory_kind = self._callable_factory_kind(node.func)
         if dotted in NEW_STORE_CALLS:
             self.findings.add("new-server-retention-store")
-        if dotted in FILE_OPEN_CALLS and _open_call_writes(node):
+        if factory_kind in {"database", "shelve"}:
+            self.findings.add("new-server-retention-store")
+        if factory_kind == "file" and _open_call_writes(node):
             self.findings.add("new-server-retention-store")
         receiver_kind = None
         if isinstance(node.func, ast.Attribute):
