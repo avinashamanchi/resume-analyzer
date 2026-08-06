@@ -21,6 +21,7 @@ export type ReportExportErrorCode =
   | 'render_failed'
   | 'invalid_output'
   | 'invalid_receipt'
+  | 'share_cancelled'
   | 'sharing_unavailable'
   | 'share_failed'
   | 'cleanup_failed';
@@ -30,6 +31,7 @@ const PUBLIC_MESSAGES: Readonly<Record<ReportExportErrorCode, string>> = {
   render_failed: 'The PDF report could not be created.',
   invalid_output: 'The PDF report could not be verified.',
   invalid_receipt: 'The PDF report is no longer available.',
+  share_cancelled: 'The PDF share was cancelled.',
   sharing_unavailable: 'File sharing is not available on this device.',
   share_failed: 'The PDF report was not shared.',
   cleanup_failed: 'The temporary PDF could not be verified as removed.',
@@ -163,7 +165,7 @@ export type ReportExporterOptions = Readonly<{
 export interface ReportExporterPort {
   cleanupAbandoned(): Promise<number>;
   export(report: ReportRecord): Promise<ExportReceipt>;
-  share(receipt: ExportReceipt): Promise<void>;
+  share(receipt: ExportReceipt, lifecycle: AbortSignal): Promise<void>;
   discard(receipt: ExportReceipt): Promise<void>;
 }
 
@@ -242,7 +244,7 @@ export class ReportExporter implements ReportExporterPort {
     });
   }
 
-  share(receipt: ExportReceipt): Promise<void> {
+  share(receipt: ExportReceipt, lifecycle: AbortSignal): Promise<void> {
     return this.enqueue(async () => {
       const uri = this.receipts.get(receipt);
       if (uri === undefined) throw new ReportExportError('invalid_receipt');
@@ -250,17 +252,24 @@ export class ReportExporter implements ReportExporterPort {
       this.activeUris.delete(uri);
 
       let shareFailure: ReportExportError | null = null;
-      try {
-        if (!(await this.sharing.isAvailableAsync())) {
-          shareFailure = new ReportExportError('sharing_unavailable');
-        } else {
-          await this.sharing.shareAsync(uri, {
-            UTI: 'com.adobe.pdf',
-            mimeType: 'application/pdf',
-          });
+      if (lifecycle.aborted) {
+        shareFailure = new ReportExportError('share_cancelled');
+      } else {
+        try {
+          const available = await this.sharing.isAvailableAsync();
+          if (lifecycle.aborted) {
+            shareFailure = new ReportExportError('share_cancelled');
+          } else if (!available) {
+            shareFailure = new ReportExportError('sharing_unavailable');
+          } else {
+            await this.sharing.shareAsync(uri, {
+              UTI: 'com.adobe.pdf',
+              mimeType: 'application/pdf',
+            });
+          }
+        } catch {
+          shareFailure = new ReportExportError('share_failed');
         }
-      } catch {
-        shareFailure = new ReportExportError('share_failed');
       }
 
       try {

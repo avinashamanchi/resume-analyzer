@@ -68,6 +68,28 @@ describe('mobile service contracts', () => {
     ).toThrow();
   });
 
+  it.each([
+    ['job structure', { structure: 26, impact: 25, readability: 20, keywords: 15 }],
+    ['job impact', { structure: 25, impact: 31, readability: 20, keywords: 15 }],
+    ['job readability', { structure: 25, impact: 25, readability: 21, keywords: 15 }],
+    ['no-job structure', { structure: 31, impact: 30, readability: 25, keywords: null }],
+    ['no-job impact', { structure: 30, impact: 41, readability: 25, keywords: null }],
+    ['no-job readability', { structure: 30, impact: 30, readability: 31, keywords: null }],
+  ])('rejects a %s component above its branch maximum', (_name, components) => {
+    const invalid = copy(validFixture) as unknown as Record<string, unknown>;
+    const originalScore = invalid.score as Record<string, unknown>;
+    const readinessScore = components.structure + components.impact + components.readability +
+      (components.keywords ?? 0);
+    invalid.score = {
+      ...originalScore,
+      readinessScore,
+      label: readinessScore >= 85 ? 'Strong' : readinessScore >= 70 ? 'Good' : 'Developing',
+      components,
+    };
+
+    expect(() => AnalysisResponseSchema.parse(invalid)).toThrow();
+  });
+
   it('counts Unicode code points instead of UTF-16 code units for service text bounds', () => {
     const atLimit = copy(validFixture);
     atLimit.feedback.strengths = ['💼'.repeat(600)];

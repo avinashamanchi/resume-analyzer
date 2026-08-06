@@ -38,10 +38,56 @@ class StrictContract(BaseModel):
 
 
 class ScoreComponentsV1(StrictContract):
+    model_config = ConfigDict(
+        extra="forbid",
+        strict=True,
+        json_schema_extra={
+            "allOf": [
+                {
+                    "if": {
+                        "properties": {"keywords": {"type": "null"}},
+                        "required": ["keywords"],
+                    },
+                    "then": {
+                        "properties": {
+                            "structure": {"maximum": 30},
+                            "impact": {"maximum": 40},
+                            "readability": {"maximum": 30},
+                            "keywords": {"type": "null"},
+                        }
+                    },
+                    "else": {
+                        "properties": {
+                            "structure": {"maximum": 25},
+                            "impact": {"maximum": 30},
+                            "readability": {"maximum": 20},
+                            "keywords": {
+                                "type": "integer",
+                                "minimum": 0,
+                                "maximum": 25,
+                            },
+                        }
+                    },
+                }
+            ]
+        },
+    )
     structure: int = Field(ge=0, le=30)
     impact: int = Field(ge=0, le=40)
     readability: int = Field(ge=0, le=30)
     keywords: int | None = Field(ge=0, le=25)
+
+    @model_validator(mode="after")
+    def enforces_scoring_branch_maxima(self) -> ScoreComponentsV1:
+        maxima = (
+            {"structure": 30, "impact": 40, "readability": 30}
+            if self.keywords is None
+            else {"structure": 25, "impact": 30, "readability": 20}
+        )
+        for field, maximum in maxima.items():
+            if getattr(self, field) > maximum:
+                raise ValueError(f"{field} exceeds its scoring-branch maximum")
+        return self
 
 
 class ScoreV1(StrictContract):

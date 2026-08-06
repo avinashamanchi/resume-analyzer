@@ -34,6 +34,17 @@ test("rejects inconsistent score labels and component totals", () => {
   assert.throws(() => contract.validateAnalysisResponse(total, { hasJobDescription: true }));
 });
 
+test("rejects score components above the active scoring-branch maximum", () => {
+  for (const [field, value] of [["structure", 26], ["impact", 31], ["readability", 21]]) {
+    const invalid = copy(fixture);
+    invalid.score.components[field] = value;
+    invalid.score.readinessScore = Object.values(invalid.score.components)
+      .reduce((total, component) => total + (component || 0), 0);
+    invalid.score.label = "Strong";
+    assert.throws(() => contract.validateAnalysisResponse(invalid, { hasJobDescription: true }));
+  }
+});
+
 test("rejects malformed feedback prefix, overlap, and bounds", () => {
   const prefix = copy(fixture);
   prefix.feedback.simulatedRecruiterComment = "Recruiter feedback";

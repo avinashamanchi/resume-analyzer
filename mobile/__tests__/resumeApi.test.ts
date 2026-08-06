@@ -424,6 +424,27 @@ describe('ResumeApi multipart boundary', () => {
     ).rejects.toMatchObject({ category: 'invalid_response' });
   });
 
+  it('rejects a service response whose job-scored structure exceeds its branch maximum', async () => {
+    const malformed = JSON.parse(JSON.stringify(validFixture));
+    malformed.score = {
+      ...malformed.score,
+      readinessScore: 86,
+      components: { ...malformed.score.components, structure: 26 },
+    };
+    const { api } = createApi({
+      fetchImpl: jest.fn().mockResolvedValue(response(200, malformed)),
+    });
+
+    await expect(api.analyze(
+      {
+        source: { kind: 'text', text: 'Resume' },
+        jobDescription: 'Backend engineer',
+        consentVersion: '2026-08-04.v1',
+      },
+      new AbortController().signal,
+    )).rejects.toMatchObject({ category: 'invalid_response' });
+  });
+
   it('links cancellation and timeout signals, then removes the timeout on every exit', async () => {
     jest.useFakeTimers();
     const fetchImpl: FetchMock = jest.fn((_url, _init) => new Promise<Response>(() => undefined));

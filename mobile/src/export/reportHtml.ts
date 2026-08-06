@@ -1,4 +1,5 @@
 import type { ReportRecord } from '../storage/reportRepository';
+import { scorePresentation } from '../domain/scorePresentation';
 
 export function escapeReportHtml(value: string): string {
   return value
@@ -14,25 +15,15 @@ function list(items: readonly string[], empty: string): string {
   return `<ul>${values.map(item => `<li>${escapeReportHtml(item)}</li>`).join('')}</ul>`;
 }
 
-function component(label: string, value: number | null, maximum: number): string {
-  const display = value === null ? 'Not scored' : `${value}/${maximum}`;
-  return `<tr><th scope="row">${escapeReportHtml(label)}</th><td>${display}</td></tr>`;
+function component(label: string, value: number, maximum: number): string {
+  return `<tr><th scope="row">${escapeReportHtml(label)}</th><td>${value}/${maximum}</td></tr>`;
 }
 
 export function buildReportHtml(report: ReportRecord): string {
-  const hasKeywords = report.score.components.keywords !== null;
-  const componentRows = hasKeywords
-    ? [
-      component('Structure', report.score.components.structure, 25),
-      component('Impact', report.score.components.impact, 30),
-      component('Readability', report.score.components.readability, 20),
-      component('Keywords', report.score.components.keywords, 25),
-    ]
-    : [
-      component('Structure', report.score.components.structure, 30),
-      component('Impact', report.score.components.impact, 40),
-      component('Readability', report.score.components.readability, 30),
-    ];
+  const presentation = scorePresentation(report.score.components);
+  const hasKeywords = presentation.hasJobDescription;
+  const componentRows = presentation.components.map(value =>
+    component(value.label, value.value, value.maximum));
   const methodology = hasKeywords
     ? `The deterministic ${escapeReportHtml(report.score.scoreVersion)} method assigns structure up to 25 points, impact up to 30 points, readability up to 20 points, and keyword alignment up to 25 points. These components total at most 100 points.`
     : `The deterministic ${escapeReportHtml(report.score.scoreVersion)} method assigns structure up to 30 points, impact up to 40 points, and readability up to 30 points. No job-description component is included in this score.`;

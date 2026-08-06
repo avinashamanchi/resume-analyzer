@@ -2,16 +2,12 @@ import React from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 
 import type { AnalysisResponse } from '../domain/contracts';
+import { scorePresentation } from '../domain/scorePresentation';
 import { tokens } from '../theme/tokens';
 import { Card, uiStyles } from './primitives';
 
 export function ScoreCard({ score }: Readonly<{ score: AnalysisResponse['score'] }>) {
-  const components = [
-    ['Structure', score.components.structure, 30],
-    ['Impact', score.components.impact, 40],
-    ['Readability', score.components.readability, 30],
-    ['Keywords', score.components.keywords, 25],
-  ] as const;
+  const presentation = scorePresentation(score.components);
   return (
     <Card>
       <View accessibilityLabel="Resume readiness score" style={styles.scoreRow}>
@@ -29,10 +25,10 @@ export function ScoreCard({ score }: Readonly<{ score: AnalysisResponse['score']
       </View>
       <View style={uiStyles.rule} />
       <View style={styles.components}>
-        {components.map(([label, value, maximum]) => (
-          <View key={label} style={styles.componentRow}>
-            <Text style={uiStyles.body}>{label}</Text>
-            <Text style={styles.componentValue}>{value === null ? 'Not scored' : `${value}/${maximum}`}</Text>
+        {presentation.components.map(component => (
+          <View key={component.key} style={styles.componentRow}>
+            <Text style={uiStyles.body}>{component.label}</Text>
+            <Text style={styles.componentValue}>{component.value}/{component.maximum}</Text>
           </View>
         ))}
       </View>

@@ -1,6 +1,11 @@
 import { act, fireEvent, render, waitFor } from '@testing-library/react-native';
 import React from 'react';
-import { AccessibilityInfo } from 'react-native';
+import {
+  AccessibilityInfo,
+  AppState,
+  StyleSheet,
+  type AppStateStatus,
+} from 'react-native';
 
 import validFixture from '../../contracts/fixtures/analysis-valid.json';
 
@@ -69,7 +74,10 @@ function exporter() {
     value: {
       cleanupAbandoned: jest.fn(async () => 0),
       export: jest.fn(async () => receipt),
-      share: jest.fn(async () => undefined),
+      share: jest.fn(async (
+        _receipt: ExportReceipt,
+        _lifecycle: AbortSignal,
+      ): Promise<void> => undefined),
       discard: jest.fn(async () => undefined),
     } satisfies ReportExporterPort,
   };
@@ -142,7 +150,8 @@ describe('Results accessibility gates', () => {
     expect(scroll.props.keyboardDismissMode).toBe('interactive');
     expect(scroll.props.keyboardShouldPersistTaps).toBe('handled');
     expect(scroll.props.automaticallyAdjustKeyboardInsets).toBe(true);
-    expect(scroll.props.contentContainerStyle).toEqual(expect.objectContaining({ flexGrow: 1 }));
+    expect(StyleSheet.flatten(scroll.props.contentContainerStyle))
+      .toEqual(expect.objectContaining({ flexGrow: 1 }));
     expect(view.getByTestId('feedback-stack')).toHaveStyle({ flexDirection: 'column' });
   });
 
@@ -164,7 +173,10 @@ describe('Results accessibility gates', () => {
       fireEvent.press(view.getByRole('button', { name: 'Share report' }));
     });
 
-    await waitFor(() => expect(pdf.value.share).toHaveBeenCalledWith(pdf.receipt));
+    await waitFor(() => expect(pdf.value.share).toHaveBeenCalledWith(
+      pdf.receipt,
+      expect.anything(),
+    ));
     expect(pdf.value.export).toHaveBeenCalledWith(report);
     const status = view.getByRole('alert');
     expect(status.props.children).toBe('Share sheet closed. The temporary PDF was removed.');
@@ -196,6 +208,105 @@ describe('Results accessibility gates', () => {
     expect(pdf.value.export).toHaveBeenCalledTimes(1);
     expect(pdf.value.share).toHaveBeenCalledTimes(1);
   });
+
+  it('aborts a PDF at the native-share boundary when routing to another report', async () => {
+    const app = context();
+    app.history.get.mockImplementation(async (analysisId: string) => (
+      analysisId === REPORT_A_ID ? report : reportB
+    ));
+    const pdf = exporter();
+    const pendingShare = deferred<void>();
+    pdf.value.share.mockImplementation(async () => pendingShare.promise);
+    const view = await render(
+      <AppControllerProvider value={app}>
+        <ResultsScreen exporter={pdf.value} />
+      </AppControllerProvider>,
+    );
+    await waitFor(() => view.getByRole('button', { name: 'Share report' }));
+    fireEvent.press(view.getByRole('button', { name: 'Share report' }));
+    await waitFor(() => expect(pdf.value.share).toHaveBeenCalledTimes(1));
+    const lifecycle = pdf.value.share.mock.calls[0][1];
+    expect(lifecycle.aborted).toBe(false);
+
+    mockAnalysisId = REPORT_B_ID;
+    await view.rerender(
+      <AppControllerProvider value={app}>
+        <ResultsScreen exporter={pdf.value} />
+      </AppControllerProvider>,
+    );
+
+    expect(lifecycle.aborted).toBe(true);
+    await act(async () => {
+      pendingShare.resolve();
+      await pendingShare.promise;
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(view.getByRole('button', { name: 'Share report' })).toBeEnabled());
+    view.unmount();
+  });
+
+  it('aborts a PDF at the native-share boundary when the screen unmounts', async () => {
+    const app = context();
+    const pdf = exporter();
+    const pendingShare = deferred<void>();
+    pdf.value.share.mockImplementation(async () => pendingShare.promise);
+    const view = await render(
+      <AppControllerProvider value={app}>
+        <ResultsScreen exporter={pdf.value} />
+      </AppControllerProvider>,
+    );
+    await waitFor(() => view.getByRole('button', { name: 'Share report' }));
+    fireEvent.press(view.getByRole('button', { name: 'Share report' }));
+    await waitFor(() => expect(pdf.value.share).toHaveBeenCalledTimes(1));
+    const lifecycle = pdf.value.share.mock.calls[0][1];
+
+    await view.unmount();
+
+    expect(lifecycle.aborted).toBe(true);
+    await act(async () => {
+      pendingShare.resolve();
+      await pendingShare.promise;
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+  });
+
+  it.each<AppStateStatus>(['inactive', 'background'])(
+    'aborts a PDF at the native-share boundary when AppState becomes %s',
+    async (nextState) => {
+      let onAppStateChange: ((state: AppStateStatus) => void) | undefined;
+      jest.spyOn(AppState, 'addEventListener').mockImplementation((_event, listener) => {
+        onAppStateChange = listener;
+        return { remove: jest.fn() };
+      });
+      const app = context();
+      const pdf = exporter();
+      const pendingShare = deferred<void>();
+      pdf.value.share.mockImplementation(async () => pendingShare.promise);
+      const view = await render(
+        <AppControllerProvider value={app}>
+          <ResultsScreen exporter={pdf.value} />
+        </AppControllerProvider>,
+      );
+      await waitFor(() => view.getByRole('button', { name: 'Share report' }));
+      fireEvent.press(view.getByRole('button', { name: 'Share report' }));
+      await waitFor(() => expect(pdf.value.share).toHaveBeenCalledTimes(1));
+      const lifecycle = pdf.value.share.mock.calls[0][1];
+
+      await act(async () => { onAppStateChange?.(nextState); });
+
+      expect(lifecycle.aborted).toBe(true);
+      await act(async () => {
+        pendingShare.resolve();
+        await pendingShare.promise;
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      await waitFor(() => expect(view.getByRole('button', { name: 'Share report' })).toBeEnabled());
+      view.unmount();
+    },
+  );
 
   it('does not start PDF sharing while text sharing owns the native action boundary', async () => {
     const app = context();
@@ -381,6 +492,104 @@ describe('Results accessibility gates', () => {
     await waitFor(() => expect(pdf.value.discard).toHaveBeenCalledWith(pdf.receipt));
 
     expect(pdf.value.share).not.toHaveBeenCalled();
+  });
+
+  it('single-flights same-render delete callbacks with one pending and one result announcement', async () => {
+    const announce = jest.spyOn(AccessibilityInfo, 'announceForAccessibility');
+    const pendingDelete = deferred<boolean>();
+    const app = context();
+    app.history.delete.mockImplementation(async () => pendingDelete.promise);
+    const pdf = exporter();
+    const view = await render(
+      <AppControllerProvider value={app}>
+        <ResultsScreen exporter={pdf.value} />
+      </AppControllerProvider>,
+    );
+    await waitFor(() => view.getByRole('button', { name: 'Delete saved report' }));
+    await act(async () => {
+      fireEvent.press(view.getByRole('button', { name: 'Delete saved report' }));
+    });
+    await waitFor(() => view.getByRole('button', { name: 'Confirm delete report' }));
+    const confirmDelete = pressHandler(view, 'Confirm delete report');
+    announce.mockClear();
+
+    await act(async () => {
+      confirmDelete();
+      confirmDelete();
+    });
+
+    expect(app.history.delete).toHaveBeenCalledTimes(1);
+    expect(view.getByText('Deleting local report…')).toBeTruthy();
+    expect(view.getByRole('button', { name: 'Confirm delete report' })).toBeDisabled();
+    expect(view.getByRole('button', { name: 'Keep report' })).toBeDisabled();
+    await waitFor(() => expect(announce.mock.calls.filter(([message]) =>
+      message === 'Deleting local report…')).toHaveLength(1));
+
+    await act(async () => {
+      pendingDelete.resolve(true);
+      await pendingDelete.promise;
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(view.getByRole('alert').props.children).toBe('Local report deleted.'));
+    expect(announce.mock.calls.filter(([message]) => message === 'Local report deleted.'))
+      .toHaveLength(1);
+  });
+
+  it('does not let an old-route delete finally clear a newer delete authority', async () => {
+    const firstDelete = deferred<boolean>();
+    const secondDelete = deferred<boolean>();
+    const app = context();
+    app.history.reports = [report, reportB];
+    app.history.get.mockImplementation(async (analysisId: string) => (
+      analysisId === REPORT_A_ID ? report : reportB
+    ));
+    app.history.delete.mockImplementation(async (analysisId: string) => (
+      analysisId === REPORT_A_ID ? firstDelete.promise : secondDelete.promise
+    ));
+    const pdf = exporter();
+    const view = await render(
+      <AppControllerProvider value={app}>
+        <ResultsScreen exporter={pdf.value} />
+      </AppControllerProvider>,
+    );
+    await waitFor(() => view.getByRole('button', { name: 'Delete saved report' }));
+    await act(async () => {
+      fireEvent.press(view.getByRole('button', { name: 'Delete saved report' }));
+    });
+    await waitFor(() => view.getByRole('button', { name: 'Confirm delete report' }));
+    fireEvent.press(view.getByRole('button', { name: 'Confirm delete report' }));
+    await waitFor(() => expect(app.history.delete).toHaveBeenCalledWith(REPORT_A_ID));
+
+    mockAnalysisId = REPORT_B_ID;
+    await view.rerender(
+      <AppControllerProvider value={app}>
+        <ResultsScreen exporter={pdf.value} />
+      </AppControllerProvider>,
+    );
+    await waitFor(() => expect(view.getByText('Second report summary.')).toBeTruthy());
+    await act(async () => {
+      fireEvent.press(view.getByRole('button', { name: 'Delete saved report' }));
+    });
+    await waitFor(() => view.getByRole('button', { name: 'Confirm delete report' }));
+    fireEvent.press(view.getByRole('button', { name: 'Confirm delete report' }));
+    await waitFor(() => expect(app.history.delete).toHaveBeenCalledWith(REPORT_B_ID));
+
+    await act(async () => {
+      firstDelete.resolve(true);
+      await firstDelete.promise;
+      await Promise.resolve();
+    });
+
+    expect(view.getByText('Deleting local report…')).toBeTruthy();
+    expect(view.getByRole('button', { name: 'Confirm delete report' })).toBeDisabled();
+    expect(app.history.delete).toHaveBeenCalledTimes(2);
+
+    await act(async () => {
+      secondDelete.resolve(true);
+      await secondDelete.promise;
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(view.getByRole('alert').props.children).toBe('Local report deleted.'));
   });
 
   it('keeps delete failure recoverable and announces a stable non-color error', async () => {

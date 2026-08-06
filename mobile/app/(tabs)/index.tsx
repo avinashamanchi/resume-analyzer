@@ -172,7 +172,7 @@ export default function AnalyzeScreen() {
     : null;
   return (
     <>
-      <Screen>
+      <Screen bottomInset="tab-bar">
         <View style={styles.hero}>
           <Eyebrow>Resume.AI · private by default</Eyebrow>
           <Title>A clearer read on your resume.</Title>

@@ -84,10 +84,11 @@
     const readinessScore = integer(value.readinessScore, 0, 100);
     if (value.label !== labelFor(readinessScore)) invalid();
     exactKeys(value.components, ["structure", "impact", "readability", "keywords"]);
+    const hasKeywordScore = value.components.keywords !== null;
     const components = {
-      structure: integer(value.components.structure, 0, 30),
-      impact: integer(value.components.impact, 0, 40),
-      readability: integer(value.components.readability, 0, 30),
+      structure: integer(value.components.structure, 0, hasKeywordScore ? 25 : 30),
+      impact: integer(value.components.impact, 0, hasKeywordScore ? 30 : 40),
+      readability: integer(value.components.readability, 0, hasKeywordScore ? 20 : 30),
       keywords: value.components.keywords === null ? null : integer(value.components.keywords, 0, 25)
     };
     if ((components.keywords === null) === hasJobDescription) invalid();

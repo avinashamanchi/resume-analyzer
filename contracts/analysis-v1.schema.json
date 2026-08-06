@@ -39,7 +39,31 @@
         "impact": {"type": "integer", "minimum": 0, "maximum": 40},
         "readability": {"type": "integer", "minimum": 0, "maximum": 30},
         "keywords": {"type": ["integer", "null"], "minimum": 0, "maximum": 25}
-      }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {"keywords": {"type": "null"}},
+            "required": ["keywords"]
+          },
+          "then": {
+            "properties": {
+              "structure": {"maximum": 30},
+              "impact": {"maximum": 40},
+              "readability": {"maximum": 30},
+              "keywords": {"type": "null"}
+            }
+          },
+          "else": {
+            "properties": {
+              "structure": {"maximum": 25},
+              "impact": {"maximum": 30},
+              "readability": {"maximum": 20},
+              "keywords": {"type": "integer", "minimum": 0, "maximum": 25}
+            }
+          }
+        }
+      ]
     },
     "feedback": {
       "type": "object",

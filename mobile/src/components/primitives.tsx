@@ -1,4 +1,4 @@
-import React, { type ReactNode } from 'react';
+import React, { type ReactNode, useContext } from 'react';
 import {
   Pressable,
   ScrollView,
@@ -8,16 +8,32 @@ import {
   View,
   type ViewStyle,
 } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { SafeAreaInsetsContext, SafeAreaView } from 'react-native-safe-area-context';
 
 import { tokens } from '../theme/tokens';
 
-export function Screen({ children }: Readonly<{ children: ReactNode }>) {
+const ZERO_INSETS = Object.freeze({ top: 0, right: 0, bottom: 0, left: 0 });
+
+export function Screen({
+  children,
+  bottomInset = 'safe-area',
+}: Readonly<{
+  children: ReactNode;
+  bottomInset?: 'safe-area' | 'tab-bar';
+}>) {
+  const insets = useContext(SafeAreaInsetsContext) ?? ZERO_INSETS;
   return (
     <SafeAreaView style={styles.safeArea} edges={['top']}>
       <ScrollView
         testID="screen-scroll-view"
-        contentContainerStyle={styles.scrollContent}
+        contentContainerStyle={[
+          styles.scrollContent,
+          {
+            paddingLeft: 20 + insets.left,
+            paddingRight: 20 + insets.right,
+            paddingBottom: 56 + (bottomInset === 'safe-area' ? insets.bottom : 0),
+          },
+        ]}
         keyboardDismissMode="interactive"
         keyboardShouldPersistTaps="handled"
         automaticallyAdjustKeyboardInsets>
@@ -104,9 +120,7 @@ const styles = StyleSheet.create({
   safeArea: { flex: 1, backgroundColor: tokens.color.background },
   scrollContent: {
     flexGrow: 1,
-    paddingHorizontal: 20,
     paddingTop: 24,
-    paddingBottom: 56,
     rowGap: tokens.space.lg,
   },
   eyebrow: {

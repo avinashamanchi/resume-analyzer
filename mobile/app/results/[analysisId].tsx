@@ -2,6 +2,7 @@ import { useLocalSearchParams, useRouter } from 'expo-router';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   AccessibilityInfo,
+  AppState,
   findNodeHandle,
   StyleSheet,
   Text,
@@ -37,6 +38,15 @@ type ShareAuthority = Readonly<{
   analysisId: string;
   routeEpoch: number;
   report: LoadedReport;
+  lifecycle: AbortController;
+}>;
+
+type DeleteAuthority = Readonly<{
+  token: symbol;
+  analysisId: string;
+  routeEpoch: number;
+  report: LoadedReport;
+  lifecycle: AbortController;
 }>;
 
 function analysisFromDisplay(value: DisplayReport): AnalysisResponse | null {
@@ -97,16 +107,21 @@ export function ResultsScreen({
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [sharing, setSharing] = useState(false);
   const [preparingPdf, setPreparingPdf] = useState(false);
+  const [deleting, setDeleting] = useState(false);
   const mounted = useRef(true);
+  const shareAuthority = useRef<ShareAuthority | null>(null);
+  const deleteAuthority = useRef<DeleteAuthority | null>(null);
   const routeAuthority = useRef({ analysisId: id, epoch: 0 });
   if (routeAuthority.current.analysisId !== id) {
+    shareAuthority.current?.lifecycle.abort();
+    deleteAuthority.current?.lifecycle.abort();
+    deleteAuthority.current = null;
     routeAuthority.current = { analysisId: id, epoch: routeAuthority.current.epoch + 1 };
   }
   const routeEpoch = routeAuthority.current.epoch;
   const currentReport = loaded && loadedId === id ? loadedReport : null;
   const currentReportRef = useRef<LoadedReport | null>(currentReport);
   currentReportRef.current = currentReport;
-  const shareAuthority = useRef<ShareAuthority | null>(null);
   const headingRef = useRef<View | null>(null);
   const receiptRef = useRef<Text | null>(null);
   const deleteErrorRef = useRef<Text | null>(null);
@@ -123,6 +138,7 @@ export function ResultsScreen({
 
   const routeIsCurrent = (authority: ShareAuthority): boolean => (
     mounted.current &&
+    !authority.lifecycle.signal.aborted &&
     routeAuthority.current.analysisId === authority.analysisId &&
     routeAuthority.current.epoch === authority.routeEpoch &&
     currentReportRef.current === authority.report
@@ -142,7 +158,8 @@ export function ResultsScreen({
       currentReportRef.current !== report ||
       report.result.analysisId !== analysisId ||
       report.exportRecord.id !== analysisId ||
-      shareAuthority.current !== null
+      shareAuthority.current !== null ||
+      deleteAuthority.current !== null
     ) return null;
     const authority = Object.freeze({
       token: Symbol('results-share'),
@@ -150,6 +167,7 @@ export function ResultsScreen({
       analysisId,
       routeEpoch: epoch,
       report,
+      lifecycle: new AbortController(),
     });
     shareAuthority.current = authority;
     setSharing(true);
@@ -166,9 +184,64 @@ export function ResultsScreen({
     }
   };
 
+  const deleteIsCurrent = (authority: DeleteAuthority): boolean => (
+    mounted.current &&
+    !authority.lifecycle.signal.aborted &&
+    deleteAuthority.current === authority &&
+    routeAuthority.current.analysisId === authority.analysisId &&
+    routeAuthority.current.epoch === authority.routeEpoch &&
+    currentReportRef.current === authority.report
+  );
+
+  const beginDelete = (
+    analysisId: string | undefined,
+    epoch: number,
+    report: LoadedReport,
+  ): DeleteAuthority | null => {
+    if (
+      !mounted.current ||
+      typeof analysisId !== 'string' ||
+      routeAuthority.current.analysisId !== analysisId ||
+      routeAuthority.current.epoch !== epoch ||
+      currentReportRef.current !== report ||
+      report.result.analysisId !== analysisId ||
+      report.exportRecord.id !== analysisId ||
+      shareAuthority.current !== null ||
+      deleteAuthority.current !== null
+    ) return null;
+    const authority = Object.freeze({
+      token: Symbol('results-delete'),
+      analysisId,
+      routeEpoch: epoch,
+      report,
+      lifecycle: new AbortController(),
+    });
+    deleteAuthority.current = authority;
+    setDeleting(true);
+    setDeleteError(null);
+    publishReceipt('Deleting local report…');
+    return authority;
+  };
+
+  const finishDelete = (authority: DeleteAuthority): void => {
+    if (deleteAuthority.current !== authority) return;
+    deleteAuthority.current = null;
+    if (mounted.current) setDeleting(false);
+  };
+
   useEffect(() => {
     mounted.current = true;
-    return () => { mounted.current = false; };
+    const appStateSubscription = AppState.addEventListener('change', nextState => {
+      if (nextState === 'inactive' || nextState === 'background') {
+        shareAuthority.current?.lifecycle.abort();
+      }
+    });
+    return () => {
+      mounted.current = false;
+      shareAuthority.current?.lifecycle.abort();
+      deleteAuthority.current?.lifecycle.abort();
+      appStateSubscription.remove();
+    };
   }, []);
 
   useEffect(() => {
@@ -183,6 +256,7 @@ export function ResultsScreen({
     let active = true;
     setConfirmDelete(false);
     setDeleteError(null);
+    setDeleting(false);
     if (typeof id !== 'string') {
       setLoadedReport(null);
       setLoadedId(id);
@@ -260,7 +334,7 @@ export function ResultsScreen({
         await exporter.discard(exportReceipt);
         return;
       }
-      await exporter.share(exportReceipt);
+      await exporter.share(exportReceipt, authority.lifecycle.signal);
       if (routeIsCurrent(authority)) {
         publishReceipt('Share sheet closed. The temporary PDF was removed.');
       }
@@ -277,9 +351,11 @@ export function ResultsScreen({
   };
 
   const deleteReport = async () => {
+    const authority = beginDelete(id, routeEpoch, currentReport);
+    if (authority === null) return;
     try {
       const deleted = await history.delete(result.analysisId);
-      if (!mounted.current) return;
+      if (!deleteIsCurrent(authority)) return;
       if (deleted) {
         setConfirmDelete(false);
         setDeleteError(null);
@@ -290,11 +366,13 @@ export function ResultsScreen({
         publishReceipt(message);
       }
     } catch {
-      if (mounted.current) {
+      if (deleteIsCurrent(authority)) {
         const message = 'The local report was not deleted. Try again.';
         setDeleteError(message);
         publishReceipt(message);
       }
+    } finally {
+      finishDelete(authority);
     }
   };
 
@@ -324,13 +402,13 @@ export function ResultsScreen({
           label={saved ? 'Saved locally' : 'Save locally'}
           accessibilityHint={saved ? 'This report is already saved on this device.' : 'Saves this bounded report on this device.'}
           onPress={() => { void save(); }}
-          disabled={saved || sharing}
+          disabled={saved || sharing || deleting}
         />
         <AppButton
           label="Share text summary"
           accessibilityHint="Opens the system share sheet with a bounded text summary."
           onPress={() => { void shareText(); }}
-          disabled={sharing}
+          disabled={sharing || deleting}
           tone="secondary"
         />
         <AppButton
@@ -338,14 +416,14 @@ export function ResultsScreen({
           accessibilityLabel="Share report"
           accessibilityHint="Creates a PDF report, opens the system share sheet, then removes the temporary file."
           onPress={() => { void sharePdf(); }}
-          disabled={sharing}
+          disabled={sharing || deleting}
           tone="secondary"
         />
         <AppButton
           label="New analysis"
           accessibilityHint="Clears the current analysis and returns to Analyze."
           onPress={() => { void startNew(); }}
-          disabled={sharing}
+          disabled={sharing || deleting}
           tone="quiet"
         />
         {saved ? (
@@ -353,7 +431,7 @@ export function ResultsScreen({
             label="Delete saved report"
             accessibilityHint="Opens a confirmation before deleting this local report."
             onPress={() => { setDeleteError(null); setConfirmDelete(true); }}
-            disabled={sharing}
+            disabled={sharing || deleting}
             tone="danger"
           />
         ) : null}
@@ -389,12 +467,15 @@ export function ResultsScreen({
               label="Keep report"
               accessibilityHint="Returns to the report without deleting it."
               onPress={() => { setDeleteError(null); setConfirmDelete(false); }}
+              disabled={deleting}
               tone="quiet"
             />
             <AppButton
-              label="Confirm delete report"
+              label={deleting ? 'Deleting local report…' : 'Confirm delete report'}
+              accessibilityLabel="Confirm delete report"
               accessibilityHint="Permanently deletes this bounded report from local history."
               onPress={() => { void deleteReport(); }}
+              disabled={deleting}
               tone="danger"
             />
           </Card>

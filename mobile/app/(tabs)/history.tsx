@@ -10,7 +10,7 @@ export default function HistoryScreen() {
   const router = useRouter();
   const { history } = useAppController();
   return (
-    <Screen>
+    <Screen bottomInset="tab-bar">
       <View>
         <Eyebrow>On this device</Eyebrow>
         <Title>Saved reports.</Title>

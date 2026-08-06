@@ -75,7 +75,21 @@ export const ScoreComponentsSchema = z
     readability: z.number().int().min(0).max(30),
     keywords: z.number().int().min(0).max(25).nullable(),
   })
-  .strict();
+  .strict()
+  .superRefine((components, context) => {
+    const maxima = components.keywords === null
+      ? { structure: 30, impact: 40, readability: 30 }
+      : { structure: 25, impact: 30, readability: 20 };
+    for (const key of ['structure', 'impact', 'readability'] as const) {
+      if (components[key] > maxima[key]) {
+        context.addIssue({
+          code: 'custom',
+          message: `${key} exceeds its scoring-branch maximum`,
+          path: [key],
+        });
+      }
+    }
+  });
 
 export const ScoreSchema = z
   .object({

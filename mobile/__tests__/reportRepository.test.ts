@@ -420,6 +420,11 @@ describe('report projection reads and writes', () => {
     ['missing column', { feedback_json: undefined }],
     ['invalid score JSON', { score_json: '{private' }],
     ['invalid score shape', { score_json: JSON.stringify({ ...validFixture.score, label: 'Needs work' }) }],
+    ['score above job branch maximum', { score_json: JSON.stringify({
+      ...validFixture.score,
+      readinessScore: 86,
+      components: { ...validFixture.score.components, structure: 26 },
+    }) }],
     ['invalid feedback shape', { feedback_json: '{}' }],
     ['oversized score JSON', { score_json: 'x'.repeat(16_385) }],
     ['oversized feedback JSON', { feedback_json: 'x'.repeat(131_073) }],

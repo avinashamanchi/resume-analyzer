@@ -56,7 +56,7 @@ export default function SettingsScreen() {
   };
 
   return (
-    <Screen>
+    <Screen bottomInset="tab-bar">
       <View>
         <Eyebrow>Resume.AI · version {actions.appVersion}</Eyebrow>
         <Title>Settings & privacy.</Title>

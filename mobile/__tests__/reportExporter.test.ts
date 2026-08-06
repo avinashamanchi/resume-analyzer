@@ -24,6 +24,7 @@ function fixtureReport(overrides: Partial<ReportRecord> = {}): ReportRecord {
 
 function exporterHarness(options: Readonly<{
   shareAvailable?: boolean;
+  shareAvailability?: Promise<boolean>;
   shareFailure?: Error;
   deleteFailure?: Error;
 }> = {}) {
@@ -35,7 +36,8 @@ function exporterHarness(options: Readonly<{
     }>) => ({ uri: PRINT_URI, numberOfPages: 2 })),
   };
   const sharing = {
-    isAvailableAsync: jest.fn(async () => options.shareAvailable ?? true),
+    isAvailableAsync: jest.fn(() =>
+      options.shareAvailability ?? Promise.resolve(options.shareAvailable ?? true)),
     shareAsync: options.shareFailure === undefined
       ? jest.fn(async () => undefined)
       : jest.fn(async () => { throw options.shareFailure; }),
@@ -174,15 +176,45 @@ describe('native report exporter', () => {
     const receipt = await exporter.export(fixtureReport());
     expect(sharing.shareAsync).not.toHaveBeenCalled();
 
-    await exporter.share(receipt);
+    await exporter.share(receipt, new AbortController().signal);
 
     expect(sharing.shareAsync).toHaveBeenCalledWith(PRINT_URI, {
       UTI: 'com.adobe.pdf',
       mimeType: 'application/pdf',
     });
     expect(files.delete).toHaveBeenCalledWith(PRINT_URI);
-    await expect(exporter.share(receipt)).rejects.toMatchObject({ code: 'invalid_receipt' });
+    await expect(exporter.share(receipt, new AbortController().signal))
+      .rejects.toMatchObject({ code: 'invalid_receipt' });
   });
+
+  it.each(['route change', 'unmount', 'background']) (
+    'cancels during deferred availability on %s without presenting or leaking the file path',
+    async () => {
+      let resolveAvailability!: (available: boolean) => void;
+      const shareAvailability = new Promise<boolean>((resolve) => {
+        resolveAvailability = resolve;
+      });
+      const { exporter, sharing, files } = exporterHarness({ shareAvailability });
+      const receipt = await exporter.export(fixtureReport());
+      const lifecycle = new AbortController();
+
+      const sharingAttempt = exporter.share(receipt, lifecycle.signal);
+      await new Promise<void>(resolve => setImmediate(resolve));
+      expect(sharing.isAvailableAsync).toHaveBeenCalledTimes(1);
+
+      lifecycle.abort();
+      resolveAvailability(true);
+      const failure = await sharingAttempt.catch((error: unknown) => error);
+
+      expect(failure).toEqual(new ReportExportError('share_cancelled'));
+      expect(sharing.shareAsync).not.toHaveBeenCalled();
+      expect(files.delete).toHaveBeenCalledWith(PRINT_URI);
+      expect(JSON.stringify(failure)).not.toContain(PRINT_URI);
+      expect(String(failure)).not.toContain('/Print/');
+      await expect(exporter.share(receipt, new AbortController().signal))
+        .rejects.toMatchObject({ code: 'invalid_receipt' });
+    },
+  );
 
   it('discards an issued report with verified deletion without opening sharing', async () => {
     const { exporter, sharing, files } = exporterHarness();
@@ -214,18 +246,20 @@ describe('native report exporter', () => {
     const { exporter, files } = exporterHarness({ shareFailure: privateFailure });
     const receipt = await exporter.export(fixtureReport());
 
-    await expect(exporter.share(receipt)).rejects.toEqual(
+    await expect(exporter.share(receipt, new AbortController().signal)).rejects.toEqual(
       new ReportExportError('share_failed'),
     );
     expect(files.delete).toHaveBeenCalledWith(PRINT_URI);
-    await expect(exporter.share(receipt)).rejects.not.toThrow(PRINT_URI);
+    await expect(exporter.share(receipt, new AbortController().signal))
+      .rejects.not.toThrow(PRINT_URI);
   });
 
   it('deletes without opening a share sheet when native sharing is unavailable', async () => {
     const { exporter, sharing, files } = exporterHarness({ shareAvailable: false });
     const receipt = await exporter.export(fixtureReport());
 
-    await expect(exporter.share(receipt)).rejects.toMatchObject({ code: 'sharing_unavailable' });
+    await expect(exporter.share(receipt, new AbortController().signal))
+      .rejects.toMatchObject({ code: 'sharing_unavailable' });
     expect(sharing.shareAsync).not.toHaveBeenCalled();
     expect(files.delete).toHaveBeenCalledWith(PRINT_URI);
   });
@@ -234,7 +268,8 @@ describe('native report exporter', () => {
     const { exporter } = exporterHarness({ deleteFailure: new Error(`cannot delete ${PRINT_URI}`) });
     const receipt = await exporter.export(fixtureReport());
 
-    const failure = await exporter.share(receipt).catch((error: unknown) => error);
+    const failure = await exporter.share(receipt, new AbortController().signal)
+      .catch((error: unknown) => error);
 
     expect(failure).toEqual(new ReportExportError('cleanup_failed'));
     expect(JSON.stringify(failure)).not.toContain(PRINT_URI);
@@ -250,6 +285,21 @@ describe('native report exporter', () => {
 
     await expect(exporter.export(fixtureReport())).rejects.toMatchObject({ code: 'invalid_output' });
     expect(files.delete).not.toHaveBeenCalled();
+  });
+
+  it('rejects a report above the job-description branch maximum before rendering', async () => {
+    const { exporter, print, sharing } = exporterHarness();
+    const report = fixtureReport({
+      score: {
+        ...validFixture.score,
+        readinessScore: 86,
+        components: { ...validFixture.score.components, structure: 26 },
+      } as ReportRecord['score'],
+    });
+
+    await expect(exporter.export(report)).rejects.toEqual(new ReportExportError('invalid_report'));
+    expect(print.printToFileAsync).not.toHaveBeenCalled();
+    expect(sharing.shareAsync).not.toHaveBeenCalled();
   });
 });
 
