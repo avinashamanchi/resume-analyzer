@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ipaddress
+import math
 import os
 import re
 from collections.abc import Iterable
@@ -33,7 +34,7 @@ def _parse_deadline(environ: Mapping[str, str], name: str, default: float) -> fl
         value = float(raw_value)
     except ValueError as error:
         raise ConfigurationError(f"{name} must be a number") from error
-    if value <= 0:
+    if value <= 0 or not math.isfinite(value):
         raise ConfigurationError(f"{name} must be greater than zero")
     return value
 
@@ -198,29 +199,81 @@ class Settings:
             request_deadline_seconds=request_deadline_seconds,
         )
         if settings.app_env == "production":
-            settings._validate_production()
+            settings.validate_production()
         return settings
 
     @classmethod
     def from_current_environ(cls) -> Settings:
         return cls.from_environ(os.environ)
 
-    def _validate_production(self) -> None:
-        if self.debug:
+    def validate_production(self) -> None:
+        """Reject production settings that cannot fail closed at startup."""
+        if self.app_env != "production":
+            raise ConfigurationError("APP_ENV must be production")
+        if type(self.debug) is not bool or self.debug:
             raise ConfigurationError("debug must be disabled in production")
-        if _is_placeholder(self.groq_api_key):
+        if not isinstance(self.groq_api_key, str) or _is_placeholder(
+            self.groq_api_key
+        ):
             raise ConfigurationError("GROQ_API_KEY is missing or a placeholder")
-        if _is_placeholder(self.installation_signing_key) or len(self.installation_signing_key) < 32:
+        if (
+            not isinstance(self.groq_model, str)
+            or _parse_groq_model(self.groq_model) != self.groq_model
+        ):
+            raise ConfigurationError(
+                "GROQ_MODEL must be a valid provider model identifier"
+            )
+        if (
+            not isinstance(self.installation_signing_key, str)
+            or _is_placeholder(self.installation_signing_key)
+            or len(self.installation_signing_key) < 32
+        ):
             raise ConfigurationError(
                 "INSTALLATION_SIGNING_KEY is missing, a placeholder, or too short"
             )
-        if not self.redis_url:
+        if not isinstance(self.redis_url, str) or not self.redis_url:
             raise ConfigurationError("REDIS_URL is required in production")
-        parsed_redis_url = urlsplit(self.redis_url)
+        parsed_redis_url = None
+        try:
+            candidate_redis_url = urlsplit(self.redis_url)
+            candidate_redis_url.port
+            parsed_redis_url = candidate_redis_url
+        except ValueError:
+            pass
+        if parsed_redis_url is None:
+            raise ConfigurationError(
+                "REDIS_URL must use redis or rediss with a host"
+            )
         if (
             parsed_redis_url.scheme not in {"redis", "rediss"}
             or not parsed_redis_url.netloc
             or not parsed_redis_url.hostname
         ):
             raise ConfigurationError("REDIS_URL must use redis or rediss with a host")
-        canonicalize_origins(self.allowed_web_origins, https_only=True)
+        if not isinstance(self.allowed_web_origins, tuple):
+            raise ConfigurationError(
+                "ALLOWED_WEB_ORIGINS must contain at least one canonical origin"
+            )
+        if (
+            canonicalize_origins(self.allowed_web_origins, https_only=True)
+            != self.allowed_web_origins
+        ):
+            raise ConfigurationError(
+                "ALLOWED_WEB_ORIGINS must contain only canonical origins"
+            )
+        deadlines = (
+            self.provider_deadline_seconds,
+            self.request_deadline_seconds,
+        )
+        if any(
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(value)
+            or value <= 0
+            for value in deadlines
+        ):
+            raise ConfigurationError("production deadlines must be finite and positive")
+        if self.provider_deadline_seconds >= self.request_deadline_seconds:
+            raise ConfigurationError(
+                "provider deadline must be shorter than the request deadline"
+            )

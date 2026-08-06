@@ -14,6 +14,7 @@ from werkzeug.exceptions import BadRequest, HTTPException, RequestEntityTooLarge
 from .config import ConfigurationError, Settings, canonicalize_origins
 from .errors import ErrorCode, PublicServiceError
 from .privacy import public_error, public_status
+from .production import build_production_services
 from .request import MAX_REQUEST_BYTES, MemoryOnlyRequest, RequestValidationError
 from .routes import register_routes
 from .scoring import ScoringInputError
@@ -73,6 +74,10 @@ def create_app(
         app_env=app_env,
         allowed_web_origins=canonical_origins,
     )
+    if app_env == "production":
+        configured_settings.validate_production()
+        if services is None:
+            services = build_production_services(configured_settings)
     allowed_origins = frozenset(canonical_origins)
     app = Flask(
         __name__,
