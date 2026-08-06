@@ -874,6 +874,9 @@ describe('native Analyze and Results flows', () => {
     expect(view.getByTestId('feedback-stack').props.style).toEqual(expect.objectContaining({ flexDirection: 'column' }));
     expect(matched).toBeTruthy();
     expect(missing).toBeTruthy();
+    expect(view.getByText(/Generated feedback and bullet drafts may quote, transform, or restate names, contact information, resume content, or job-description content/i)).toBeTruthy();
+    expect(view.getByText(/Review generated feedback before saving, sharing, or allowing it to enter device backups/i)).toBeTruthy();
+    expect(view.queryByText(/rather than source material/i)).toBeNull();
     expect(values.history.saveCurrent).not.toHaveBeenCalled();
     await act(async () => { fireEvent.press(view.getByRole('button', { name: 'Save locally' })); });
     await waitFor(() => expect(values.history.saveCurrent).toHaveBeenCalledTimes(1));

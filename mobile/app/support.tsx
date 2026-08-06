@@ -34,6 +34,9 @@ export default function SupportScreen() {
       </Card>
       <Card>
         <Text style={uiStyles.sectionTitle}>Saved-report backups</Text>
+        <Text style={uiStyles.muted}>Raw/original PDF bytes, filenames, resume-input fields, job-description-input fields, installation tokens, and request identifiers are not stored in local reports.</Text>
+        <Text style={uiStyles.muted}>Generated feedback and bullet drafts may quote, transform, or restate names, contact information, resume content, or job-description content.</Text>
+        <Text style={uiStyles.muted}>Review generated feedback before saving, sharing, or allowing it to enter device backups.</Text>
         <Text style={uiStyles.muted}>Saved reports may be included in iPhone or iPad backups stored in iCloud or on a Mac or PC. iCloud backups are always encrypted, but iCloud Backup is end-to-end encrypted only when Advanced Data Protection is enabled. Computer backups are not encrypted by default; encryption depends on the user enabling Encrypt local backup. Restoring an existing backup may restore reports deleted from the active app.</Text>
       </Card>
       {error ? <Text accessibilityRole="alert" style={uiStyles.muted}>Public support could not be opened.</Text> : null}

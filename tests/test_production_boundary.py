@@ -1654,6 +1654,9 @@ def test_release_docs_and_ci_cover_required_unverified_boundaries():
         "Encrypt local backup",
         "Restoring an existing backup may restore reports deleted from the active app",
         "backup and restore behavior is UNVERIFIED",
+        "Raw/original PDF bytes, filenames, resume-input fields, job-description-input fields, installation tokens, and request identifiers are not stored in local reports",
+        "Generated feedback and bullet drafts may quote, transform, or restate names, contact information, resume content, or job-description content",
+        "Review generated feedback before saving, sharing, or allowing it to enter device backups",
     ):
         assert disclosure in combined
 

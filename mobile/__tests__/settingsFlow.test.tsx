@@ -54,6 +54,8 @@ describe('native Settings, privacy, and support flows', () => {
     expect(settings.getByText(/iCloud backups are always encrypted/i)).toBeTruthy();
     expect(settings.getByText(/Computer backups are not encrypted by default.*Encrypt local backup/i)).toBeTruthy();
     expect(settings.getByText(/Restoring an existing backup may restore reports deleted from the active app/i)).toBeTruthy();
+    expect(settings.getByText(/Generated feedback and bullet drafts may quote, transform, or restate names, contact information, resume content, or job-description content/i)).toBeTruthy();
+    expect(settings.getByText(/Review generated feedback before saving, sharing, or allowing it to enter device backups/i)).toBeTruthy();
     await act(async () => { settings.unmount(); });
     const privacy = await render(<AppControllerProvider value={context}><PrivacyScreen /></AppControllerProvider>);
     expect(privacy.queryByText(/Reports are saved only on this device/i)).toBeNull();
@@ -61,6 +63,9 @@ describe('native Settings, privacy, and support flows', () => {
     expect(privacy.getByText(/iCloud backups are always encrypted/i)).toBeTruthy();
     expect(privacy.getByText(/Computer backups are not encrypted by default.*Encrypt local backup/i)).toBeTruthy();
     expect(privacy.getByText(/Restoring an existing backup may restore reports deleted from the active app/i)).toBeTruthy();
+    expect(privacy.getByText(/Raw\/original PDF bytes, filenames, resume-input fields, job-description-input fields, installation tokens, and request identifiers are not stored in local reports/i)).toBeTruthy();
+    expect(privacy.getByText(/Generated feedback and bullet drafts may quote, transform, or restate names, contact information, resume content, or job-description content/i)).toBeTruthy();
+    expect(privacy.getByText(/Review generated feedback before saving, sharing, or allowing it to enter device backups/i)).toBeTruthy();
     expect(privacy.getAllByText(/Groq/i).length).toBeGreaterThan(0);
     expect(privacy.getByText(/The selected PDF is uploaded and processed before temporary cleanup runs/i)).toBeTruthy();
     expect(privacy.getByText(/does not show the analysis as successful and blocks future analysis/i)).toBeTruthy();
@@ -85,6 +90,8 @@ describe('native Settings, privacy, and support flows', () => {
     expect(support.getByText(/Never post resumes, job descriptions, tokens, or private identifiers/i)).toBeTruthy();
     expect(support.getByText(/Computer backups are not encrypted by default.*Encrypt local backup/i)).toBeTruthy();
     expect(support.getByText(/Restoring an existing backup may restore reports deleted from the active app/i)).toBeTruthy();
+    expect(support.getByText(/Generated feedback and bullet drafts may quote, transform, or restate names, contact information, resume content, or job-description content/i)).toBeTruthy();
+    expect(support.getByText(/Review generated feedback before saving, sharing, or allowing it to enter device backups/i)).toBeTruthy();
     await act(async () => { fireEvent.press(support.getByRole('button', { name: 'Open public support' })); });
     expect(context.actions.openSupport).toHaveBeenCalledTimes(1);
   });

@@ -391,7 +391,7 @@ function ResultsScreenContent({
       <FeedbackSections result={result} />
       <Card>
         <Text style={uiStyles.sectionTitle}>Keep or share</Text>
-        <Text style={uiStyles.muted}>Nothing saves automatically. A PDF is created only after you choose Share report, contains the bounded report rather than source material, and is removed when the share sheet closes or fails.</Text>
+        <Text style={uiStyles.muted}>Nothing saves automatically. Raw/original PDF bytes, filenames, resume-input fields, job-description-input fields, installation tokens, and request identifiers are not stored in local reports. Generated feedback and bullet drafts may quote, transform, or restate names, contact information, resume content, or job-description content. Review generated feedback before saving, sharing, or allowing it to enter device backups. A temporary PDF is removed when the share sheet closes or fails.</Text>
         <AppButton
           label={saved ? 'Saved locally' : 'Save locally'}
           accessibilityHint={saved ? 'This report is already in the local report store.' : 'Saves this bounded report in the local report store.'}

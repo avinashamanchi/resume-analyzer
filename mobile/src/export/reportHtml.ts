@@ -58,7 +58,7 @@ export function buildReportHtml(report: ReportRecord): string {
   <header>
     <div class="eyebrow">Resume.AI report</div>
     <h1>${escapeReportHtml(report.title)}</h1>
-    <p class="note">Created ${escapeReportHtml(report.createdAt.slice(0, 10))}. This export contains the bounded report only, never resume text, a source PDF, a job description, or an installation token.</p>
+    <p class="note">Created ${escapeReportHtml(report.createdAt.slice(0, 10))}. Raw/original PDF bytes, filenames, resume-input fields, job-description-input fields, installation tokens, and request identifiers are not copied into this export. Generated feedback and bullet drafts may quote, transform, or restate names, contact information, resume content, or job-description content. Review generated feedback before saving, sharing, or allowing it to enter device backups.</p>
   </header>
   <main>
     <section aria-labelledby="score-heading">

@@ -353,6 +353,34 @@ describe('report projection reads and writes', () => {
     });
   });
 
+  it('stores generated feedback exactly even when it restates synthetic private input', async () => {
+    const syntheticEmail = 'candidate@example.invalid';
+    const syntheticPrivateLine = 'Private project line from the resume';
+    const analysis = result();
+    analysis.feedback.summary = `Contact ${syntheticEmail}`;
+    analysis.feedback.powerBullets = [syntheticPrivateLine];
+    const { database, repository } = harness();
+    await repository.initialize();
+
+    const saved = await repository.save({
+      result: analysis,
+      filename: 'Private Name.pdf',
+      resumeText: syntheticPrivateLine,
+      jobDescription: 'Private target role',
+      installationToken: 'private-installation-token',
+      requestId: 'private-request-id',
+    });
+
+    expect(saved.feedback).toEqual(analysis.feedback);
+    expect(JSON.parse(database.rows[0]?.feedback_json as string)).toEqual(
+      analysis.feedback,
+    );
+    expect(JSON.stringify(database.rows[0])).not.toContain('Private Name.pdf');
+    expect(JSON.stringify(database.rows[0])).not.toContain('Private target role');
+    expect(JSON.stringify(database.rows[0])).not.toContain('private-installation-token');
+    expect(JSON.stringify(database.rows[0])).not.toContain('private-request-id');
+  });
+
   it('supports a bounded explicit title and deterministic newest-first ordering', async () => {
     let current = new Date('2026-08-05T10:00:00.000Z');
     const { repository } = harness({ now: () => current });

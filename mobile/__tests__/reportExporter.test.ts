@@ -97,6 +97,33 @@ describe('native report exporter', () => {
     expect(JSON.stringify(receipt)).not.toMatch(/file:|\/Print\//i);
   });
 
+  it('exports generated feedback exactly and warns that it may restate private inputs', async () => {
+    const syntheticEmail = 'candidate@example.invalid';
+    const syntheticPrivateLine = '<Private project line from the resume>';
+    const report = fixtureReport({
+      feedback: {
+        ...validFixture.feedback,
+        summary: `Contact ${syntheticEmail}`,
+        powerBullets: [syntheticPrivateLine],
+      },
+    });
+    const { exporter, print } = exporterHarness();
+
+    await exporter.export(report);
+
+    const html = print.printToFileAsync.mock.calls[0][0].html;
+    expect(html).toContain(`Contact ${syntheticEmail}`);
+    expect(html).toContain('&lt;Private project line from the resume&gt;');
+    expect(html).toContain(
+      'Generated feedback and bullet drafts may quote, transform, or restate names, contact information, resume content, or job-description content.',
+    );
+    expect(html).toContain(
+      'Review generated feedback before saving, sharing, or allowing it to enter device backups.',
+    );
+    expect(html).not.toContain('never resume text');
+    expect(html).not.toContain('rather than source material');
+  });
+
   it('recovers abandoned generated reports before creating a new PDF', async () => {
     const { exporter, files, print } = exporterHarness();
 

@@ -15,7 +15,7 @@ export default function HistoryScreen() {
         <Eyebrow>On this device</Eyebrow>
         <Title>Saved reports.</Title>
       </View>
-      <Text style={uiStyles.muted}>Resume text, filenames, job descriptions, and service identifiers are never part of local history.</Text>
+      <Text style={uiStyles.muted}>Raw/original PDF bytes, filenames, resume-input fields, job-description-input fields, installation tokens, and request identifiers are not stored in local reports. Generated feedback and bullet drafts may quote, transform, or restate names, contact information, resume content, or job-description content.</Text>
       {history.error !== null && history.status === 'ready' ? (
         <Text accessibilityRole="alert" style={uiStyles.muted}>{history.error}</Text>
       ) : null}
