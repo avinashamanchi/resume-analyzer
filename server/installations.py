@@ -9,7 +9,7 @@ import math
 import re
 import time
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -30,6 +30,12 @@ class InstallationClaims:
     version: int
 
 
+@dataclass(frozen=True, slots=True, repr=False)
+class IssuedInstallationV2:
+    installation_token: str = field(repr=False)
+    revenuecat_app_user_id: str = field(repr=False)
+
+
 class InvalidInstallationToken(PublicServiceError):
     """A stable, content-free failure for every invalid token shape."""
 
@@ -46,6 +52,7 @@ class InstallationTokenService:
         *,
         now: Callable[[], int | float] = time.time,
         ttl_seconds: int = _DEFAULT_TOKEN_TTL_SECONDS,
+        revenuecat_identity_key: bytes | None = None,
     ) -> None:
         if not isinstance(secret, bytes) or len(secret) < 32:
             raise ValueError("secret must contain at least 32 bytes")
@@ -56,13 +63,55 @@ class InstallationTokenService:
         self._secret = secret
         self._now = now
         self._ttl_seconds = ttl_seconds
+        identity_key = secret if revenuecat_identity_key is None else revenuecat_identity_key
+        if not isinstance(identity_key, bytes) or len(identity_key) < 32:
+            raise ValueError("revenuecat_identity_key must contain at least 32 bytes")
+        self._revenuecat_identity_key = identity_key
 
     def issue(self) -> str:
         issued_at = self._current_time()
+        return self._issue_token(uuid4(), issued_at)
+
+    def issue_v2(self) -> IssuedInstallationV2:
+        issued_at = self._current_time()
+        installation_id = uuid4()
+        token = self._issue_token(installation_id, issued_at)
+        claims = InstallationClaims(
+            installation_id=installation_id,
+            issued_at=issued_at,
+            expires_at=issued_at + self._ttl_seconds,
+            version=_TOKEN_VERSION,
+        )
+        return IssuedInstallationV2(
+            installation_token=token,
+            revenuecat_app_user_id=self.revenuecat_app_user_id(claims),
+        )
+
+    def revenuecat_app_user_id(self, claims: InstallationClaims) -> str:
+        if not isinstance(claims, InstallationClaims):
+            raise TypeError("claims must be verified installation claims")
+        digest = hmac.digest(
+            self._revenuecat_identity_key,
+            b"revenuecat-installation-v1\x00" + str(claims.installation_id).encode("ascii"),
+            hashlib.sha256,
+        )
+        return "rai_installation_" + _encode_base64url(digest)
+
+    def installation_digest(self, claims: InstallationClaims) -> str:
+        if not isinstance(claims, InstallationClaims):
+            raise TypeError("claims must be verified installation claims")
+        digest = hmac.digest(
+            self._revenuecat_identity_key,
+            b"authenticated-installation-v1\x00" + str(claims.installation_id).encode("ascii"),
+            hashlib.sha256,
+        )
+        return "inst_" + _encode_base64url(digest)
+
+    def _issue_token(self, installation_id: UUID, issued_at: int) -> str:
         payload = {
             "exp": issued_at + self._ttl_seconds,
             "iat": issued_at,
-            "installation_id": str(uuid4()),
+            "installation_id": str(installation_id),
             "version": _TOKEN_VERSION,
         }
         encoded_payload = _encode_base64url(

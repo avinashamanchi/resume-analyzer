@@ -100,6 +100,11 @@ def test_production_emits_one_content_free_request_log_with_exact_schema(capsys)
         allowed_web_origins=("https://resume-ai.onrender.com",),
         provider_deadline_seconds=8.0,
         request_deadline_seconds=10.0,
+        revenuecat_secret_api_key="sk_" + "r" * 40,
+        revenuecat_webhook_secret="w" * 40,
+        apple_bundle_id="com.avinashamanchi.resumeai",
+        apple_team_id="A1B2C3D4E5",
+        apple_jwks_url="https://appleid.apple.com/auth/keys",
     )
     app = create_app(settings)
     app.config["TESTING"] = True
@@ -231,6 +236,11 @@ def test_render_equivalent_gunicorn_environment_cannot_preload_or_restore_access
             "GROQ_API_KEY": "synthetic-runtime-key",
             "INSTALLATION_SIGNING_KEY": "x" * 64,
             "REDIS_URL": "rediss://cache.internal:6380/0",
+            "REVENUECAT_SECRET_API_KEY": "sk_" + "r" * 40,
+            "REVENUECAT_WEBHOOK_SECRET": "w" * 40,
+            "APPLE_BUNDLE_ID": "com.avinashamanchi.resumeai",
+            "APPLE_TEAM_ID": "A1B2C3D4E5",
+            "APPLE_JWKS_URL": "https://appleid.apple.com/auth/keys",
         }
     )
 
@@ -269,6 +279,11 @@ def test_real_gunicorn_startup_never_echoes_malformed_deadline(
             "INSTALLATION_SIGNING_KEY": "x" * 64,
             "REDIS_URL": "rediss://cache.internal:6380/0",
             "ALLOWED_WEB_ORIGINS": "https://resume-ai.onrender.com",
+            "REVENUECAT_SECRET_API_KEY": "sk_" + "r" * 40,
+            "REVENUECAT_WEBHOOK_SECRET": "w" * 40,
+            "APPLE_BUNDLE_ID": "com.avinashamanchi.resumeai",
+            "APPLE_TEAM_ID": "A1B2C3D4E5",
+            "APPLE_JWKS_URL": "https://appleid.apple.com/auth/keys",
             "PROVIDER_DEADLINE_SECONDS": "8",
             "REQUEST_DEADLINE_SECONDS": "10",
             deadline_name: private_canary,
@@ -305,6 +320,11 @@ def test_real_gunicorn_parser_logs_never_emit_raw_request_material_or_client_ip(
             "INSTALLATION_SIGNING_KEY": "x" * 64,
             "REDIS_URL": "rediss://cache.internal:6380/0",
             "ALLOWED_WEB_ORIGINS": "https://resume-ai.onrender.com",
+            "REVENUECAT_SECRET_API_KEY": "sk_" + "r" * 40,
+            "REVENUECAT_WEBHOOK_SECRET": "w" * 40,
+            "APPLE_BUNDLE_ID": "com.avinashamanchi.resumeai",
+            "APPLE_TEAM_ID": "A1B2C3D4E5",
+            "APPLE_JWKS_URL": "https://appleid.apple.com/auth/keys",
         }
     )
     process = subprocess.Popen(
@@ -758,6 +778,7 @@ def _trusted_retention_files() -> dict[str, str]:
         for relative_path in (
             "server/app.py",
             "server/gunicorn_logger.py",
+            "server/entitlements.py",
             "server/rate_limit.py",
         )
     }
@@ -786,6 +807,7 @@ def test_architectural_retention_policy_pins_python_and_capability_counts():
         )
         for path, boundary in retention.TRUSTED_BOUNDARIES.items()
     } == {
+        "server/entitlements.py": {"durable": 45},
         "server/rate_limit.py": {"durable": 19},
         "server/app.py": {"logging": 3},
         "server/gunicorn_logger.py": {"logging": 5},
@@ -794,6 +816,7 @@ def test_architectural_retention_policy_pins_python_and_capability_counts():
         path: sum(item.count for item in boundary.approved_security_scopes)
         for path, boundary in retention.TRUSTED_BOUNDARIES.items()
     } == {
+        "server/entitlements.py": 80,
         "server/rate_limit.py": 60,
         "server/app.py": 36,
         "server/gunicorn_logger.py": 7,
@@ -1166,6 +1189,23 @@ def test_architectural_retention_policy_rejects_new_operation_in_trusted_file(
     files = _trusted_retention_files()
     files["server/rate_limit.py"] += (
         "\ndef extra_storage_operation(client):\n"
+        "    client.set('architecture-canary', 'safe')\n"
+    )
+    repository = _tracked_repo(tmp_path, files)
+
+    result = _retention_verifier(repository)
+
+    assert result.returncode == 1
+    assert "trusted-retention-boundary-modified" in result.stderr
+    assert "architecture-canary" not in result.stdout + result.stderr
+
+
+def test_entitlement_retention_attestation_rejects_added_redis_operation(
+    tmp_path: Path,
+):
+    files = _trusted_retention_files()
+    files["server/entitlements.py"] += (
+        "\ndef extra_entitlement_storage(client):\n"
         "    client.set('architecture-canary', 'safe')\n"
     )
     repository = _tracked_repo(tmp_path, files)

@@ -7,7 +7,17 @@ import pytest
 from jsonschema import Draft202012Validator, FormatChecker
 from pydantic import ValidationError
 
-from server.contracts import AnalysisResponseV1, AnalysisResponseV2, PublicErrorV1
+from server.contracts import (
+    AnalysisResponseV1,
+    AnalysisResponseV2,
+    AppleIdentityRequestV2,
+    AppleIdentityResponseV2,
+    EntitlementSyncRequestV2,
+    InstallationResponseV1,
+    InstallationResponseV2,
+    PlanSnapshotV2,
+    PublicErrorV1,
+)
 from server.errors import ErrorCode
 
 
@@ -422,3 +432,93 @@ def test_v1_uuid_parsing_remains_backward_compatible():
     parsed = AnalysisResponseV1.model_validate(payload)
 
     assert str(parsed.analysisId) == "8ec8a3bc-7a15-4b75-9f94-a5353a2a2f9b"
+
+
+def test_v2_identity_and_plan_contracts_are_strict_and_do_not_regress_v1():
+    allowance = {
+        "used": 1,
+        "limit": 3,
+        "resetsAt": "2026-09-01T00:00:00Z",
+    }
+    free = PlanSnapshotV2.model_validate(
+        {
+            "schemaVersion": 2,
+            "plan": "free",
+            "verifiedUntil": "2026-08-08T00:00:00Z",
+            "entitlementExpiresAt": None,
+            "allowance": allowance,
+        }
+    )
+    pro = PlanSnapshotV2.model_validate(
+        {
+            "schemaVersion": 2,
+            "plan": "pro",
+            "verifiedUntil": "2026-08-08T00:00:00Z",
+            "entitlementExpiresAt": "2026-09-01T00:00:00Z",
+            "allowance": allowance | {"limit": 100},
+        }
+    )
+    assert free.plan == "free"
+    assert pro.plan == "pro"
+    assert InstallationResponseV1(
+        schemaVersion=1, installationToken="signed-v1-token"
+    ).schemaVersion == 1
+    for model, payload in (
+        (PlanSnapshotV2, free.model_dump(mode="json") | {"selectedPlan": "pro"}),
+        (EntitlementSyncRequestV2, {"revenueCatAppUserId": "client-selected"}),
+        (InstallationResponseV2, {
+            "schemaVersion": 2,
+            "installationToken": "signed-token",
+            "revenueCatAppUserId": "rai_installation_opaque",
+            "plan": "pro",
+        }),
+    ):
+        with pytest.raises(ValidationError):
+            model.model_validate(payload)
+
+
+def test_v2_apple_and_installation_contracts_bound_sensitive_fields_and_expiry():
+    request = AppleIdentityRequestV2(
+        identityToken="private-identity-token",
+        nonce="raw-nonce-value-1234",
+    )
+    assert "private-identity-token" not in repr(request)
+    assert "raw-nonce-value-1234" not in repr(request)
+    response = AppleIdentityResponseV2(
+        schemaVersion=2,
+        accountToken="signed-account-token",
+        expiresAt="2026-08-07T12:15:00Z",
+        revenueCatAppUserId="rai_account_opaque",
+    )
+    installation = InstallationResponseV2(
+        schemaVersion=2,
+        installationToken="signed-installation-token",
+        revenueCatAppUserId="rai_installation_opaque",
+    )
+    assert response.expiresAt.isoformat() == "2026-08-07T12:15:00+00:00"
+    assert installation.revenueCatAppUserId == "rai_installation_opaque"
+    assert "signed-account-token" not in repr(response)
+    assert "signed-installation-token" not in repr(installation)
+
+
+@pytest.mark.parametrize(
+    ("model", "payload"),
+    [
+        (AppleIdentityRequestV2, {"identityToken": "x" * 8_193, "nonce": "raw-nonce-value-1234"}),
+        (AppleIdentityRequestV2, {"identityToken": "token", "nonce": "short"}),
+        (AppleIdentityResponseV2, {
+            "schemaVersion": 2,
+            "accountToken": "token",
+            "expiresAt": "2026-08-07T12:15:00.000Z",
+            "revenueCatAppUserId": "rai_account_opaque",
+        }),
+        (InstallationResponseV2, {
+            "schemaVersion": 2,
+            "installationToken": "token",
+            "revenueCatAppUserId": "client-selected",
+        }),
+    ],
+)
+def test_v2_identity_contracts_reject_unbounded_or_noncanonical_values(model, payload):
+    with pytest.raises(ValidationError):
+        model.model_validate(payload)

@@ -29,6 +29,11 @@ def production_settings(**overrides: Any) -> Settings:
         "allowed_web_origins": ("https://resume-ai.onrender.com",),
         "provider_deadline_seconds": 8.0,
         "request_deadline_seconds": 10.0,
+        "revenuecat_secret_api_key": "sk_" + "r" * 40,
+        "revenuecat_webhook_secret": "w" * 40,
+        "apple_bundle_id": "com.avinashamanchi.resumeai",
+        "apple_team_id": "A1B2C3D4E5",
+        "apple_jwks_url": "https://appleid.apple.com/auth/keys",
     }
     values.update(overrides)
     return Settings(**values)
@@ -70,6 +75,11 @@ def test_importing_application_factory_does_not_construct_clients_or_touch_netwo
             "INSTALLATION_SIGNING_KEY": "import-" + "x" * 64,
             "REDIS_URL": "rediss://unreachable.invalid:6380/0",
             "ALLOWED_WEB_ORIGINS": "https://resume-ai.onrender.com",
+            "REVENUECAT_SECRET_API_KEY": "sk_" + "r" * 40,
+            "REVENUECAT_WEBHOOK_SECRET": "w" * 40,
+            "APPLE_BUNDLE_ID": "com.avinashamanchi.resumeai",
+            "APPLE_TEAM_ID": "A1B2C3D4E5",
+            "APPLE_JWKS_URL": "https://appleid.apple.com/auth/keys",
         }
     )
 

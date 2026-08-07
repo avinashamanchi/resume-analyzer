@@ -9,6 +9,41 @@ permissions:
   contents: read
 
 jobs:
+  redis-integration:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    services:
+      redis:
+        image: redis:7.4-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 2s
+          --health-timeout 2s
+          --health-retries 20
+    env:
+      TEST_REDIS_URL: redis://127.0.0.1:6379/15
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: false
+
+      - name: Install frozen Python environment
+        run: uv sync --frozen
+
+      - name: Verify atomic allowance behavior with Redis
+        run: uv run pytest tests/test_entitlements_redis.py -q
+
   verify:
     runs-on: macos-15
     timeout-minutes: 30

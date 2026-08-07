@@ -5,7 +5,7 @@ import math
 import os
 import re
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Mapping
 from urllib.parse import urlsplit
 
@@ -159,13 +159,18 @@ def _is_placeholder(secret: str) -> bool:
 class Settings:
     app_env: str
     debug: bool
-    groq_api_key: str
+    groq_api_key: str = field(repr=False)
     groq_model: str
-    installation_signing_key: str
+    installation_signing_key: str = field(repr=False)
     redis_url: str
     allowed_web_origins: tuple[str, ...]
     provider_deadline_seconds: float
     request_deadline_seconds: float
+    revenuecat_secret_api_key: str = field(default="", repr=False)
+    revenuecat_webhook_secret: str = field(default="", repr=False)
+    apple_bundle_id: str = ""
+    apple_team_id: str = ""
+    apple_jwks_url: str = "https://appleid.apple.com/auth/keys"
 
     @classmethod
     def from_environ(cls, environ: Mapping[str, str]) -> Settings:
@@ -200,6 +205,17 @@ class Settings:
             ),
             provider_deadline_seconds=provider_deadline_seconds,
             request_deadline_seconds=request_deadline_seconds,
+            revenuecat_secret_api_key=environ.get(
+                "REVENUECAT_SECRET_API_KEY", ""
+            ).strip(),
+            revenuecat_webhook_secret=environ.get(
+                "REVENUECAT_WEBHOOK_SECRET", ""
+            ).strip(),
+            apple_bundle_id=environ.get("APPLE_BUNDLE_ID", "").strip(),
+            apple_team_id=environ.get("APPLE_TEAM_ID", "").strip(),
+            apple_jwks_url=environ.get(
+                "APPLE_JWKS_URL", "https://appleid.apple.com/auth/keys"
+            ).strip(),
         )
         if settings.app_env == "production":
             settings.validate_production()
@@ -280,3 +296,25 @@ class Settings:
             raise ConfigurationError(
                 "provider deadline must be shorter than the request deadline"
             )
+        if (
+            not isinstance(self.revenuecat_secret_api_key, str)
+            or not self.revenuecat_secret_api_key.startswith("sk_")
+            or len(self.revenuecat_secret_api_key) < 32
+            or _is_placeholder(self.revenuecat_secret_api_key)
+        ):
+            raise ConfigurationError("REVENUECAT_SECRET_API_KEY is invalid")
+        if (
+            not isinstance(self.revenuecat_webhook_secret, str)
+            or len(self.revenuecat_webhook_secret) < 32
+            or _is_placeholder(self.revenuecat_webhook_secret)
+        ):
+            raise ConfigurationError("REVENUECAT_WEBHOOK_SECRET is invalid")
+        if self.apple_bundle_id != "com.avinashamanchi.resumeai":
+            raise ConfigurationError("APPLE_BUNDLE_ID is invalid")
+        if (
+            not isinstance(self.apple_team_id, str)
+            or re.fullmatch(r"[A-Z0-9]{10}", self.apple_team_id) is None
+        ):
+            raise ConfigurationError("APPLE_TEAM_ID is invalid")
+        if self.apple_jwks_url != "https://appleid.apple.com/auth/keys":
+            raise ConfigurationError("APPLE_JWKS_URL is invalid")

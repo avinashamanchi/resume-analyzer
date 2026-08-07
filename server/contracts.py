@@ -20,6 +20,23 @@ from .errors import ErrorCode
 
 ShortText = Annotated[str, StringConstraints(min_length=1, max_length=240)]
 InstallationToken = Annotated[str, StringConstraints(min_length=1, max_length=2_048)]
+AccountToken = Annotated[str, StringConstraints(min_length=1, max_length=2_048)]
+RevenueCatInstallationId = Annotated[
+    str,
+    StringConstraints(
+        min_length=18,
+        max_length=160,
+        pattern=r"^rai_installation_[A-Za-z0-9_-]+$",
+    ),
+]
+RevenueCatAccountId = Annotated[
+    str,
+    StringConstraints(
+        min_length=13,
+        max_length=160,
+        pattern=r"^rai_account_[A-Za-z0-9_-]+$",
+    ),
+]
 FeedbackText = Annotated[str, StringConstraints(min_length=1, max_length=600)]
 SimulatedRecruiterComment = Annotated[
     str,
@@ -39,6 +56,18 @@ CANONICAL_UTC_SECOND = compile_regex(
 
 def _normalized_keyword(value: str) -> str:
     return unicodedata.normalize("NFKC", value).strip().casefold()
+
+
+def _parse_canonical_utc_second(value: object, *, name: str) -> datetime:
+    if not isinstance(value, str) or CANONICAL_UTC_SECOND.fullmatch(value) is None:
+        raise ValueError(f"{name} must be a canonical whole-second UTC timestamp")
+    try:
+        parsed = datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ")
+    except ValueError:
+        raise ValueError(
+            f"{name} must be a canonical whole-second UTC timestamp"
+        ) from None
+    return parsed.replace(tzinfo=timezone.utc)
 
 
 class StrictContract(BaseModel):
@@ -181,15 +210,7 @@ class AiAllowanceV2(StrictContract):
     @field_validator("resetsAt", mode="before")
     @classmethod
     def parses_canonical_utc_second(cls, value: object) -> object:
-        if not isinstance(value, str) or CANONICAL_UTC_SECOND.fullmatch(value) is None:
-            raise ValueError("resetsAt must be a canonical whole-second UTC timestamp")
-        try:
-            parsed = datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ")
-        except ValueError as error:
-            raise ValueError(
-                "resetsAt must be a canonical whole-second UTC timestamp"
-            ) from error
-        return parsed.replace(tzinfo=timezone.utc)
+        return _parse_canonical_utc_second(value, name="resetsAt")
 
     @model_validator(mode="after")
     def used_does_not_exceed_limit(self) -> AiAllowanceV2:
@@ -232,6 +253,73 @@ class AnalysisResponseV2(StrictContract):
 class InstallationResponseV1(StrictContract):
     schemaVersion: Literal[1]
     installationToken: InstallationToken
+
+
+class PlanSnapshotV2(StrictContract):
+    schemaVersion: Literal[2]
+    plan: Literal["free", "pro"]
+    verifiedUntil: datetime
+    entitlementExpiresAt: datetime | None
+    allowance: AiAllowanceV2
+
+    @field_validator("verifiedUntil", "entitlementExpiresAt", mode="before")
+    @classmethod
+    def parses_canonical_plan_timestamp(cls, value: object, info) -> object:
+        if value is None and info.field_name == "entitlementExpiresAt":
+            return None
+        return _parse_canonical_utc_second(value, name=info.field_name)
+
+    @model_validator(mode="after")
+    def enforces_plan_payload(self) -> PlanSnapshotV2:
+        if self.plan == "free":
+            if self.entitlementExpiresAt is not None or self.allowance.limit != 3:
+                raise ValueError("free plan payload is invalid")
+        else:
+            if (
+                self.entitlementExpiresAt is None
+                or self.verifiedUntil > self.entitlementExpiresAt
+                or self.allowance.limit != 100
+            ):
+                raise ValueError("pro plan payload is invalid")
+        return self
+
+
+class EntitlementSyncRequestV2(StrictContract):
+    pass
+
+
+class AppleIdentityRequestV2(StrictContract):
+    identityToken: Annotated[str, StringConstraints(min_length=1, max_length=8_192)] = Field(
+        repr=False
+    )
+    nonce: Annotated[str, StringConstraints(min_length=8, max_length=256)] = Field(
+        repr=False
+    )
+
+    @field_validator("identityToken", "nonce")
+    @classmethod
+    def rejects_control_characters(cls, value: str) -> str:
+        if any(ord(character) < 32 or ord(character) == 127 for character in value):
+            raise ValueError("sensitive identity field is invalid")
+        return value
+
+
+class AppleIdentityResponseV2(StrictContract):
+    schemaVersion: Literal[2]
+    accountToken: AccountToken = Field(repr=False)
+    expiresAt: datetime
+    revenueCatAppUserId: RevenueCatAccountId = Field(repr=False)
+
+    @field_validator("expiresAt", mode="before")
+    @classmethod
+    def parses_canonical_expiry(cls, value: object) -> object:
+        return _parse_canonical_utc_second(value, name="expiresAt")
+
+
+class InstallationResponseV2(StrictContract):
+    schemaVersion: Literal[2]
+    installationToken: InstallationToken = Field(repr=False)
+    revenueCatAppUserId: RevenueCatInstallationId = Field(repr=False)
 
 
 class PublicErrorV1(StrictContract):

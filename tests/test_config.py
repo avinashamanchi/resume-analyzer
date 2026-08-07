@@ -16,6 +16,11 @@ def production_environ(**overrides: str) -> dict[str, str]:
         "PROVIDER_DEADLINE_SECONDS": "8",
         "REQUEST_DEADLINE_SECONDS": "10",
         "DEBUG": "false",
+        "REVENUECAT_SECRET_API_KEY": "sk_" + "r" * 40,
+        "REVENUECAT_WEBHOOK_SECRET": "w" * 40,
+        "APPLE_BUNDLE_ID": "com.avinashamanchi.resumeai",
+        "APPLE_TEAM_ID": "A1B2C3D4E5",
+        "APPLE_JWKS_URL": "https://appleid.apple.com/auth/keys",
     }
     return environ | overrides
 
@@ -86,6 +91,48 @@ def test_development_settings_parse_origins_and_deadlines():
     )
     assert settings.provider_deadline_seconds == 4.5
     assert settings.request_deadline_seconds == 7.0
+    assert settings.revenuecat_secret_api_key == ""
+    assert settings.revenuecat_webhook_secret == ""
+    assert settings.apple_bundle_id == ""
+    assert settings.apple_team_id == ""
+    assert settings.apple_jwks_url == "https://appleid.apple.com/auth/keys"
+
+
+@pytest.mark.parametrize(
+    ("name", "value"),
+    [
+        ("REVENUECAT_SECRET_API_KEY", ""),
+        ("REVENUECAT_SECRET_API_KEY", "appl_" + "p" * 40),
+        ("REVENUECAT_SECRET_API_KEY", "sk_short"),
+        ("REVENUECAT_WEBHOOK_SECRET", "replace-with-webhook-secret"),
+        ("REVENUECAT_WEBHOOK_SECRET", "short"),
+        ("APPLE_BUNDLE_ID", "com.example.resumeai"),
+        ("APPLE_TEAM_ID", "lowercase01"),
+        ("APPLE_TEAM_ID", "TOO-SHORT"),
+        ("APPLE_JWKS_URL", "https://example.com/auth/keys"),
+    ],
+)
+def test_production_rejects_invalid_revenuecat_and_apple_values(
+    name: str, value: str
+):
+    with pytest.raises(ConfigurationError, match=name) as caught:
+        Settings.from_environ(production_environ(**{name: value}))
+    if value:
+        assert value not in str(caught.value)
+    assert caught.value.__cause__ is None
+    assert caught.value.__context__ is None
+
+
+def test_settings_repr_redacts_all_service_secrets():
+    settings = Settings.from_environ(production_environ())
+    rendered = repr(settings)
+    for secret_name in (
+        "GROQ_API_KEY",
+        "INSTALLATION_SIGNING_KEY",
+        "REVENUECAT_SECRET_API_KEY",
+        "REVENUECAT_WEBHOOK_SECRET",
+    ):
+        assert production_environ()[secret_name] not in rendered
 
 
 @pytest.mark.parametrize("origin", ["*", "https://*.example.com"])
