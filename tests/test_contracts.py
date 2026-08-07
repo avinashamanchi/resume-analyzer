@@ -1,12 +1,10 @@
 from __future__ import annotations
 
 import json
-import re
-from datetime import datetime
 from pathlib import Path
-from typing import Any
 
 import pytest
+from jsonschema import Draft202012Validator, FormatChecker
 from pydantic import ValidationError
 
 from server.contracts import AnalysisResponseV1, AnalysisResponseV2, PublicErrorV1
@@ -17,97 +15,21 @@ def fixture(name: str) -> dict[str, object]:
     return json.loads(Path("contracts/fixtures", name).read_text())
 
 
+ANALYSIS_V2_JSON_SCHEMA = json.loads(
+    Path("contracts/analysis-v2.schema.json").read_text()
+)
+ANALYSIS_V2_JSON_VALIDATOR = Draft202012Validator(
+    ANALYSIS_V2_JSON_SCHEMA,
+    format_checker=FormatChecker(),
+)
+
+
 def _json_schema_accepts(payload: object) -> bool:
-    """Evaluate the JSON-Schema keywords used by the canonical v2 contract."""
-    schema = json.loads(Path("contracts/analysis-v2.schema.json").read_text())
+    return ANALYSIS_V2_JSON_VALIDATOR.is_valid(payload)
 
-    def resolve(node: dict[str, Any]) -> dict[str, Any]:
-        if "$ref" not in node:
-            return node
-        target: object = schema
-        for part in node["$ref"].removeprefix("#/").split("/"):
-            assert isinstance(target, dict)
-            target = target[part]
-        assert isinstance(target, dict)
-        return target
 
-    def valid(node: dict[str, Any], value: object) -> bool:
-        node = resolve(node)
-        if "const" in node and value != node["const"]:
-            return False
-        if "enum" in node and value not in node["enum"]:
-            return False
-        if "oneOf" in node and sum(valid(branch, value) for branch in node["oneOf"]) != 1:
-            return False
-        if "allOf" in node and not all(valid(branch, value) for branch in node["allOf"]):
-            return False
-        if "anyOf" in node and not any(valid(branch, value) for branch in node["anyOf"]):
-            return False
-        if "not" in node and valid(node["not"], value):
-            return False
-
-        declared_type = node.get("type")
-        if declared_type is not None:
-            choices = declared_type if isinstance(declared_type, list) else [declared_type]
-            type_matches = {
-                "object": isinstance(value, dict),
-                "array": isinstance(value, list),
-                "string": isinstance(value, str),
-                "integer": isinstance(value, int) and not isinstance(value, bool),
-                "null": value is None,
-            }
-            if not any(type_matches.get(choice, False) for choice in choices):
-                return False
-
-        if isinstance(value, dict):
-            required = node.get("required", [])
-            if any(key not in value for key in required):
-                return False
-            properties = node.get("properties", {})
-            if node.get("additionalProperties") is False and any(
-                key not in properties for key in value
-            ):
-                return False
-            if any(
-                key in value and not valid(property_schema, value[key])
-                for key, property_schema in properties.items()
-            ):
-                return False
-
-        if isinstance(value, list):
-            if len(value) < node.get("minItems", 0) or len(value) > node.get(
-                "maxItems", float("inf")
-            ):
-                return False
-            if "items" in node and any(not valid(node["items"], item) for item in value):
-                return False
-
-        if isinstance(value, str):
-            if len(value) < node.get("minLength", 0) or len(value) > node.get(
-                "maxLength", float("inf")
-            ):
-                return False
-            if "pattern" in node and re.search(node["pattern"], value) is None:
-                return False
-            if node.get("format") == "date-time":
-                try:
-                    datetime.fromisoformat(value.replace("Z", "+00:00"))
-                except ValueError:
-                    return False
-
-        if isinstance(value, int) and not isinstance(value, bool):
-            if value < node.get("minimum", -float("inf")) or value > node.get(
-                "maximum", float("inf")
-            ):
-                return False
-
-        if "if" in node:
-            branch = node.get("then") if valid(node["if"], value) else node.get("else")
-            if branch is not None and not valid(branch, value):
-                return False
-        return True
-
-    return valid(schema, payload)
+def test_v2_schema_is_valid_draft_2020_12():
+    Draft202012Validator.check_schema(ANALYSIS_V2_JSON_SCHEMA)
 
 
 def test_analysis_fixture_is_strict():
@@ -365,7 +287,6 @@ def test_v2_accepts_only_its_two_source_types():
         (-1, 3),
         (101, 100),
         (4, 3),
-        (1.0, 3),
         (True, 3),
         (1, 4),
     ],
@@ -382,6 +303,18 @@ def test_v2_rejects_invalid_allowances(used: object, limit: object):
     with pytest.raises(ValidationError):
         AnalysisResponseV2.model_validate(payload)
     assert not _json_schema_accepts(payload)
+
+
+def test_v2_python_runtime_rejects_a_float_allowance_counter():
+    payload = fixture("analysis-v2-complete.json")
+    ai = payload["ai"]
+    assert isinstance(ai, dict)
+    allowance = ai["allowance"]
+    assert isinstance(allowance, dict)
+    allowance["used"] = 1.0
+
+    with pytest.raises(ValidationError):
+        AnalysisResponseV2.model_validate(payload)
 
 
 def test_v2_accepts_the_pro_allowance_boundary():
@@ -411,6 +344,7 @@ def test_v2_accepts_the_pro_allowance_boundary():
         "2026-9-1T00:00:00Z",
         "2026-13-01T00:00:00Z",
         "2026-09-01T24:00:00Z",
+        "2026-13-01T24:99:99Z",
     ],
 )
 def test_v2_rejects_noncanonical_allowance_timestamps(resets_at: str):
