@@ -196,20 +196,44 @@ git commit -m "feat: add independently degrading analysis v2 contract"
 - Create: `server/entitlements.py`
 - Create: `server/revenuecat.py`
 - Create: `server/apple_identity.py`
+- Create: `server/account_tokens.py`
+- Modify: `server/installations.py`
 - Create: `tests/test_entitlements.py`
 - Create: `tests/test_revenuecat.py`
 - Create: `tests/test_apple_identity.py`
+- Create: `tests/test_account_tokens.py`
+- Modify: `tests/test_installations.py`
 - Modify: `server/config.py`
 - Modify: `tests/test_config.py`
 - Modify: `server/contracts.py`
+- Modify: `tests/test_contracts.py`
+- Create: `server/bounded_json.py`
+- Create: `tests/test_bounded_json.py`
+- Create: `tests/test_entitlements_redis.py`
+- Modify: `tests/test_production_boundary.py`
+- Modify: `tests/test_production_composition.py`
+- Modify: `scripts/verify_no_sensitive_retention.py`
+- Modify: `.github/workflows/verify.yml`
+- Modify: `.env.example`
 - Modify: `pyproject.toml`
 - Modify: `uv.lock`
+- Modify: `requirements.txt`
 
 **Interfaces:**
 - Produces: `PlanKind = Literal["free", "pro"]`; `PlanSnapshot(kind, verified_until, entitlement_expires_at)`; `AllowanceSnapshot(used, limit, resets_at)`; `AiAllowanceStore.reserve(subject_key, plan, request_id) -> AiAllowanceReservation`.
-- `AiAllowanceReservation.begin_dispatch()` atomically charges once; `release()` removes an uncharged reservation; `snapshot()` returns the current visible allowance.
+- `AiAllowanceReservation.begin_dispatch()` returns a strict owner-only
+  `DispatchDecision`; exactly one caller can receive `started` and call the
+  provider. Duplicate in-flight/already-charged callers never dispatch.
+  `release()` removes an uncharged reservation; `snapshot()` returns the current
+  visible allowance. Plan verification/entitlement time is rechecked at reserve
+  and dispatch.
 - Produces: `RevenueCatClient.fetch_plan(app_user_id, deadline) -> PlanSnapshot`; `RevenueCatWebhook.decode(headers, body) -> RevenueCatEvent`; `AppleIdentityVerifier.verify(identity_token, nonce) -> AppleIdentity`.
 - `AppleIdentity(account_id, revenuecat_app_user_id)` contains opaque HMAC-derived values only.
+- Produces a stable server-derived installation RevenueCat ID,
+  `InstallationResponseV2`, and a separate-purpose 15-minute account-token
+  service bound to the authenticated installation digest.
+- Produces an atomic HMAC-only installation-to-account quota-subject link that
+  merges current-month usage once and cannot reset on retry/reinstall/disconnect.
 
 - [ ] **Step 1: Write failing allowance-window and duplicate tests**
 
@@ -227,8 +251,9 @@ def test_duplicate_request_cannot_charge_twice(redis_client):
     store = AiAllowanceStore(redis_client, key_secret=b"k" * 32)
     first = store.reserve("installation:one", "free", UUID(int=9))
     second = store.reserve("installation:one", "free", UUID(int=9))
-    assert first.begin_dispatch().used == 1
-    assert second.begin_dispatch().used == 1
+    assert first.begin_dispatch().disposition == "started"
+    assert second.begin_dispatch().disposition in {"duplicate_in_flight", "already_charged"}
+    assert store.provider_dispatch_permissions(UUID(int=9)) == 1
 ```
 
 - [ ] **Step 2: Run and verify red**
@@ -260,7 +285,11 @@ def utc_month_window(now: datetime) -> tuple[str, datetime]:
 
 Use one Redis transaction for request-reservation and charged-count keys. Key
 material is `HMAC(key_secret, scope + NUL + subject_key)`; values contain only
-integer counts and 15-second reservation owner nonces.
+integer counts and 15-second reservation owner nonces. Revalidate plan and Pro
+entitlement expiry with an injected clock at reserve and dispatch. Duplicate
+callers receive no dispatch permission. An atomic idempotent HMAC-only subject
+link merges installation/account current-month usage and preserves it through
+reset plus the two-day replay buffer.
 
 - [ ] **Step 4: Add production configuration tests**
 
@@ -272,7 +301,7 @@ def test_production_requires_revenuecat_and_apple_values():
 
 Add exact settings: `revenuecat_secret_api_key`, `revenuecat_webhook_secret`,
 `apple_bundle_id`, `apple_team_id`, and `apple_jwks_url`. Production requires
-non-example secrets of at least 32 characters, bundle ID
+an `sk_` RevenueCat server secret, non-example secrets of at least 32 characters, bundle ID
 `com.avinashamanchi.resumeai`, and JWKS URL `https://appleid.apple.com/auth/keys`.
 
 - [ ] **Step 5: Run the allowance and configuration tests**
@@ -285,8 +314,10 @@ outage, and HMAC-key privacy cases.
 #### RevenueCat and Apple verification
 
 The remaining steps complete the same server-owned plan boundary with strict
-`PlanSnapshotV2`, `EntitlementSyncRequestV2`, `AppleIdentityRequestV2`, and
-`AppleIdentityResponseV2` Pydantic models.
+`PlanSnapshotV2` including allowance, empty `EntitlementSyncRequestV2`, bounded
+`AppleIdentityRequestV2`, `AppleIdentityResponseV2`, and
+`InstallationResponseV2` Pydantic models plus a separate-purpose 15-minute
+account-token service bound to the authenticated installation digest.
 
 - [ ] **Step 1: Write failing RevenueCat boundary tests**
 
@@ -303,6 +334,11 @@ def test_webhook_requires_constant_time_bearer_and_is_idempotent():
     assert event.app_user_id == "rai_account_opaque"
 ```
 
+Webhook tests also require the supported envelope/API version and configured
+RevenueCat app ID; bound and invalidate original ID, aliases, and both sides of
+transfers/refunds; reject unreasonable timestamp skew; and force an exact
+server refetch rather than granting Pro from webhook data.
+
 - [ ] **Step 2: Write failing Apple verification tests**
 
 ```python
@@ -317,17 +353,19 @@ def test_apple_verifier_checks_audience_nonce_and_derives_opaque_ids(apple_keys)
 
 - [ ] **Step 3: Run and verify red**
 
-Run: `uv run pytest tests/test_revenuecat.py tests/test_apple_identity.py -q`
+Run: `uv run pytest tests/test_revenuecat.py tests/test_apple_identity.py tests/test_account_tokens.py tests/test_installations.py -q`
 
 Expected: FAIL because both modules are absent.
 
 - [ ] **Step 4: Add the exact dependency and clients**
 
 Add `"PyJWT[crypto]>=2.10,<3"` to project dependencies and run
-`uv lock`. RevenueCat requests use an injected `httpx.Client`, the configured
-server-side bearer credential, a two-second deadline, no automatic retry, and generic
-`EntitlementUnavailable` failures. Apple verification uses cached JWKS for at
-most six hours and calls:
+`uv lock`. RevenueCat requests use an injected `httpx.Client`, fixed URL,
+`follow_redirects=False`, an `sk_` server credential, a two-second transport and
+wall deadline through bounded body completion, one request/no retry, and generic
+`EntitlementUnavailable` failures. Apple JWKS uses the same redirect/deadline
+boundary, cached keys for at most six hours, single-flight unknown-`kid`
+refresh, and a short negative/cooldown cache, then calls:
 
 ```python
 claims = jwt.decode(
@@ -344,15 +382,18 @@ if not hmac.compare_digest(claims["nonce"], hashlib.sha256(nonce.encode()).hexdi
 
 - [ ] **Step 10: Run the complete plan-identity tests and commit**
 
-Run: `uv run pytest tests/test_revenuecat.py tests/test_apple_identity.py tests/test_contracts.py -q`
+Run: `uv run pytest tests/test_revenuecat.py tests/test_apple_identity.py tests/test_account_tokens.py tests/test_installations.py tests/test_contracts.py -q`
 
-Expected: PASS with invalid signature, issuer, audience, expiry, nonce,
-entitlement, timeout, malformed JSON, and secret-redaction cases.
+Expected: PASS with exact owner-only dispatch, plan-expiry-at-dispatch,
+quota-subject link preservation, invalid signature/issuer/audience/expiry/nonce,
+unknown-kid coalescing, webhook aliases/transfers, installation/account-token
+identity, entitlement, timeout, redirect, malformed JSON, and secret-redaction
+cases.
 
-```bash
-git add pyproject.toml uv.lock server/plans.py server/entitlements.py server/config.py server/revenuecat.py server/apple_identity.py server/contracts.py tests/test_entitlements.py tests/test_config.py tests/test_revenuecat.py tests/test_apple_identity.py
-git commit -m "feat: verify plan identity and monthly AI allowances"
-```
+Stage only the literal Task 2 file list above, inspect
+`git diff --cached --name-status`, and confirm no dirty mobile/static/App Store
+path entered the index before committing with
+`feat: verify plan identity and monthly AI allowances`.
 
 ### Task 3: Build header-only admission and capacity breakers
 
@@ -481,7 +522,7 @@ git commit -m "feat: admit v2 analyses before reading request bodies"
 
 **Interfaces:**
 - Consumes: `g.resume_ai_admission`, `AnalysisResponseV2`, `AiAllowanceStore`, existing scorer, PDF parser, and AI gateway.
-- Produces: `parse_analysis_request_v2(request, admitted_source) -> ParsedAnalysisRequest`; `POST /v2/analyses`; `POST /v2/entitlements/sync`; `POST /v2/identity/apple`; `POST /v2/revenuecat/webhook`.
+- Produces: `parse_analysis_request_v2(request, admitted_source) -> ParsedAnalysisRequest`; `POST /v2/installations`; `POST /v2/analyses`; `POST /v2/entitlements/sync`; `POST /v2/identity/apple`; `POST /v2/revenuecat/webhook`.
 
 - [ ] **Step 1: Add failing route degradation tests**
 
@@ -530,7 +571,11 @@ def _v2_ai_result(parsed, score, admission, services, started_at):
     if admission.ai_status != "admitted":
         return AiResultV2(status=admission.ai_status, feedback=None,
                           allowance=admission.allowance)
-    charged = admission.allowance_reservation.begin_dispatch()
+    dispatch = admission.allowance_reservation.begin_dispatch()
+    if dispatch.disposition != "started":
+        return AiResultV2(status=status_for_dispatch(dispatch), feedback=None,
+                          allowance=dispatch.allowance)
+    charged = dispatch.allowance
     try:
         feedback = services.ai_gateway.analyze(
             parsed.resume_text, parsed.job_description,
@@ -549,12 +594,18 @@ generic error handler.
 
 - [ ] **Step 5: Implement billing and identity endpoints**
 
-`/v2/entitlements/sync` queries RevenueCat using the app-user ID derived from
+`/v2/installations` returns the signed installation token plus the stable,
+server-derived installation RevenueCat App User ID. `/v2/entitlements/sync`
+queries RevenueCat using the app-user ID derived from
 the authenticated installation/account and writes a 25-hour maximum cache.
 `/v2/identity/apple` consumes a one-use nonce stored under the installation,
 verifies the token, and returns a 15-minute account token plus opaque RevenueCat
-app user ID. `/v2/revenuecat/webhook` validates the bearer secret and atomically
-applies event time ordering/idempotency.
+app user ID. It does not claim purchase transfer is complete. After the client
+restores/transfers, a verified sync atomically links the HMAC-only quota subjects
+and preserves current-month usage. `/v2/revenuecat/webhook` validates the bearer
+secret, invalidates all bounded aliases/transfer identities, forces exact
+refetch, and atomically applies event time ordering/idempotency; webhook data
+never grants Pro directly.
 
 - [ ] **Step 6: Compose production services**
 
@@ -592,7 +643,9 @@ git commit -m "feat: preserve deterministic scores across AI failures"
 **Interfaces:**
 - Produces: `PlanApi.sync(identity, signal) -> Promise<VerifiedPlanSnapshot>` and `PlanApi.linkApple(identityToken, nonce, signal) -> Promise<AccountIdentity>`.
 - Produces: `AccountIdentityStore.get/set/clear`; stored fields are `accountToken`, `expiresAt`, and `revenueCatAppUserId` only.
-- Extends `RevenueCatModule` with `getAppUserID()`, `logIn(appUserID)`, and `logOut()`.
+- Extends `RevenueCatModule` with `getAppUserID()`, `logIn(appUserID)`,
+  `restorePurchases()`, and `logOut()`. Project restore behavior is externally
+  verified as **Transfer to new App User ID** before cross-device linking ships.
 - `BillingContextValue.planStatus` is `loading | free | pro_verified | pro_verification_needed` and includes `allowance`.
 
 - [ ] **Step 1: Write failing API and identity-store tests**
@@ -627,7 +680,8 @@ Run: `cd mobile && npx expo install expo-apple-authentication`
 
 Configure RevenueCat with the installation response's
 `revenueCatAppUserId`. Purchase and restore call `PlanApi.sync`; only its signed
-response sets `pro_verified`. Implement:
+response sets `pro_verified`. The v2 installation endpoint/contract is the sole
+source of this ID. Implement:
 
 ```typescript
 export type VerifiedPlanSnapshot = Readonly<{
@@ -642,17 +696,30 @@ export type VerifiedPlanSnapshot = Readonly<{
 - [ ] **Step 4: Implement optional account linking**
 
 Generate 32 random bytes, send SHA-256 nonce to Apple, send the raw nonce and
-identity token to `PlanApi.linkApple`, store the bounded response, call
-`purchases.logIn(response.revenueCatAppUserId)`, then call `sync`. Clearing the
-account calls `logOut`, clears SecureStore, and reconfigures the installation
-identity; it never deletes local repositories.
+identity token to `PlanApi.linkApple`, and keep the bounded response pending.
+Because installation and account IDs are both custom/identified RevenueCat IDs,
+`logIn` does not merge them. Call
+`purchases.logIn(response.revenueCatAppUserId)`, explicitly
+`restorePurchases()` under the reviewed **Transfer to new App User ID** project
+behavior, then call `sync`. Mark linking complete and persist the account only
+after backend Pro verification and atomic quota-subject migration succeed.
+Cancellation/failed restore leaves installation identity authoritative; a
+post-transfer verification outage is `Verification needed`, not Free, and must
+remain retryable under the account identity.
+
+Clearing the account token never claims that Pro returns to the installation
+identity: transfer removed installation-scoped entitlement. It may clear the
+local cross-device session after an explicit warning, but local repositories
+remain and current-month quota cannot reset or split. A future transfer back
+requires a separate explicit restore-and-verify action.
 
 - [ ] **Step 5: Run mobile tests and commit**
 
 Run: `cd mobile && npm test -- --runInBand __tests__/planApi.test.ts __tests__/accountIdentity.test.ts __tests__/billingService.test.ts __tests__/billingProvider.test.tsx && npm run typecheck`
 
 Expected: PASS, including expired sessions, aborts, malformed responses,
-purchase/restore sync, Apple cancellation, login alias failure, and server
+purchase/restore sync, Apple cancellation, failed/successful transfer restore,
+second device, disconnect truth, refund, preserved monthly quota, and server
 verification outage.
 
 ```bash

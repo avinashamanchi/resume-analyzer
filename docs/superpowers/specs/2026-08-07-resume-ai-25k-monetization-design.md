@@ -108,12 +108,24 @@ then returns a short-lived signed account token and an account-scoped
 `revenueCatAppUserId`. Email, name, authorization code, Apple token, and raw
 Apple subject are not stored.
 
-The app calls RevenueCat `logIn(accountRevenueCatAppUserId)` to alias the
-installation purchase, then calls the entitlement sync endpoint. A second
-device repeats Apple verification, receives the same derived account identity,
-logs in to RevenueCat, and gains only plan state. Local reports, versions, and
-jobs do not sync. Disconnecting Apple returns the installation to its own
-identity but never deletes local data.
+Both installation and Apple account IDs are identified/custom RevenueCat IDs;
+`logIn` does not merge or transfer purchases between them. The project must use
+RevenueCat's reviewed **Transfer to new App User ID** restore behavior. After
+Apple verification, the app calls `logIn(accountRevenueCatAppUserId)`, performs
+an explicit restore, and treats linking as incomplete until backend verification
+confirms `resume_pro` under the account ID. Failed/cancelled restore leaves the
+installation identity authoritative. A second device repeats Apple
+verification, receives the same derived account identity, logs in, restores if
+required, and gains only plan state. Local reports, versions, and jobs do not
+sync.
+
+Successful transfer atomically links HMAC-only quota subjects and merges the
+installation/account current-month counters without double counting on retry.
+That canonical quota subject survives reinstall, transfer, and disconnect
+through the UTC reset plus replay buffer, so linking cannot mint a fresh
+allowance. Transfer removes installation-scoped entitlement; disconnecting
+Apple clears the local account session but cannot silently transfer Pro back to
+the installation ID. It never deletes local data.
 
 Account tokens are accepted only alongside a valid installation token. This
 keeps installation abuse controls and makes stolen account tokens insufficient
