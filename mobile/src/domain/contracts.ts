@@ -148,6 +148,54 @@ export const AnalysisResponseSchema = z
   })
   .strict();
 
+export const AiAllowanceSchema = z
+  .object({
+    used: z.number().int().min(0).max(100),
+    limit: z.union([z.literal(3), z.literal(100)]),
+    resetsAt: z.string().datetime({ offset: false, precision: 0 }),
+  })
+  .strict()
+  .refine(value => value.used <= value.limit, {
+    message: 'used exceeds allowance limit',
+    path: ['used'],
+  });
+
+const AiUnavailableSchema = z
+  .object({
+    status: z.enum([
+      'not_requested',
+      'quota_exhausted',
+      'plan_verification_unavailable',
+      'temporarily_unavailable',
+      'timeout',
+      'invalid_provider_response',
+    ]),
+    feedback: z.null(),
+    allowance: AiAllowanceSchema.nullable(),
+  })
+  .strict();
+
+export const AiResultSchema = z.discriminatedUnion('status', [
+  z
+    .object({
+      status: z.literal('complete'),
+      feedback: FeedbackSchema,
+      allowance: AiAllowanceSchema,
+    })
+    .strict(),
+  AiUnavailableSchema,
+]);
+
+export const AnalysisResponseV2Schema = z
+  .object({
+    schemaVersion: z.literal(2),
+    analysisId: z.string().regex(UUID),
+    sourceType: z.enum(['reviewed_text', 'pdf']),
+    score: ScoreSchema,
+    ai: AiResultSchema,
+  })
+  .strict();
+
 export const InstallationResponseSchema = z
   .object({
     schemaVersion: z.literal(1),
@@ -168,6 +216,7 @@ export const PublicErrorSchema = z
 const AnalysisRequestContextSchema = z.object({ hasJobDescription: z.boolean() }).strict();
 
 export type AnalysisResponse = z.infer<typeof AnalysisResponseSchema>;
+export type AnalysisResponseV2 = z.infer<typeof AnalysisResponseV2Schema>;
 export type InstallationResponse = z.infer<typeof InstallationResponseSchema>;
 export type PublicError = z.infer<typeof PublicErrorSchema>;
 export type AnalysisRequestContext = Readonly<z.infer<typeof AnalysisRequestContextSchema>>;

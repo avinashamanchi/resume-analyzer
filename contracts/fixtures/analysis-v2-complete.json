@@ -1,0 +1,36 @@
+{
+  "schemaVersion": 2,
+  "analysisId": "8ec8a3bc-7a15-4b75-9f94-a5353a2a2f9b",
+  "sourceType": "reviewed_text",
+  "score": {
+    "scoreVersion": "resume-readiness-v1",
+    "readinessScore": 78,
+    "label": "Good",
+    "components": {
+      "structure": 23,
+      "impact": 24,
+      "readability": 18,
+      "keywords": 13
+    },
+    "explanations": [
+      "The resume includes the expected core sections."
+    ]
+  },
+  "ai": {
+    "status": "complete",
+    "feedback": {
+      "matchedKeywords": ["Python"],
+      "missingKeywords": ["Redis"],
+      "strengths": ["Uses measurable outcomes."],
+      "improvements": ["Add one reliability example."],
+      "powerBullets": ["Built Python services used by 1,000 customers."],
+      "summary": "Relevant experience with room for more role detail.",
+      "simulatedRecruiterComment": "Simulated AI recruiter feedback: The resume shows relevant experience."
+    },
+    "allowance": {
+      "used": 1,
+      "limit": 3,
+      "resetsAt": "2026-09-01T00:00:00Z"
+    }
+  }
+}

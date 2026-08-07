@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import unicodedata
+from datetime import datetime, timezone
+from re import compile as compile_regex
 from typing import Annotated, Literal
 from uuid import UUID
 
@@ -27,6 +29,12 @@ SimulatedRecruiterComment = Annotated[
         pattern=r"^Simulated AI recruiter feedback:",
     ),
 ]
+CANONICAL_UUID_V2 = compile_regex(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+)
+CANONICAL_UTC_SECOND = compile_regex(
+    r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"
+)
 
 
 def _normalized_keyword(value: str) -> str:
@@ -152,6 +160,73 @@ class AnalysisResponseV1(StrictContract):
     @classmethod
     def parses_json_uuid(cls, value: object) -> object:
         return UUID(value) if isinstance(value, str) else value
+
+
+AiStatusV2 = Literal[
+    "complete",
+    "not_requested",
+    "quota_exhausted",
+    "plan_verification_unavailable",
+    "temporarily_unavailable",
+    "timeout",
+    "invalid_provider_response",
+]
+
+
+class AiAllowanceV2(StrictContract):
+    used: int = Field(ge=0, le=100)
+    limit: Literal[3, 100]
+    resetsAt: datetime
+
+    @field_validator("resetsAt", mode="before")
+    @classmethod
+    def parses_canonical_utc_second(cls, value: object) -> object:
+        if not isinstance(value, str) or CANONICAL_UTC_SECOND.fullmatch(value) is None:
+            raise ValueError("resetsAt must be a canonical whole-second UTC timestamp")
+        try:
+            parsed = datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ")
+        except ValueError as error:
+            raise ValueError(
+                "resetsAt must be a canonical whole-second UTC timestamp"
+            ) from error
+        return parsed.replace(tzinfo=timezone.utc)
+
+    @model_validator(mode="after")
+    def used_does_not_exceed_limit(self) -> AiAllowanceV2:
+        if self.used > self.limit:
+            raise ValueError("used exceeds allowance limit")
+        return self
+
+
+class AiResultV2(StrictContract):
+    status: AiStatusV2
+    feedback: FeedbackV1 | None
+    allowance: AiAllowanceV2 | None
+
+    @model_validator(mode="after")
+    def enforces_status_payload(self) -> AiResultV2:
+        if self.status == "complete" and (
+            self.feedback is None or self.allowance is None
+        ):
+            raise ValueError("complete AI results require feedback and allowance")
+        if self.status != "complete" and self.feedback is not None:
+            raise ValueError("feedback is present only for complete AI results")
+        return self
+
+
+class AnalysisResponseV2(StrictContract):
+    schemaVersion: Literal[2]
+    analysisId: UUID
+    sourceType: Literal["reviewed_text", "pdf"]
+    score: ScoreV1
+    ai: AiResultV2
+
+    @field_validator("analysisId", mode="before")
+    @classmethod
+    def parses_canonical_json_uuid(cls, value: object) -> object:
+        if not isinstance(value, str) or CANONICAL_UUID_V2.fullmatch(value) is None:
+            raise ValueError("analysisId must use canonical lowercase UUID spelling")
+        return UUID(value)
 
 
 class InstallationResponseV1(StrictContract):

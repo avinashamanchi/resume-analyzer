@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 2,
+  "analysisId": "8ec8a3bc-7a15-4b75-9f94-a5353a2a2f9b",
+  "sourceType": "reviewed_text",
+  "score": {
+    "scoreVersion": "resume-readiness-v1",
+    "readinessScore": 78,
+    "label": "Good",
+    "components": {
+      "structure": 23,
+      "impact": 24,
+      "readability": 18,
+      "keywords": 13
+    },
+    "explanations": [
+      "The resume includes the expected core sections."
+    ]
+  },
+  "ai": {
+    "status": "temporarily_unavailable",
+    "feedback": null,
+    "allowance": {
+      "used": 0,
+      "limit": 3,
+      "resetsAt": "2026-09-01T00:00:00Z"
+    }
+  }
+}

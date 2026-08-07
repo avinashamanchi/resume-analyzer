@@ -1,14 +1,46 @@
 import validFixture from '../../contracts/fixtures/analysis-valid.json';
+import completeV2Fixture from '../../contracts/fixtures/analysis-v2-complete.json';
+import deterministicOnlyV2Fixture from '../../contracts/fixtures/analysis-v2-deterministic-only.json';
 
 import {
   AnalysisResponseSchema,
+  AnalysisResponseV2Schema,
   PublicErrorSchema,
+  type AnalysisResponseV2,
   normalizeKeywordForService,
   parseAnalysisResponse,
 } from '../src/domain/contracts';
 
 function copy<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T;
+}
+
+function objectAt(root: Record<string, unknown>, path: readonly string[]): Record<string, unknown> {
+  let current: unknown = root;
+  for (const part of path) {
+    if (typeof current !== 'object' || current === null || Array.isArray(current)) {
+      throw new Error(`Expected object at ${path.join('.')}`);
+    }
+    current = (current as Record<string, unknown>)[part];
+  }
+  if (typeof current !== 'object' || current === null || Array.isArray(current)) {
+    throw new Error(`Expected object at ${path.join('.')}`);
+  }
+  return current as Record<string, unknown>;
+}
+
+function parseV2(value: unknown): AnalysisResponseV2 {
+  if (AnalysisResponseV2Schema === undefined) {
+    throw new Error('AnalysisResponseV2Schema is not implemented.');
+  }
+  return AnalysisResponseV2Schema.parse(value);
+}
+
+function expectV2ToReject(value: unknown): void {
+  if (AnalysisResponseV2Schema === undefined) {
+    throw new Error('AnalysisResponseV2Schema is not implemented.');
+  }
+  expect(() => AnalysisResponseV2Schema.parse(value)).toThrow();
 }
 
 describe('mobile service contracts', () => {
@@ -131,5 +163,169 @@ describe('mobile service contracts', () => {
     };
     expect(PublicErrorSchema.parse(error)).toEqual(error);
     expect(() => PublicErrorSchema.parse({ ...error, body: 'resume text' })).toThrow();
+  });
+
+  it('accepts complete and deterministic-only v2 fixtures with the same score', () => {
+    const complete = parseV2(completeV2Fixture);
+    const deterministic = parseV2(deterministicOnlyV2Fixture);
+
+    expect(complete.score.readinessScore).toBe(78);
+    expect(complete.ai.status).toBe('complete');
+    expect(complete.ai.feedback).not.toBeNull();
+    if (complete.ai.status !== 'complete') throw new Error('Expected complete AI feedback.');
+    expect(complete.ai.allowance.resetsAt).toBe('2026-09-01T00:00:00Z');
+    expect(deterministic.score).toEqual(complete.score);
+    expect(deterministic.ai.status).toBe('temporarily_unavailable');
+    expect(deterministic.ai.feedback).toBeNull();
+  });
+
+  it.each([
+    'not_requested',
+    'quota_exhausted',
+    'plan_verification_unavailable',
+    'temporarily_unavailable',
+    'timeout',
+    'invalid_provider_response',
+  ] as const)('accepts %s without feedback and with nullable allowance', status => {
+    const withAllowance = copy(deterministicOnlyV2Fixture) as unknown as Record<string, unknown>;
+    objectAt(withAllowance, ['ai']).status = status;
+    const withoutAllowance = copy(withAllowance);
+    objectAt(withoutAllowance, ['ai']).allowance = null;
+
+    expect(parseV2(withAllowance).ai.status).toBe(status);
+    expect(parseV2(withoutAllowance).ai.allowance).toBeNull();
+  });
+
+  it.each(['feedback', 'allowance'] as const)(
+    'rejects a complete result with null %s',
+    field => {
+      const payload = copy(completeV2Fixture) as unknown as Record<string, unknown>;
+      objectAt(payload, ['ai'])[field] = null;
+
+      expectV2ToReject(payload);
+    },
+  );
+
+  it.each([
+    'not_requested',
+    'quota_exhausted',
+    'plan_verification_unavailable',
+    'temporarily_unavailable',
+    'timeout',
+    'invalid_provider_response',
+  ] as const)('rejects feedback when status is %s', status => {
+    const payload = copy(completeV2Fixture) as unknown as Record<string, unknown>;
+    objectAt(payload, ['ai']).status = status;
+
+    expectV2ToReject(payload);
+  });
+
+  it('rejects unknown and missing v2 AI statuses', () => {
+    const unknown = copy(deterministicOnlyV2Fixture) as unknown as Record<string, unknown>;
+    objectAt(unknown, ['ai']).status = 'degraded';
+    const missing = copy(deterministicOnlyV2Fixture) as unknown as Record<string, unknown>;
+    delete objectAt(missing, ['ai']).status;
+
+    expectV2ToReject(unknown);
+    expectV2ToReject(missing);
+  });
+
+  it.each([
+    '8EC8A3BC-7A15-4B75-9F94-A5353A2A2F9B',
+    '8ec8a3bc7a154b759f94a5353a2a2f9b',
+    '{8ec8a3bc-7a15-4b75-9f94-a5353a2a2f9b}',
+    'urn:uuid:8ec8a3bc-7a15-4b75-9f94-a5353a2a2f9b',
+  ])('rejects the noncanonical v2 UUID spelling %s', analysisId => {
+    expectV2ToReject({
+      ...completeV2Fixture,
+      analysisId,
+    });
+  });
+
+  it('accepts only reviewed_text and pdf as v2 source types', () => {
+    expect(parseV2({
+      ...completeV2Fixture,
+      sourceType: 'pdf',
+    }).sourceType).toBe('pdf');
+    expectV2ToReject({
+      ...completeV2Fixture,
+      sourceType: 'vision_text',
+    });
+  });
+
+  it.each([
+    [-1, 3],
+    [101, 100],
+    [4, 3],
+    [1.5, 3],
+    [true, 3],
+    [1, 4],
+  ])('rejects invalid v2 allowance used=%p limit=%p', (used, limit) => {
+    const payload = copy(completeV2Fixture) as unknown as Record<string, unknown>;
+    const allowance = objectAt(payload, ['ai', 'allowance']);
+    allowance.used = used;
+    allowance.limit = limit;
+
+    expectV2ToReject(payload);
+  });
+
+  it('accepts the exact pro allowance boundary', () => {
+    const payload = copy(completeV2Fixture) as unknown as Record<string, unknown>;
+    const allowance = objectAt(payload, ['ai', 'allowance']);
+    allowance.used = 100;
+    allowance.limit = 100;
+
+    const parsed = parseV2(payload);
+
+    expect(parsed.ai.allowance?.used).toBe(100);
+  });
+
+  it.each([
+    '2026-09-01T00:00:00+00:00',
+    '2026-09-01T00:00:00.000Z',
+    '2026-09-01T00:00:00',
+    '2026-09-01T00:00:00z',
+    '2026-09-01',
+    '2026-9-1T00:00:00Z',
+    '2026-13-01T00:00:00Z',
+    '2026-09-01T24:00:00Z',
+  ])('rejects the noncanonical v2 reset timestamp %s', resetsAt => {
+    const payload = copy(completeV2Fixture) as unknown as Record<string, unknown>;
+    objectAt(payload, ['ai', 'allowance']).resetsAt = resetsAt;
+
+    expectV2ToReject(payload);
+  });
+
+  it.each([
+    { path: [] },
+    { path: ['score'] },
+    { path: ['score', 'components'] },
+    { path: ['ai'] },
+    { path: ['ai', 'feedback'] },
+    { path: ['ai', 'allowance'] },
+  ] as const)('rejects an unknown v2 field at $path', ({ path }) => {
+    const payload = copy(completeV2Fixture) as unknown as Record<string, unknown>;
+    objectAt(payload, path).unexpected = 'private input';
+
+    expectV2ToReject(payload);
+  });
+
+  it.each([
+    [[], 'schemaVersion'],
+    [[], 'analysisId'],
+    [[], 'sourceType'],
+    [[], 'score'],
+    [[], 'ai'],
+    [['score'], 'components'],
+    [['score', 'components'], 'keywords'],
+    [['ai'], 'feedback'],
+    [['ai'], 'allowance'],
+    [['ai', 'feedback'], 'summary'],
+    [['ai', 'allowance'], 'resetsAt'],
+  ] as const)('rejects missing v2 field %s at %p', (path, field) => {
+    const payload = copy(completeV2Fixture) as unknown as Record<string, unknown>;
+    delete objectAt(payload, path)[field];
+
+    expectV2ToReject(payload);
   });
 });

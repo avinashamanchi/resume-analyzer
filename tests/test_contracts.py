@@ -1,17 +1,113 @@
 from __future__ import annotations
 
 import json
+import re
+from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 import pytest
 from pydantic import ValidationError
 
-from server.contracts import AnalysisResponseV1, PublicErrorV1
+from server.contracts import AnalysisResponseV1, AnalysisResponseV2, PublicErrorV1
 from server.errors import ErrorCode
 
 
 def fixture(name: str) -> dict[str, object]:
     return json.loads(Path("contracts/fixtures", name).read_text())
+
+
+def _json_schema_accepts(payload: object) -> bool:
+    """Evaluate the JSON-Schema keywords used by the canonical v2 contract."""
+    schema = json.loads(Path("contracts/analysis-v2.schema.json").read_text())
+
+    def resolve(node: dict[str, Any]) -> dict[str, Any]:
+        if "$ref" not in node:
+            return node
+        target: object = schema
+        for part in node["$ref"].removeprefix("#/").split("/"):
+            assert isinstance(target, dict)
+            target = target[part]
+        assert isinstance(target, dict)
+        return target
+
+    def valid(node: dict[str, Any], value: object) -> bool:
+        node = resolve(node)
+        if "const" in node and value != node["const"]:
+            return False
+        if "enum" in node and value not in node["enum"]:
+            return False
+        if "oneOf" in node and sum(valid(branch, value) for branch in node["oneOf"]) != 1:
+            return False
+        if "allOf" in node and not all(valid(branch, value) for branch in node["allOf"]):
+            return False
+        if "anyOf" in node and not any(valid(branch, value) for branch in node["anyOf"]):
+            return False
+        if "not" in node and valid(node["not"], value):
+            return False
+
+        declared_type = node.get("type")
+        if declared_type is not None:
+            choices = declared_type if isinstance(declared_type, list) else [declared_type]
+            type_matches = {
+                "object": isinstance(value, dict),
+                "array": isinstance(value, list),
+                "string": isinstance(value, str),
+                "integer": isinstance(value, int) and not isinstance(value, bool),
+                "null": value is None,
+            }
+            if not any(type_matches.get(choice, False) for choice in choices):
+                return False
+
+        if isinstance(value, dict):
+            required = node.get("required", [])
+            if any(key not in value for key in required):
+                return False
+            properties = node.get("properties", {})
+            if node.get("additionalProperties") is False and any(
+                key not in properties for key in value
+            ):
+                return False
+            if any(
+                key in value and not valid(property_schema, value[key])
+                for key, property_schema in properties.items()
+            ):
+                return False
+
+        if isinstance(value, list):
+            if len(value) < node.get("minItems", 0) or len(value) > node.get(
+                "maxItems", float("inf")
+            ):
+                return False
+            if "items" in node and any(not valid(node["items"], item) for item in value):
+                return False
+
+        if isinstance(value, str):
+            if len(value) < node.get("minLength", 0) or len(value) > node.get(
+                "maxLength", float("inf")
+            ):
+                return False
+            if "pattern" in node and re.search(node["pattern"], value) is None:
+                return False
+            if node.get("format") == "date-time":
+                try:
+                    datetime.fromisoformat(value.replace("Z", "+00:00"))
+                except ValueError:
+                    return False
+
+        if isinstance(value, int) and not isinstance(value, bool):
+            if value < node.get("minimum", -float("inf")) or value > node.get(
+                "maximum", float("inf")
+            ):
+                return False
+
+        if "if" in node:
+            branch = node.get("then") if valid(node["if"], value) else node.get("else")
+            if branch is not None and not valid(branch, value):
+                return False
+        return True
+
+    return valid(schema, payload)
 
 
 def test_analysis_fixture_is_strict():
@@ -142,3 +238,253 @@ def test_public_error_validates_a_wire_format_error_code():
     }
 
     assert PublicErrorV1.model_validate(payload).code is ErrorCode.AI_TIMEOUT
+
+
+V2_NON_COMPLETE_STATUSES = (
+    "not_requested",
+    "quota_exhausted",
+    "plan_verification_unavailable",
+    "temporarily_unavailable",
+    "timeout",
+    "invalid_provider_response",
+)
+
+
+def test_v2_complete_and_deterministic_fixtures_are_valid_and_share_the_score():
+    complete = fixture("analysis-v2-complete.json")
+    deterministic = fixture("analysis-v2-deterministic-only.json")
+
+    parsed_complete = AnalysisResponseV2.model_validate(complete)
+    parsed_deterministic = AnalysisResponseV2.model_validate(deterministic)
+
+    assert parsed_complete.score.readinessScore == 78
+    assert parsed_complete.ai.status == "complete"
+    assert parsed_complete.ai.feedback is not None
+    assert parsed_complete.ai.allowance is not None
+    assert parsed_complete.ai.allowance.resetsAt.isoformat() == "2026-09-01T00:00:00+00:00"
+    assert parsed_deterministic.score == parsed_complete.score
+    assert parsed_deterministic.ai.status == "temporarily_unavailable"
+    assert parsed_deterministic.ai.feedback is None
+    assert _json_schema_accepts(complete)
+    assert _json_schema_accepts(deterministic)
+
+
+@pytest.mark.parametrize("status", V2_NON_COMPLETE_STATUSES)
+@pytest.mark.parametrize("allowance_is_null", [False, True])
+def test_v2_accepts_every_non_complete_status_without_feedback(
+    status: str, allowance_is_null: bool
+):
+    payload = fixture("analysis-v2-deterministic-only.json")
+    ai = payload["ai"]
+    assert isinstance(ai, dict)
+    ai["status"] = status
+    if allowance_is_null:
+        ai["allowance"] = None
+
+    parsed = AnalysisResponseV2.model_validate(payload)
+
+    assert parsed.ai.status == status
+    assert parsed.ai.feedback is None
+    assert _json_schema_accepts(payload)
+
+
+@pytest.mark.parametrize("null_field", ["feedback", "allowance"])
+def test_v2_complete_requires_both_feedback_and_allowance(null_field: str):
+    payload = fixture("analysis-v2-complete.json")
+    ai = payload["ai"]
+    assert isinstance(ai, dict)
+    ai[null_field] = None
+
+    with pytest.raises(ValidationError):
+        AnalysisResponseV2.model_validate(payload)
+    assert not _json_schema_accepts(payload)
+
+
+@pytest.mark.parametrize("status", V2_NON_COMPLETE_STATUSES)
+def test_v2_rejects_feedback_for_every_non_complete_status(status: str):
+    payload = fixture("analysis-v2-complete.json")
+    ai = payload["ai"]
+    assert isinstance(ai, dict)
+    ai["status"] = status
+
+    with pytest.raises(ValidationError):
+        AnalysisResponseV2.model_validate(payload)
+    assert not _json_schema_accepts(payload)
+
+
+def test_v2_rejects_unknown_and_missing_ai_status():
+    unknown = fixture("analysis-v2-deterministic-only.json")
+    unknown_ai = unknown["ai"]
+    assert isinstance(unknown_ai, dict)
+    unknown_ai["status"] = "degraded"
+
+    missing = fixture("analysis-v2-deterministic-only.json")
+    missing_ai = missing["ai"]
+    assert isinstance(missing_ai, dict)
+    missing_ai.pop("status")
+
+    for payload in (unknown, missing):
+        with pytest.raises(ValidationError):
+            AnalysisResponseV2.model_validate(payload)
+        assert not _json_schema_accepts(payload)
+
+
+@pytest.mark.parametrize(
+    "analysis_id",
+    [
+        "8EC8A3BC-7A15-4B75-9F94-A5353A2A2F9B",
+        "8ec8a3bc7a154b759f94a5353a2a2f9b",
+        "{8ec8a3bc-7a15-4b75-9f94-a5353a2a2f9b}",
+        "urn:uuid:8ec8a3bc-7a15-4b75-9f94-a5353a2a2f9b",
+    ],
+)
+def test_v2_rejects_noncanonical_uuid_spellings(analysis_id: str):
+    payload = fixture("analysis-v2-complete.json")
+    payload["analysisId"] = analysis_id
+
+    with pytest.raises(ValidationError):
+        AnalysisResponseV2.model_validate(payload)
+    assert not _json_schema_accepts(payload)
+
+
+def test_v2_accepts_only_its_two_source_types():
+    payload = fixture("analysis-v2-complete.json")
+    payload["sourceType"] = "pdf"
+    assert AnalysisResponseV2.model_validate(payload).sourceType == "pdf"
+    assert _json_schema_accepts(payload)
+
+    payload["sourceType"] = "vision_text"
+    with pytest.raises(ValidationError):
+        AnalysisResponseV2.model_validate(payload)
+    assert not _json_schema_accepts(payload)
+
+
+@pytest.mark.parametrize(
+    ("used", "limit"),
+    [
+        (-1, 3),
+        (101, 100),
+        (4, 3),
+        (1.0, 3),
+        (True, 3),
+        (1, 4),
+    ],
+)
+def test_v2_rejects_invalid_allowances(used: object, limit: object):
+    payload = fixture("analysis-v2-complete.json")
+    ai = payload["ai"]
+    assert isinstance(ai, dict)
+    allowance = ai["allowance"]
+    assert isinstance(allowance, dict)
+    allowance["used"] = used
+    allowance["limit"] = limit
+
+    with pytest.raises(ValidationError):
+        AnalysisResponseV2.model_validate(payload)
+    assert not _json_schema_accepts(payload)
+
+
+def test_v2_accepts_the_pro_allowance_boundary():
+    payload = fixture("analysis-v2-complete.json")
+    ai = payload["ai"]
+    assert isinstance(ai, dict)
+    allowance = ai["allowance"]
+    assert isinstance(allowance, dict)
+    allowance["used"] = 100
+    allowance["limit"] = 100
+
+    parsed = AnalysisResponseV2.model_validate(payload)
+
+    assert parsed.ai.allowance is not None
+    assert parsed.ai.allowance.used == 100
+    assert _json_schema_accepts(payload)
+
+
+@pytest.mark.parametrize(
+    "resets_at",
+    [
+        "2026-09-01T00:00:00+00:00",
+        "2026-09-01T00:00:00.000Z",
+        "2026-09-01T00:00:00",
+        "2026-09-01T00:00:00z",
+        "2026-09-01",
+        "2026-9-1T00:00:00Z",
+        "2026-13-01T00:00:00Z",
+        "2026-09-01T24:00:00Z",
+    ],
+)
+def test_v2_rejects_noncanonical_allowance_timestamps(resets_at: str):
+    payload = fixture("analysis-v2-complete.json")
+    ai = payload["ai"]
+    assert isinstance(ai, dict)
+    allowance = ai["allowance"]
+    assert isinstance(allowance, dict)
+    allowance["resetsAt"] = resets_at
+
+    with pytest.raises(ValidationError):
+        AnalysisResponseV2.model_validate(payload)
+    assert not _json_schema_accepts(payload)
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        (),
+        ("score",),
+        ("score", "components"),
+        ("ai",),
+        ("ai", "feedback"),
+        ("ai", "allowance"),
+    ],
+)
+def test_v2_rejects_unknown_fields_at_every_object_level(path: tuple[str, ...]):
+    payload = fixture("analysis-v2-complete.json")
+    target: object = payload
+    for part in path:
+        assert isinstance(target, dict)
+        target = target[part]
+    assert isinstance(target, dict)
+    target["unexpected"] = "private input"
+
+    with pytest.raises(ValidationError):
+        AnalysisResponseV2.model_validate(payload)
+    assert not _json_schema_accepts(payload)
+
+
+@pytest.mark.parametrize(
+    ("path", "field"),
+    [
+        ((), "schemaVersion"),
+        ((), "analysisId"),
+        ((), "sourceType"),
+        ((), "score"),
+        ((), "ai"),
+        (("score",), "components"),
+        (("score", "components"), "keywords"),
+        (("ai",), "feedback"),
+        (("ai",), "allowance"),
+        (("ai", "feedback"), "summary"),
+        (("ai", "allowance"), "resetsAt"),
+    ],
+)
+def test_v2_rejects_missing_required_fields(path: tuple[str, ...], field: str):
+    payload = fixture("analysis-v2-complete.json")
+    target: object = payload
+    for part in path:
+        assert isinstance(target, dict)
+        target = target[part]
+    assert isinstance(target, dict)
+    target.pop(field)
+
+    with pytest.raises(ValidationError):
+        AnalysisResponseV2.model_validate(payload)
+    assert not _json_schema_accepts(payload)
+
+
+def test_v1_uuid_parsing_remains_backward_compatible():
+    payload = fixture("analysis-valid.json")
+    payload["analysisId"] = str(payload["analysisId"]).upper()
+
+    parsed = AnalysisResponseV1.model_validate(payload)
+
+    assert str(parsed.analysisId) == "8ec8a3bc-7a15-4b75-9f94-a5353a2a2f9b"
