@@ -11,7 +11,11 @@ from urllib.parse import quote
 import httpx
 
 from .bounded_json import decode_bounded_json, read_bounded_json
-from .entitlements import VerifiedEntitlementCache
+from .entitlements import (
+    MAX_AFFECTED_APP_USER_IDS,
+    VerifiedEntitlementCache,
+    unique_affected_app_user_ids,
+)
 from .plans import PLAN_CACHE_MAX_SECONDS, PlanSnapshot
 
 
@@ -26,7 +30,7 @@ _APPROVED_PRODUCTS = frozenset(
     }
 )
 _APPROVED_ENVIRONMENTS = frozenset({"PRODUCTION", "SANDBOX"})
-_SUPPORTED_EVENTS = frozenset(
+_LIFECYCLE_EVENTS = frozenset(
     {
         "INITIAL_PURCHASE",
         "RENEWAL",
@@ -37,10 +41,14 @@ _SUPPORTED_EVENTS = frozenset(
         "EXPIRATION",
         "BILLING_ISSUE",
         "PRODUCT_CHANGE",
-        "TRANSFER",
-        "REFUND",
+        "SUBSCRIPTION_EXTENDED",
+        "REFUND_REVERSED",
     }
 )
+_SUPPORTED_EVENTS = _LIFECYCLE_EVENTS | {
+    "TEMPORARY_ENTITLEMENT_GRANT",
+    "TRANSFER",
+}
 
 
 class EntitlementUnavailable(RuntimeError):
@@ -75,7 +83,9 @@ class RevenueCatEvent:
             *self.transferred_from,
             *self.transferred_to,
         )
-        return tuple(dict.fromkeys(value for value in values if value is not None))
+        return unique_affected_app_user_ids(
+            tuple(value for value in values if value is not None)
+        )
 
 
 class RevenueCatClient:
@@ -116,6 +126,7 @@ class RevenueCatClient:
                 url,
                 headers={
                     "Accept": "application/json",
+                    "Accept-Encoding": "identity",
                     "Authorization": f"Bearer {self._secret_api_key}",
                 },
                 timeout=httpx.Timeout(deadline),
@@ -256,33 +267,73 @@ class RevenueCatClient:
 
 class RevenueCatPlanVerifier:
     def __init__(
-        self, cache: VerifiedEntitlementCache, client: RevenueCatClient
+        self,
+        cache: VerifiedEntitlementCache,
+        client: RevenueCatClient,
+        *,
+        monotonic: Callable[[], float] = time.monotonic,
     ) -> None:
         self._cache = cache
         self._client = client
+        self._monotonic = monotonic
 
     def verify(self, app_user_id: str, *, deadline: float) -> PlanSnapshot:
         try:
-            for _ in range(2):
-                cached, generation = self._cache.get_with_generation(app_user_id)
-                if cached is not None:
-                    if self._cache.generation_matches(app_user_id, generation):
-                        return cached
-                    continue
-                snapshot = self._client.fetch_plan(app_user_id, deadline)
-                committed = self._cache.put_verified_if_generation(
-                    app_user_id,
-                    snapshot,
-                    observed_at=self._cache.current_time(),
-                    expected_generation=generation,
-                )
-                if committed and self._cache.generation_matches(
-                    app_user_id, generation
-                ):
-                    return snapshot
+            if not RevenueCatClient._valid_identifier(
+                app_user_id
+            ) or not RevenueCatClient._valid_deadline(deadline):
+                raise ValueError
+            started = self._monotonic()
+            if not self._valid_monotonic(started):
+                raise ValueError
+            deadline_at = started + deadline
+            if not math.isfinite(deadline_at):
+                raise ValueError
+            cached, generation = self._cache.get_with_generation(app_user_id)
+            self._remaining(deadline_at)
+            if not self._cache.generation_matches(app_user_id, generation):
+                raise ValueError
+            if cached is not None:
+                self._remaining(deadline_at)
+                return cached
+            snapshot = self._client.fetch_plan(
+                app_user_id,
+                self._remaining(deadline_at),
+            )
+            self._remaining(deadline_at)
+            committed = self._cache.put_verified_if_generation(
+                app_user_id,
+                snapshot,
+                observed_at=self._cache.current_time(),
+                expected_generation=generation,
+            )
+            self._remaining(deadline_at)
+            if not committed or not self._cache.generation_matches(
+                app_user_id, generation
+            ):
+                raise ValueError
+            self._remaining(deadline_at)
+            return snapshot
         except Exception:
             pass
         raise EntitlementUnavailable()
+
+    def _remaining(self, deadline_at: float) -> float:
+        current = self._monotonic()
+        if not self._valid_monotonic(current):
+            raise ValueError
+        remaining = deadline_at - current
+        if not math.isfinite(remaining) or remaining <= 0:
+            raise ValueError
+        return remaining
+
+    @staticmethod
+    def _valid_monotonic(value: object) -> bool:
+        return (
+            not isinstance(value, bool)
+            and isinstance(value, (int, float))
+            and math.isfinite(value)
+        )
 
 
 class RevenueCatWebhook:
@@ -322,22 +373,13 @@ class RevenueCatWebhook:
         if payload["api_version"] != "1.0" or not isinstance(payload["event"], dict):
             raise ValueError
         event = payload["event"]
-        common_required = {
-            "id",
-            "app_id",
-            "type",
-            "environment",
-            "event_timestamp_ms",
-        }
+        common_required = {"id", "app_id", "type", "event_timestamp_ms"}
         if not common_required.issubset(event):
             raise ValueError
         if self._bounded_string(event.get("app_id"), maximum=128) != self._app_id:
             raise ValueError
         event_type = self._bounded_string(event.get("type"), maximum=64)
         if event_type not in _SUPPORTED_EVENTS:
-            raise ValueError
-        environment = self._bounded_string(event.get("environment"), maximum=32)
-        if environment not in _APPROVED_ENVIRONMENTS:
             raise ValueError
         timestamp_ms = event.get("event_timestamp_ms")
         if isinstance(timestamp_ms, bool) or not isinstance(timestamp_ms, int):
@@ -350,36 +392,44 @@ class RevenueCatWebhook:
         entitlement_ids: tuple[str, ...] = ()
         app_user_id: str | None = None
         original_app_user_id: str | None = None
-        aliases = self._optional_list(event, "aliases")
-        transferred_from = self._optional_list(event, "transferred_from")
-        transferred_to = self._optional_list(event, "transferred_to")
+        aliases: tuple[str, ...] = ()
+        transferred_from: tuple[str, ...] = ()
+        transferred_to: tuple[str, ...] = ()
         if event_type == "TRANSFER":
+            transferred_from = self._optional_list(event, "transferred_from")
+            transferred_to = self._optional_list(event, "transferred_to")
+            if "environment" in event:
+                self._approved_environment(event["environment"])
             if not transferred_from or not transferred_to:
                 raise ValueError
             app_user_id = self._optional_identifier(event, "app_user_id")
             original_app_user_id = self._optional_identifier(
                 event, "original_app_user_id"
             )
-            if "product_id" in event:
-                product = self._approved_product(event["product_id"])
-            if "entitlement_ids" in event:
-                entitlement_ids = self._resume_entitlements(event["entitlement_ids"])
+        elif event_type == "TEMPORARY_ENTITLEMENT_GRANT":
+            if "app_user_id" not in event:
+                raise ValueError
+            app_user_id = self._bounded_string(event["app_user_id"], maximum=512)
         else:
             required = {
                 "app_user_id",
                 "original_app_user_id",
+                "aliases",
                 "product_id",
                 "entitlement_ids",
+                "environment",
             }
             if not required.issubset(event):
                 raise ValueError
+            self._approved_environment(event["environment"])
+            aliases = self._optional_list(event, "aliases")
             app_user_id = self._bounded_string(event["app_user_id"], maximum=512)
             original_app_user_id = self._bounded_string(
                 event["original_app_user_id"], maximum=512
             )
             product = self._approved_product(event["product_id"])
             entitlement_ids = self._resume_entitlements(event["entitlement_ids"])
-        return RevenueCatEvent(
+        result = RevenueCatEvent(
             event_id=self._bounded_string(event.get("id"), maximum=256),
             app_user_id=app_user_id,
             original_app_user_id=original_app_user_id,
@@ -391,6 +441,8 @@ class RevenueCatWebhook:
             entitlement_ids=entitlement_ids,
             effective_at=effective_at,
         )
+        result.affected_app_user_ids
+        return result
 
     @classmethod
     def _optional_identifier(cls, event: dict[object, object], name: str) -> str | None:
@@ -404,7 +456,14 @@ class RevenueCatWebhook:
     ) -> tuple[str, ...]:
         if name not in event:
             return ()
-        return cls._bounded_list(event[name])
+        return cls._bounded_list(event[name], maximum=MAX_AFFECTED_APP_USER_IDS)
+
+    @classmethod
+    def _approved_environment(cls, value: object) -> str:
+        environment = cls._bounded_string(value, maximum=32)
+        if environment not in _APPROVED_ENVIRONMENTS:
+            raise ValueError
+        return environment
 
     @classmethod
     def _approved_product(cls, value: object) -> str:
@@ -415,6 +474,8 @@ class RevenueCatWebhook:
 
     @classmethod
     def _resume_entitlements(cls, value: object) -> tuple[str, ...]:
+        if value is None:
+            return ()
         result = cls._bounded_list(value, maximum=16)
         if result != ("resume_pro",):
             raise ValueError

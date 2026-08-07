@@ -816,7 +816,7 @@ def test_architectural_retention_policy_pins_python_and_capability_counts():
         path: sum(item.count for item in boundary.approved_security_scopes)
         for path, boundary in retention.TRUSTED_BOUNDARIES.items()
     } == {
-        "server/entitlements.py": 94,
+        "server/entitlements.py": 96,
         "server/rate_limit.py": 60,
         "server/app.py": 36,
         "server/gunicorn_logger.py": 7,

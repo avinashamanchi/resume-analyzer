@@ -50,13 +50,19 @@ class _SlowRevenueCatStream(httpx.SyncByteStream):
     def __init__(self, clock: list[float], body: bytes) -> None:
         self._clock = clock
         self._body = body
+        self.yielded = 0
 
     def __iter__(self):
-        midpoint = len(self._body) // 2
-        self._clock[0] += 0.6
-        yield self._body[:midpoint]
-        self._clock[0] += 0.6
-        yield self._body[midpoint:]
+        first = len(self._body) // 3
+        second = first * 2
+        for chunk in (
+            self._body[:first],
+            self._body[first:second],
+            self._body[second:],
+        ):
+            self._clock[0] += 0.6
+            self.yielded += 1
+            yield chunk
 
 
 def client_for(
@@ -105,6 +111,7 @@ def test_fetch_plan_accepts_documented_active_resume_pro_with_bounded_future_fie
         "https://api.revenuecat.com/v1/subscribers/rai%20account%2Fopaque"
     )
     assert seen[0].headers["Authorization"] == f"Bearer {API_KEY}"
+    assert seen[0].headers["Accept-Encoding"] == "identity"
 
 
 def test_missing_or_expired_exact_entitlement_is_verified_free_for_at_most_25_hours():
@@ -238,14 +245,16 @@ def test_fetch_rejects_elapsed_wall_deadline_after_body_completion():
 def test_fetch_enforces_total_wall_deadline_while_body_is_streaming():
     clock = [10.0]
     body = subscriber({})
+    stream = _SlowRevenueCatStream(clock, body)
 
     def handler(_request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, stream=_SlowRevenueCatStream(clock, body))
+        return httpx.Response(200, stream=stream)
 
     with pytest.raises(EntitlementUnavailable):
         client_for(handler, monotonic=lambda: clock[0]).fetch_plan(
             "rai_installation_opaque", deadline=1.0
         )
+    assert stream.yielded == 2
 
 
 def test_client_rejects_redirect_following_and_non_server_credentials():
@@ -262,24 +271,65 @@ def test_client_rejects_redirect_following_and_non_server_credentials():
         RevenueCatClient(secret_api_key=API_KEY, http_client=redirecting)
 
 
-def event_body(**event_overrides: object) -> bytes:
+def lifecycle_event(**event_overrides: object) -> dict[str, object]:
     event: dict[str, object] = {
         "id": "evt_01",
         "app_id": APP_ID,
         "app_user_id": "rai_account_opaque",
         "original_app_user_id": "rai_installation_opaque",
         "aliases": ["rai_alias_opaque"],
-        "transferred_from": ["rai_installation_old"],
-        "transferred_to": ["rai_account_opaque"],
-        "type": "TRANSFER",
-        "product_id": "com.avinashamanchi.resumeai.pro.monthly",
+        "type": "INITIAL_PURCHASE",
+        "product_id": MONTHLY_PRODUCT,
+        "period_type": "NORMAL",
+        "purchased_at_ms": int((NOW - timedelta(days=1)).timestamp() * 1000),
+        "expiration_at_ms": int((NOW + timedelta(days=30)).timestamp() * 1000),
+        "entitlement_id": "resume_pro",
         "entitlement_ids": ["resume_pro"],
         "environment": "PRODUCTION",
         "event_timestamp_ms": int(NOW.timestamp() * 1000),
-        "future_provider_field": {"schema": 2, "enabled": True},
+        "presented_offering_id": "default",
+        "transaction_id": "transaction_opaque",
+        "original_transaction_id": "original_transaction_opaque",
+        "is_family_share": False,
+        "country_code": "US",
+        "store": "APP_STORE",
     }
     event.update(event_overrides)
+    return event
+
+
+def transfer_event(**event_overrides: object) -> dict[str, object]:
+    event: dict[str, object] = {
+        "id": "evt_transfer",
+        "app_id": APP_ID,
+        "type": "TRANSFER",
+        "transferred_from": ["rai_installation_old"],
+        "transferred_to": ["rai_account_opaque"],
+        "event_timestamp_ms": int(NOW.timestamp() * 1000),
+    }
+    event.update(event_overrides)
+    return event
+
+
+def temporary_grant_event(**event_overrides: object) -> dict[str, object]:
+    event: dict[str, object] = {
+        "id": "evt_temporary_grant",
+        "app_id": APP_ID,
+        "app_user_id": "rai_temporary_grant_opaque",
+        "type": "TEMPORARY_ENTITLEMENT_GRANT",
+        "event_timestamp_ms": int(NOW.timestamp() * 1000),
+        "store": "APP_STORE",
+    }
+    event.update(event_overrides)
+    return event
+
+
+def encoded_event(event: dict[str, object]) -> bytes:
     return json.dumps({"api_version": "1.0", "event": event}).encode()
+
+
+def event_body(**event_overrides: object) -> bytes:
+    return encoded_event(lifecycle_event(**event_overrides))
 
 
 def webhook() -> RevenueCatWebhook:
@@ -300,7 +350,6 @@ def test_webhook_validates_bearer_and_decodes_all_affected_identities_without_gr
         "rai_account_opaque",
         "rai_installation_opaque",
         "rai_alias_opaque",
-        "rai_installation_old",
     )
     assert not hasattr(decoded, "plan")
 
@@ -333,6 +382,8 @@ def test_webhook_rejects_every_nonexact_bearer(authorization: str):
         event_body(entitlement_ids=["another_entitlement"]),
         event_body(environment="UNKNOWN"),
         event_body(aliases=["x"] * 33),
+        event_body(type="REFUND"),
+        encoded_event(transfer_event(environment="UNKNOWN")),
         b'{"api_version":"1.0","api_version":"1.0","event":{}}',
     ],
 )
@@ -348,25 +399,20 @@ def test_webhook_rejects_wrong_envelope_app_skew_bounds_and_duplicate_json(body:
         "RENEWAL",
         "CANCELLATION",
         "EXPIRATION",
-        "REFUND",
+        "SUBSCRIPTION_EXTENDED",
+        "REFUND_REVERSED",
     ],
 )
 def test_webhook_accepts_realistic_lifecycle_events_and_late_delivery(event_type: str):
-    event = {
-        "id": f"evt_{event_type.lower()}",
-        "app_id": APP_ID,
-        "app_user_id": "rai_account_opaque",
-        "original_app_user_id": "rai_installation_opaque",
-        "aliases": ["rai_alias_opaque"],
-        "type": event_type,
-        "product_id": ANNUAL_PRODUCT,
-        "entitlement_ids": ["resume_pro"],
-        "environment": "SANDBOX",
-        "event_timestamp_ms": int((NOW - timedelta(days=90)).timestamp() * 1000),
-        "purchased_at_ms": int((NOW - timedelta(days=120)).timestamp() * 1000),
-        "store": "APP_STORE",
-        "future_provider_field": {"revision": 4},
-    }
+    event = lifecycle_event(
+        id=f"evt_{event_type.lower()}",
+        type=event_type,
+        product_id=ANNUAL_PRODUCT,
+        environment="SANDBOX",
+        event_timestamp_ms=int((NOW - timedelta(days=90)).timestamp() * 1000),
+        purchased_at_ms=int((NOW - timedelta(days=120)).timestamp() * 1000),
+        future_provider_field={"revision": 4},
+    )
     decoded = webhook().decode(
         {"Authorization": f"Bearer {WEBHOOK_SECRET}"},
         json.dumps(
@@ -378,16 +424,10 @@ def test_webhook_accepts_realistic_lifecycle_events_and_late_delivery(event_type
 
 
 def test_webhook_accepts_documented_transfer_shape_without_lifecycle_fields():
-    event = {
-        "id": "evt_transfer",
-        "app_id": APP_ID,
-        "type": "TRANSFER",
-        "transferred_from": ["rai_installation_old"],
-        "transferred_to": ["rai_account_opaque"],
-        "environment": "PRODUCTION",
-        "event_timestamp_ms": int((NOW - timedelta(days=30)).timestamp() * 1000),
-        "future_provider_field": "accepted",
-    }
+    event = transfer_event(
+        event_timestamp_ms=int((NOW - timedelta(days=30)).timestamp() * 1000),
+        future_provider_field="accepted",
+    )
     decoded = webhook().decode(
         {"Authorization": f"Bearer {WEBHOOK_SECRET}"},
         json.dumps({"api_version": "1.0", "event": event}).encode(),
@@ -398,6 +438,112 @@ def test_webhook_accepts_documented_transfer_shape_without_lifecycle_fields():
         "rai_account_opaque",
     )
     assert decoded.product_id is None
+
+
+def test_temporary_entitlement_grant_invalidates_its_reduced_identity_shape():
+    decoded = webhook().decode(
+        {"Authorization": f"Bearer {WEBHOOK_SECRET}"},
+        encoded_event(temporary_grant_event()),
+    )
+    assert decoded.event_type == "TEMPORARY_ENTITLEMENT_GRANT"
+    assert decoded.affected_app_user_ids == ("rai_temporary_grant_opaque",)
+    assert decoded.product_id is None
+    assert decoded.entitlement_ids == ()
+    assert not hasattr(decoded, "plan")
+
+    cache = VerifiedEntitlementCache(
+        fakeredis.FakeRedis(),
+        key_secret=b"cache-secret" * 4,
+        now=lambda: NOW,
+    )
+    snapshot = client_for(
+        lambda _request: httpx.Response(
+            200,
+            content=subscriber(
+                {"resume_pro": pro_entitlement("2026-09-01T00:00:00Z")}
+            ),
+        )
+    ).fetch_plan("rai_temporary_grant_opaque", deadline=1.0)
+    cache.put_verified("rai_temporary_grant_opaque", snapshot, observed_at=NOW)
+
+    assert cache.claim_webhook_event(
+        decoded.event_id,
+        decoded.effective_at,
+        decoded.affected_app_user_ids,
+    )
+    assert cache.get("rai_temporary_grant_opaque") is None
+
+
+@pytest.mark.parametrize("event_type", ["CANCELLATION", "REFUND_REVERSED"])
+def test_webhook_accepts_documented_null_entitlements_for_lifecycle_invalidation(
+    event_type: str,
+):
+    decoded = webhook().decode(
+        {"Authorization": f"Bearer {WEBHOOK_SECRET}"},
+        encoded_event(lifecycle_event(type=event_type, entitlement_ids=None)),
+    )
+    assert decoded.event_type == event_type
+    assert decoded.entitlement_ids == ()
+    assert decoded.affected_app_user_ids == (
+        "rai_account_opaque",
+        "rai_installation_opaque",
+        "rai_alias_opaque",
+    )
+    assert not hasattr(decoded, "plan")
+
+
+@pytest.mark.parametrize("missing", ["product_id", "entitlement_ids", "environment"])
+def test_lifecycle_webhooks_require_documented_product_entitlement_and_environment(
+    missing: str,
+):
+    event = lifecycle_event()
+    del event[missing]
+    with pytest.raises(InvalidRevenueCatWebhook):
+        webhook().decode(
+            {"Authorization": f"Bearer {WEBHOOK_SECRET}"},
+            encoded_event(event),
+        )
+
+
+def test_webhook_accepts_64_unique_lifecycle_identities_and_collapses_duplicates():
+    aliases = ["rai_account_opaque", "rai_installation_opaque"] + [
+        f"rai_alias_{index:02d}" for index in range(62)
+    ]
+    decoded = webhook().decode(
+        {"Authorization": f"Bearer {WEBHOOK_SECRET}"},
+        encoded_event(lifecycle_event(aliases=aliases)),
+    )
+    assert len(decoded.affected_app_user_ids) == 64
+    assert decoded.affected_app_user_ids[:2] == (
+        "rai_account_opaque",
+        "rai_installation_opaque",
+    )
+
+
+def test_webhook_rejects_65_unique_transfer_identities_across_lists():
+    event = transfer_event(
+        transferred_from=[f"rai_from_{index:02d}" for index in range(33)],
+        transferred_to=[f"rai_to_{index:02d}" for index in range(32)],
+    )
+    with pytest.raises(InvalidRevenueCatWebhook):
+        webhook().decode(
+            {"Authorization": f"Bearer {WEBHOOK_SECRET}"},
+            encoded_event(event),
+        )
+
+
+def test_webhook_collapses_cross_list_transfer_duplicates_before_64_identity_limit():
+    identities = [f"rai_shared_{index:02d}" for index in range(64)]
+    decoded = webhook().decode(
+        {"Authorization": f"Bearer {WEBHOOK_SECRET}"},
+        encoded_event(
+            transfer_event(
+                transferred_from=identities,
+                transferred_to=identities,
+            )
+        ),
+    )
+    assert decoded.affected_app_user_ids == tuple(identities)
 
 
 def test_verified_cache_uses_current_snapshot_during_outage_and_stale_cache_fails_closed():
@@ -496,52 +642,8 @@ def test_webhook_during_fetch_never_returns_or_caches_stale_pro(
     def handler(_request: httpx.Request) -> httpx.Response:
         nonlocal calls
         calls += 1
-        if calls == 1:
-            first_started.set()
-            assert release_first.wait(timeout=5)
-            return httpx.Response(
-                200,
-                content=subscriber(
-                    {"resume_pro": pro_entitlement("2026-09-01T00:00:00Z")}
-                ),
-            )
-        return httpx.Response(200, content=subscriber({}))
-
-    verifier = RevenueCatPlanVerifier(cache, client_for(handler))
-    with ThreadPoolExecutor(max_workers=1) as executor:
-        future = executor.submit(
-            verifier.verify, "rai_account_private", deadline=1.0
-        )
-        assert first_started.wait(timeout=5)
-        assert cache.claim_webhook_event(event_id, NOW, affected_ids)
-        release_first.set()
-        result = future.result(timeout=5)
-
-    assert result.kind == "free"
-    assert calls == 2
-    cached = cache.get("rai_account_private")
-    assert cached is not None and cached.kind == "free"
-
-
-def test_two_generation_changes_exhaust_single_refetch_and_fail_closed():
-    redis_client = fakeredis.FakeRedis()
-    cache = VerifiedEntitlementCache(
-        redis_client,
-        key_secret=b"cache-secret" * 4,
-        now=lambda: NOW,
-    )
-    started = [threading.Event(), threading.Event()]
-    releases = [threading.Event(), threading.Event()]
-    call_lock = threading.Lock()
-    calls = 0
-
-    def handler(_request: httpx.Request) -> httpx.Response:
-        nonlocal calls
-        with call_lock:
-            index = calls
-            calls += 1
-        started[index].set()
-        assert releases[index].wait(timeout=5)
+        first_started.set()
+        assert release_first.wait(timeout=5)
         return httpx.Response(
             200,
             content=subscriber(
@@ -554,14 +656,85 @@ def test_two_generation_changes_exhaust_single_refetch_and_fail_closed():
         future = executor.submit(
             verifier.verify, "rai_account_private", deadline=1.0
         )
-        for index in range(2):
-            assert started[index].wait(timeout=5)
-            assert cache.claim_webhook_event(
-                f"evt_race_{index}", NOW, ["rai_account_private"]
-            )
-            releases[index].set()
+        assert first_started.wait(timeout=5)
+        assert cache.claim_webhook_event(event_id, NOW, affected_ids)
+        release_first.set()
         with pytest.raises(EntitlementUnavailable):
             future.result(timeout=5)
 
-    assert calls == 2
+    assert calls == 1
     assert cache.get("rai_account_private") is None
+
+
+def test_webhook_churn_uses_one_provider_request_and_stays_within_total_deadline():
+    redis_client = fakeredis.FakeRedis()
+    clock = [10.0]
+    cache = VerifiedEntitlementCache(
+        redis_client,
+        key_secret=b"cache-secret" * 4,
+        now=lambda: NOW,
+    )
+    calls = 0
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        clock[0] += 0.8
+        assert cache.claim_webhook_event(
+            f"evt_race_{calls}", NOW, ["rai_account_private"]
+        )
+        return httpx.Response(
+            200,
+            content=subscriber(
+                {"resume_pro": pro_entitlement("2026-09-01T00:00:00Z")}
+            ),
+        )
+
+    verifier = RevenueCatPlanVerifier(
+        cache,
+        client_for(handler, monotonic=lambda: clock[0]),
+        monotonic=lambda: clock[0],
+    )
+    with pytest.raises(EntitlementUnavailable):
+        verifier.verify("rai_account_private", deadline=1.0)
+
+    assert calls == 1
+    assert clock[0] - 10.0 <= 1.0
+    assert cache.get("rai_account_private") is None
+
+
+def test_verifier_subtracts_cache_latency_from_the_single_provider_deadline():
+    clock = [20.0]
+    cache = VerifiedEntitlementCache(
+        fakeredis.FakeRedis(),
+        key_secret=b"cache-secret" * 4,
+        now=lambda: NOW,
+    )
+    original_get = cache.get_with_generation
+
+    def delayed_get(app_user_id: str):
+        clock[0] += 0.7
+        return original_get(app_user_id)
+
+    cache.get_with_generation = delayed_get  # type: ignore[method-assign]
+    calls = 0
+    transport_timeouts: list[float] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        transport_timeouts.append(request.extensions["timeout"]["read"])
+        clock[0] += 0.4
+        return httpx.Response(200, content=subscriber({}))
+
+    verifier = RevenueCatPlanVerifier(
+        cache,
+        client_for(handler, monotonic=lambda: clock[0]),
+        monotonic=lambda: clock[0],
+    )
+    with pytest.raises(EntitlementUnavailable):
+        verifier.verify("rai_account_private", deadline=1.0)
+
+    assert calls == 1
+    assert 0 < transport_timeouts[0] <= 0.300_001
+    assert clock[0] - 20.0 <= 1.1

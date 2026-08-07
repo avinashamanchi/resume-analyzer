@@ -9,12 +9,13 @@ from server.bounded_json import BoundedJsonError, decode_bounded_json, read_boun
 class _SlowStream(httpx.SyncByteStream):
     def __init__(self, clock: list[float]) -> None:
         self._clock = clock
+        self.yielded = 0
 
     def __iter__(self):
-        self._clock[0] += 0.6
-        yield b'{"value":'
-        self._clock[0] += 0.6
-        yield b"1}"
+        for chunk in (b'{"', b'value":', b"1}"):
+            self._clock[0] += 0.6
+            self.yielded += 1
+            yield chunk
 
 
 @pytest.mark.parametrize(
@@ -66,9 +67,20 @@ def test_stream_reader_rejects_malformed_content_length_without_reading():
     assert "private-invalid" not in repr(caught.value)
 
 
+def test_stream_reader_rejects_nonidentity_content_encoding_before_decode():
+    response = httpx.Response(
+        200,
+        headers={"Content-Encoding": "gzip"},
+        stream=httpx.ByteStream(b'{"value":1}'),
+    )
+    with pytest.raises(BoundedJsonError):
+        read_bounded_json(response, max_bytes=256)
+
+
 def test_stream_reader_enforces_deadline_during_each_chunk():
     clock = [10.0]
-    response = httpx.Response(200, stream=_SlowStream(clock))
+    stream = _SlowStream(clock)
+    response = httpx.Response(200, stream=stream)
     with pytest.raises(BoundedJsonError):
         read_bounded_json(
             response,
@@ -76,3 +88,4 @@ def test_stream_reader_enforces_deadline_during_each_chunk():
             monotonic=lambda: clock[0],
             deadline_at=11.0,
         )
+    assert stream.yielded == 2

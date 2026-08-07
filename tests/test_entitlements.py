@@ -11,6 +11,7 @@ from server.entitlements import (
     AiAllowanceStore,
     AllowanceUnavailable,
     PlanVerificationUnavailable,
+    VerifiedEntitlementCache,
 )
 from server.plans import (
     CHARGED_MARKER_RESET_BUFFER_SECONDS,
@@ -504,6 +505,26 @@ def test_redis_contains_no_raw_subject_or_request_material():
     rendered = repr(redis_client.keys("*") + list(redis_client.mget(redis_client.keys("*"))))
     assert "private-canary" not in rendered
     assert str(request_id) not in rendered
+
+
+def test_webhook_invalidator_limits_unique_identities_after_duplicate_collapse():
+    cache = VerifiedEntitlementCache(
+        fakeredis.FakeRedis(),
+        key_secret=b"cache-secret" * 4,
+        now=lambda: NOW,
+    )
+    duplicate_ids = ["rai_duplicate_identity"] * 65
+
+    assert cache.claim_webhook_event("evt_duplicates", NOW, duplicate_ids)
+    _cached, generation = cache.get_with_generation("rai_duplicate_identity")
+    assert generation == 1
+
+    with pytest.raises(ValueError, match="affected identity list is invalid"):
+        cache.claim_webhook_event(
+            "evt_too_many_unique",
+            NOW,
+            [f"rai_unique_{index:02d}" for index in range(65)],
+        )
 
 
 class BrokenRedis:

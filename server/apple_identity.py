@@ -144,7 +144,10 @@ class AppleIdentityVerifier:
         with self._http_client.stream(
             "GET",
             _APPLE_JWKS_URL,
-            headers={"Accept": "application/json"},
+            headers={
+                "Accept": "application/json",
+                "Accept-Encoding": "identity",
+            },
             timeout=httpx.Timeout(2.0),
         ) as response:
             if response.status_code < 200 or response.status_code >= 300:

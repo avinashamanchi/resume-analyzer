@@ -27,6 +27,7 @@ from .plans import (
 _MAX_TRANSACTION_ATTEMPTS = 16
 _MAX_CANONICAL_DEPTH = 16
 _MAX_CANONICAL_MEMBERS = 64
+MAX_AFFECTED_APP_USER_IDS = 64
 _CANONICAL_LINK_TTL_SECONDS = 400 * 24 * 60 * 60
 _OPAQUE_DIGEST = re.compile(rb"[0-9a-f]{64}")
 
@@ -44,6 +45,19 @@ class PlanVerificationUnavailable(RuntimeError):
 class NonceReplayRejected(RuntimeError):
     def __init__(self) -> None:
         super().__init__("nonce_replay_rejected")
+
+
+def unique_affected_app_user_ids(
+    values: list[str] | tuple[str, ...],
+) -> tuple[str, ...]:
+    if not isinstance(values, (list, tuple)) or not values:
+        raise ValueError("affected identity list is invalid")
+    if any(not isinstance(value, str) or not value for value in values):
+        raise ValueError("affected identity list is invalid")
+    unique_ids = tuple(dict.fromkeys(values))
+    if len(unique_ids) > MAX_AFFECTED_APP_USER_IDS:
+        raise ValueError("affected identity list is invalid")
+    return unique_ids
 
 
 @dataclass(frozen=True, slots=True, repr=False)
@@ -665,9 +679,7 @@ class VerifiedEntitlementCache:
         affected_app_user_ids: list[str] | tuple[str, ...],
     ) -> bool:
         self._validate_identifier(event_id)
-        if not affected_app_user_ids or len(affected_app_user_ids) > 64:
-            raise ValueError("affected identity list is invalid")
-        unique_ids = tuple(dict.fromkeys(affected_app_user_ids))
+        unique_ids = unique_affected_app_user_ids(affected_app_user_ids)
         for app_user_id in unique_ids:
             self._validate_identifier(app_user_id)
         self._aware_second(effective_at)

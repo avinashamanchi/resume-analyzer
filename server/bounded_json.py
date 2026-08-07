@@ -95,6 +95,9 @@ def read_bounded_json(
 
     if deadline_exceeded():
         raise BoundedJsonError()
+    content_encoding = response.headers.get("Content-Encoding")
+    if content_encoding is not None and content_encoding.strip().lower() != "identity":
+        raise BoundedJsonError()
     declared = response.headers.get("Content-Length")
     if declared is not None:
         if not declared.isascii() or not declared.isdigit():
@@ -105,8 +108,20 @@ def read_bounded_json(
     body = bytearray()
     failed = False
     try:
-        chunks: Iterable[bytes] = response.iter_bytes(chunk_size=16_384)
-        for chunk in chunks:
+        chunks: Iterable[bytes]
+        if getattr(response, "is_stream_consumed", False):
+            chunks = response.iter_bytes()
+        else:
+            chunks = response.iter_raw()
+        iterator = iter(chunks)
+        while True:
+            if deadline_exceeded():
+                failed = True
+                break
+            try:
+                chunk = next(iterator)
+            except StopIteration:
+                break
             if (
                 deadline_exceeded()
                 or not isinstance(chunk, bytes)
@@ -120,6 +135,8 @@ def read_bounded_json(
                 break
     except Exception:
         failed = True
-    if failed or deadline_exceeded():
+    if failed:
+        raise BoundedJsonError()
+    if deadline_exceeded():
         raise BoundedJsonError()
     return decode_bounded_json(bytes(body), max_bytes=max_bytes)

@@ -73,13 +73,19 @@ class _SlowAppleStream(httpx.SyncByteStream):
     def __init__(self, clock: list[float], body: bytes) -> None:
         self._clock = clock
         self._body = body
+        self.yielded = 0
 
     def __iter__(self):
-        midpoint = len(self._body) // 2
-        self._clock[0] += 1.1
-        yield self._body[:midpoint]
-        self._clock[0] += 1.1
-        yield self._body[midpoint:]
+        first = len(self._body) // 3
+        second = first * 2
+        for chunk in (
+            self._body[:first],
+            self._body[first:second],
+            self._body[second:],
+        ):
+            self._clock[0] += 1.1
+            self.yielded += 1
+            yield chunk
 
 
 def verifier(
@@ -128,6 +134,7 @@ def test_valid_rs256_token_derives_stable_domain_separated_opaque_ids():
     assert SUBJECT not in repr(identity)
     assert len(requests) == 1
     assert str(requests[0].url) == "https://appleid.apple.com/auth/keys"
+    assert requests[0].headers["Accept-Encoding"] == "identity"
 
     second_verifier, _ = verifier(private_key)
     second = second_verifier.verify(token(private_key, nonce="another-nonce-value"), "another-nonce-value")
@@ -386,9 +393,10 @@ def test_jwks_total_wall_deadline_is_enforced_during_streaming():
     private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     clock = [4.0]
     body = json.dumps({"keys": [jwk(private_key)]}).encode()
+    stream = _SlowAppleStream(clock, body)
 
     def handler(_request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, stream=_SlowAppleStream(clock, body))
+        return httpx.Response(200, stream=stream)
 
     checked, _ = verifier(
         private_key,
@@ -397,3 +405,4 @@ def test_jwks_total_wall_deadline_is_enforced_during_streaming():
     )
     with pytest.raises(InvalidAppleIdentity):
         checked.verify(token(private_key), RAW_NONCE)
+    assert stream.yielded == 2
