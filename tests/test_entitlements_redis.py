@@ -157,3 +157,33 @@ def test_real_redis_cross_month_replay_and_subject_link_are_atomic(redis_clients
     assert allowance_stores[2].reserve(
         "account:shared", current_plan, UUID(int=4)
     ).snapshot().used == 2
+
+
+def test_real_redis_link_invalidates_pending_lease_and_canonicalizes_request(redis_clients):
+    allowance_stores = stores(redis_clients, 4)
+    request_id = UUID(int=900)
+    pending = allowance_stores[0].reserve(
+        "installation:pending", snapshot("pro"), request_id
+    )
+
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        list(
+            executor.map(
+                lambda value: value.link_quota_subjects(
+                    "installation:pending", "account:pending"
+                ),
+                allowance_stores,
+            )
+        )
+
+    assert pending.begin_dispatch().disposition == "identity_changed"
+    reservations = [
+        value.reserve("account:pending", snapshot("pro"), request_id)
+        for value in allowance_stores
+    ]
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        outcomes = list(executor.map(lambda value: value.begin_dispatch(), reservations))
+    assert [value.disposition for value in outcomes].count("started") == 1
+    assert allowance_stores[0].reserve(
+        "installation:pending", snapshot("pro"), request_id
+    ).begin_dispatch().disposition == "already_charged"

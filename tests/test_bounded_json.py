@@ -6,12 +6,24 @@ import pytest
 from server.bounded_json import BoundedJsonError, decode_bounded_json, read_bounded_json
 
 
+class _SlowStream(httpx.SyncByteStream):
+    def __init__(self, clock: list[float]) -> None:
+        self._clock = clock
+
+    def __iter__(self):
+        self._clock[0] += 0.6
+        yield b'{"value":'
+        self._clock[0] += 0.6
+        yield b"1}"
+
+
 @pytest.mark.parametrize(
     "body",
     [
         b'{"outer":{"same":1,"same":2}}',
         b'{"value":NaN}',
         b'{"value":Infinity}',
+        b'{"value":1e10000}',
         b"\xff",
         b"not-json",
     ],
@@ -52,3 +64,15 @@ def test_stream_reader_rejects_malformed_content_length_without_reading():
     with pytest.raises(BoundedJsonError) as caught:
         read_bounded_json(response, max_bytes=256)
     assert "private-invalid" not in repr(caught.value)
+
+
+def test_stream_reader_enforces_deadline_during_each_chunk():
+    clock = [10.0]
+    response = httpx.Response(200, stream=_SlowStream(clock))
+    with pytest.raises(BoundedJsonError):
+        read_bounded_json(
+            response,
+            max_bytes=256,
+            monotonic=lambda: clock[0],
+            deadline_at=11.0,
+        )

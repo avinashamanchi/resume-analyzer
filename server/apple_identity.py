@@ -63,7 +63,6 @@ class AppleIdentityVerifier:
         self._now = now
         self._monotonic = monotonic
         self._keys: dict[str, tuple[Any, datetime]] = {}
-        self._negative_kids: dict[str, datetime] = {}
         self._refresh_not_before = datetime.min.replace(tzinfo=UTC)
         self._refresh_lock = threading.Lock()
 
@@ -125,12 +124,8 @@ class AppleIdentityVerifier:
             cached = self._keys.get(kid)
             if cached is not None and current < cached[1]:
                 return cached[0]
-            negative_until = self._negative_kids.get(kid)
             had_stale_key = cached is not None
-            if negative_until is not None and current < negative_until:
-                raise ValueError
             if not had_stale_key and current < self._refresh_not_before:
-                self._negative_kids[kid] = self._refresh_not_before
                 raise ValueError
             keys = self._fetch_keys(current)
             expires_at = current + timedelta(seconds=_JWKS_CACHE_SECONDS)
@@ -140,12 +135,12 @@ class AppleIdentityVerifier:
             )
             selected = self._keys.get(kid)
             if selected is None:
-                self._negative_kids[kid] = self._refresh_not_before
                 raise ValueError
             return selected[0]
 
     def _fetch_keys(self, current: datetime) -> dict[str, Any]:
         started = self._monotonic()
+        deadline_at = started + 2.0
         with self._http_client.stream(
             "GET",
             _APPLE_JWKS_URL,
@@ -154,7 +149,12 @@ class AppleIdentityVerifier:
         ) as response:
             if response.status_code < 200 or response.status_code >= 300:
                 raise ValueError
-            payload = read_bounded_json(response, max_bytes=_JWKS_MAX_BYTES)
+            payload = read_bounded_json(
+                response,
+                max_bytes=_JWKS_MAX_BYTES,
+                monotonic=self._monotonic,
+                deadline_at=deadline_at,
+            )
         if self._monotonic() - started > 2.0:
             raise ValueError
         if not isinstance(payload, dict) or set(payload) != {"keys"}:

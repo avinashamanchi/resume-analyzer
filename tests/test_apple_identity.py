@@ -62,6 +62,26 @@ def token(
     return jwt.encode(claims, private_key, algorithm="RS256", headers={"kid": kid})
 
 
+def unknown_kid_token(kid: str) -> str:
+    header = base64.urlsafe_b64encode(
+        json.dumps({"alg": "RS256", "kid": kid}, separators=(",", ":")).encode()
+    ).rstrip(b"=").decode()
+    return f"{header}.e30.c2ln"
+
+
+class _SlowAppleStream(httpx.SyncByteStream):
+    def __init__(self, clock: list[float], body: bytes) -> None:
+        self._clock = clock
+        self._body = body
+
+    def __iter__(self):
+        midpoint = len(self._body) // 2
+        self._clock[0] += 1.1
+        yield self._body[:midpoint]
+        self._clock[0] += 1.1
+        yield self._body[midpoint:]
+
+
 def verifier(
     private_key,
     handler=None,
@@ -310,6 +330,36 @@ def test_unknown_kids_are_coalesced_behind_one_refresh_and_cooldown():
     assert calls == 1
 
 
+def test_unique_unknown_kids_use_constant_memory_global_cooldown_and_expire():
+    trusted_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    clock = [NOW]
+    calls = 0
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(200, json={"keys": [jwk(trusted_key)]})
+
+    checked, _ = verifier(trusted_key, handler, clock=clock)
+    checked.verify(token(trusted_key), RAW_NONCE)
+    for index in range(2_000):
+        with pytest.raises(InvalidAppleIdentity):
+            checked.verify(unknown_kid_token(f"attacker-{index}"), RAW_NONCE)
+    assert calls == 1
+    assert not hasattr(checked, "_negative_kids")
+
+    checked.verify(
+        token(trusted_key, nonce="known-during-cooldown"),
+        "known-during-cooldown",
+    )
+    assert calls == 1
+
+    clock[0] += timedelta(seconds=31)
+    with pytest.raises(InvalidAppleIdentity):
+        checked.verify(unknown_kid_token("attacker-after-expiry"), RAW_NONCE)
+    assert calls == 2
+
+
 def test_jwks_wall_deadline_redirect_and_url_are_fail_closed():
     private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     ticks = iter([1.0, 3.1])
@@ -330,3 +380,20 @@ def test_jwks_wall_deadline_redirect_and_url_are_fail_closed():
                 key_secret=b"nonce-replay-key" * 2,
             ),
         )
+
+
+def test_jwks_total_wall_deadline_is_enforced_during_streaming():
+    private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    clock = [4.0]
+    body = json.dumps({"keys": [jwk(private_key)]}).encode()
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, stream=_SlowAppleStream(clock, body))
+
+    checked, _ = verifier(
+        private_key,
+        handler,
+        monotonic=lambda: clock[0],
+    )
+    with pytest.raises(InvalidAppleIdentity):
+        checked.verify(token(private_key), RAW_NONCE)

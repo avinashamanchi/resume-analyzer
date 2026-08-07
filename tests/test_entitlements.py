@@ -303,7 +303,165 @@ def test_subject_link_is_atomic_idempotent_and_preserves_combined_usage():
     assert account.begin_dispatch().allowance.used == 4
 
 
-def test_link_state_and_month_state_expire_at_reset_plus_buffer():
+def test_linked_aliases_share_canonical_request_lease_and_charged_marker():
+    redis_client = fakeredis.FakeRedis()
+    allowance_store = store(redis_client)
+    allowance_store.link_quota_subjects("installation:one", "account:one")
+    request_id = UUID(int=501)
+
+    installation = allowance_store.reserve(
+        "installation:one", plan("pro"), request_id
+    )
+    account = allowance_store.reserve("account:one", plan("pro"), request_id)
+    decisions = [installation.begin_dispatch(), account.begin_dispatch()]
+
+    assert [item.disposition for item in decisions].count("started") == 1
+    assert {item.disposition for item in decisions} <= {
+        "started",
+        "duplicate_in_flight",
+        "already_charged",
+    }
+    assert allowance_store.reserve(
+        "installation:one", plan("pro"), request_id
+    ).begin_dispatch().disposition == "already_charged"
+
+
+def test_link_between_reserve_and_dispatch_invalidates_old_lease_without_charge():
+    redis_client = fakeredis.FakeRedis()
+    allowance_store = store(redis_client)
+    request_id = UUID(int=502)
+    pre_link = allowance_store.reserve(
+        "installation:one", plan("pro"), request_id
+    )
+
+    allowance_store.link_quota_subjects("installation:one", "account:one")
+
+    assert pre_link.begin_dispatch().disposition == "identity_changed"
+    replacement = allowance_store.reserve("account:one", plan("pro"), request_id)
+    assert replacement.snapshot().used == 0
+    assert replacement.begin_dispatch().disposition == "started"
+    assert allowance_store.reserve(
+        "installation:one", plan("pro"), UUID(int=503)
+    ).snapshot().used == 1
+
+
+def test_link_preserves_prelink_charged_request_id_across_both_aliases():
+    redis_client = fakeredis.FakeRedis()
+    allowance_store = store(redis_client)
+    request_id = UUID(int=5_020)
+    assert allowance_store.reserve(
+        "installation:one", plan("pro"), request_id
+    ).begin_dispatch().disposition == "started"
+
+    allowance_store.link_quota_subjects("installation:one", "account:one")
+
+    duplicate = allowance_store.reserve("account:one", plan("pro"), request_id)
+    assert duplicate.snapshot().used == 1
+    assert duplicate.begin_dispatch().disposition == "already_charged"
+
+
+def test_chained_links_resolve_transitively_and_share_request_id():
+    redis_client = fakeredis.FakeRedis()
+    allowance_store = store(redis_client)
+    allowance_store.reserve(
+        "installation:one", plan("pro"), UUID(int=1)
+    ).begin_dispatch()
+    allowance_store.link_quota_subjects("installation:one", "account:one")
+    allowance_store.link_quota_subjects("account:one", "account:two")
+
+    request_id = UUID(int=504)
+    first = allowance_store.reserve("installation:one", plan("pro"), request_id)
+    second = allowance_store.reserve("account:two", plan("pro"), request_id)
+    decisions = [first.begin_dispatch(), second.begin_dispatch()]
+    assert [item.disposition for item in decisions].count("started") == 1
+    assert allowance_store.reserve(
+        "account:one", plan("pro"), UUID(int=505)
+    ).snapshot().used == 2
+
+
+def test_link_after_month_boundary_invalidates_previous_month_lease_and_retries():
+    clock = [NOW]
+    redis_client = fakeredis.FakeRedis()
+    allowance_store = store(redis_client, clock=clock)
+    request_id = UUID(int=506)
+    pending = allowance_store.reserve(
+        "installation:one",
+        plan("pro", verified_for=timedelta(days=2)),
+        request_id,
+    )
+    clock[0] = datetime(2026, 9, 1, 0, 0, 1, tzinfo=UTC)
+    allowance_store.link_quota_subjects("installation:one", "account:one")
+
+    assert pending.begin_dispatch().disposition == "identity_changed"
+    current_plan = plan("pro", now=clock[0])
+    retried = allowance_store.reserve("account:one", current_plan, request_id)
+    decision = retried.begin_dispatch()
+    assert decision.disposition == "started"
+    assert decision.resets_at == datetime(2026, 10, 1, tzinfo=UTC)
+
+
+def test_concurrent_link_reserve_and_dispatch_never_charges_detached_counter():
+    redis_client = fakeredis.FakeRedis()
+    allowance_store = store(redis_client)
+
+    for index in range(12):
+        installation = f"installation:race:{index}"
+        account = f"account:race:{index}"
+        allowance_store.reserve(
+            installation, plan("pro"), UUID(int=10_000 + index * 10)
+        ).begin_dispatch()
+        allowance_store.reserve(
+            account, plan("pro"), UUID(int=10_001 + index * 10)
+        ).begin_dispatch()
+        request_id = UUID(int=10_002 + index * 10)
+
+        def dispatch() -> str:
+            return allowance_store.reserve(
+                installation, plan("pro"), request_id
+            ).begin_dispatch().disposition
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            link_future = executor.submit(
+                allowance_store.link_quota_subjects, installation, account
+            )
+            dispatch_future = executor.submit(dispatch)
+            link_future.result()
+            outcome = dispatch_future.result()
+        if outcome == "identity_changed":
+            assert allowance_store.reserve(
+                account, plan("pro"), request_id
+            ).begin_dispatch().disposition == "started"
+        else:
+            assert outcome == "started"
+        assert allowance_store.reserve(
+            account, plan("pro"), UUID(int=10_003 + index * 10)
+        ).snapshot().used == 3
+
+
+def test_corrupt_or_cyclic_canonical_link_fails_closed():
+    redis_client = fakeredis.FakeRedis()
+    allowance_store = store(redis_client)
+    first = allowance_store._digest("subject", "installation:cycle")
+    second = allowance_store._digest("subject", "account:cycle")
+    redis_client.set(allowance_store._root_key(first), second, ex=60)
+    redis_client.set(allowance_store._root_key(second), first, ex=60)
+    with pytest.raises(AllowanceUnavailable):
+        allowance_store.reserve("installation:cycle", plan(), UUID(int=507))
+
+    redis_client.delete(allowance_store._root_key(first))
+    redis_client.set(allowance_store._root_key(first), b"not-a-digest", ex=60)
+    with pytest.raises(AllowanceUnavailable):
+        allowance_store.reserve("installation:cycle", plan(), UUID(int=508))
+
+    redis_client.delete(allowance_store._root_key(first))
+    redis_client.set(
+        allowance_store._generation_key(first), b"1000000001", ex=60
+    )
+    with pytest.raises(AllowanceUnavailable):
+        allowance_store.reserve("installation:cycle", plan(), UUID(int=509))
+
+
+def test_link_state_persists_400_days_while_month_state_expires_at_reset_buffer():
     redis_client = fakeredis.FakeRedis()
     allowance_store = store(redis_client)
     allowance_store.link_quota_subjects("installation:one", "account:one")
@@ -312,9 +470,19 @@ def test_link_state_and_month_state_expire_at_reset_plus_buffer():
     ).begin_dispatch()
 
     expected_max = 60 + CHARGED_MARKER_RESET_BUFFER_SECONDS
-    ttls = [redis_client.ttl(key) for key in redis_client.keys("rai:ai:v2:*")]
-    assert ttls
-    assert all(0 < ttl <= expected_max for ttl in ttls)
+    link_ttls = [
+        redis_client.ttl(key)
+        for key in redis_client.keys("rai:ai:v2:*")
+        if b":root:" in key or b":generation:" in key or b":members:" in key
+    ]
+    month_ttls = [
+        redis_client.ttl(key)
+        for key in redis_client.keys("rai:ai:v2:*")
+        if b":counter:" in key or b":charged:" in key or b":link:" in key
+    ]
+    assert link_ttls and month_ttls
+    assert all(399 * 24 * 60 * 60 < ttl <= 400 * 24 * 60 * 60 for ttl in link_ttls)
+    assert all(0 < ttl <= expected_max for ttl in month_ttls)
 
 
 @pytest.mark.parametrize(
@@ -332,6 +500,7 @@ def test_redis_contains_no_raw_subject_or_request_material():
     subject = "installation:private-canary"
     request_id = UUID("12345678-1234-1234-1234-123456789abc")
     allowance_store.reserve(subject, plan(), request_id).begin_dispatch()
+    allowance_store.link_quota_subjects(subject, "account:private-canary")
     rendered = repr(redis_client.keys("*") + list(redis_client.mget(redis_client.keys("*"))))
     assert "private-canary" not in rendered
     assert str(request_id) not in rendered
