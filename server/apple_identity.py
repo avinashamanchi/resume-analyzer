@@ -26,6 +26,7 @@ _JWKS_MAX_BYTES = 64 * 1024
 _JWKS_CACHE_SECONDS = 6 * 60 * 60
 _UNKNOWN_KID_COOLDOWN_SECONDS = 30
 _MAX_KEYS = 20
+_JWKS_DEADLINE_SECONDS = 2.0
 
 
 class InvalidAppleIdentity(ValueError):
@@ -119,15 +120,32 @@ class AppleIdentityVerifier:
         cached = self._keys.get(kid)
         if cached is not None and current < cached[1]:
             return cached[0]
-        with self._refresh_lock:
+        started = self._monotonic()
+        if not self._valid_monotonic(started):
+            raise ValueError
+        deadline_at = started + _JWKS_DEADLINE_SECONDS
+        if not math.isfinite(deadline_at):
+            raise ValueError
+        acquired = self._refresh_lock.acquire(
+            timeout=self._remaining_refresh_time(deadline_at)
+        )
+        if not acquired:
+            raise ValueError
+        try:
             current = self._current_time()
             cached = self._keys.get(kid)
             if cached is not None and current < cached[1]:
                 return cached[0]
-            had_stale_key = cached is not None
-            if not had_stale_key and current < self._refresh_not_before:
+            if current < self._refresh_not_before:
                 raise ValueError
-            keys = self._fetch_keys(current)
+            try:
+                keys = self._fetch_keys(deadline_at)
+            except Exception:
+                self._refresh_not_before = max(
+                    self._refresh_not_before,
+                    current + timedelta(seconds=_UNKNOWN_KID_COOLDOWN_SECONDS),
+                )
+                raise
             expires_at = current + timedelta(seconds=_JWKS_CACHE_SECONDS)
             self._keys = {key_id: (key, expires_at) for key_id, key in keys.items()}
             self._refresh_not_before = current + timedelta(
@@ -137,10 +155,10 @@ class AppleIdentityVerifier:
             if selected is None:
                 raise ValueError
             return selected[0]
+        finally:
+            self._refresh_lock.release()
 
-    def _fetch_keys(self, current: datetime) -> dict[str, Any]:
-        started = self._monotonic()
-        deadline_at = started + 2.0
+    def _fetch_keys(self, deadline_at: float) -> dict[str, Any]:
         with self._http_client.stream(
             "GET",
             _APPLE_JWKS_URL,
@@ -148,7 +166,7 @@ class AppleIdentityVerifier:
                 "Accept": "application/json",
                 "Accept-Encoding": "identity",
             },
-            timeout=httpx.Timeout(2.0),
+            timeout=httpx.Timeout(self._remaining_refresh_time(deadline_at)),
         ) as response:
             if response.status_code < 200 or response.status_code >= 300:
                 raise ValueError
@@ -158,8 +176,7 @@ class AppleIdentityVerifier:
                 monotonic=self._monotonic,
                 deadline_at=deadline_at,
             )
-        if self._monotonic() - started > 2.0:
-            raise ValueError
+        self._remaining_refresh_time(deadline_at)
         if not isinstance(payload, dict) or set(payload) != {"keys"}:
             raise ValueError
         values = payload["keys"]
@@ -183,6 +200,23 @@ class AppleIdentityVerifier:
                 json.dumps(value, sort_keys=True, separators=(",", ":"))
             )
         return keys
+
+    def _remaining_refresh_time(self, deadline_at: float) -> float:
+        current = self._monotonic()
+        if not self._valid_monotonic(current):
+            raise ValueError
+        remaining = deadline_at - current
+        if not math.isfinite(remaining) or remaining <= 0:
+            raise ValueError
+        return remaining
+
+    @staticmethod
+    def _valid_monotonic(value: object) -> bool:
+        return (
+            not isinstance(value, bool)
+            and isinstance(value, (int, float))
+            and math.isfinite(value)
+        )
 
     def _opaque(self, purpose: str, subject: str) -> str:
         return base64.urlsafe_b64encode(

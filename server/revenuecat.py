@@ -165,15 +165,19 @@ class RevenueCatClient:
             product = entitlement.get("product_identifier")
             if product not in _APPROVED_PRODUCTS:
                 raise ValueError
-            self._validate_known_entitlement_fields(entitlement)
+            grace_expiration = self._validate_known_entitlement_fields(entitlement)
             expiration = self._parse_timestamp(entitlement["expires_date"])
+            if grace_expiration is not None:
+                expiration = max(expiration, grace_expiration)
         maximum = now + timedelta(seconds=PLAN_CACHE_MAX_SECONDS)
         if expiration is None or expiration <= now:
             return PlanSnapshot("free", maximum, None)
         return PlanSnapshot("pro", min(maximum, expiration), expiration)
 
     @classmethod
-    def _validate_known_entitlement_fields(cls, entitlement: dict[object, object]) -> None:
+    def _validate_known_entitlement_fields(
+        cls, entitlement: dict[object, object]
+    ) -> datetime | None:
         if "expires_date" not in entitlement:
             raise ValueError
         cls._parse_timestamp(entitlement["expires_date"])
@@ -186,11 +190,13 @@ class RevenueCatClient:
             if name in entitlement:
                 cls._parse_timestamp(entitlement[name])
         grace = entitlement.get("grace_period_expires_date")
+        grace_expiration: datetime | None = None
         if grace is not None:
-            cls._parse_timestamp(grace)
+            grace_expiration = cls._parse_timestamp(grace)
         for name in ("ownership_type", "store", "period_type"):
             if name in entitlement:
                 cls._bounded_text(entitlement[name], maximum=128)
+        return grace_expiration
 
     @classmethod
     def _validate_bounded_value(cls, value: object, *, depth: int = 0) -> None:
@@ -421,13 +427,15 @@ class RevenueCatWebhook:
             }
             if not required.issubset(event):
                 raise ValueError
-            self._approved_environment(event["environment"])
+            if event["environment"] is not None:
+                self._approved_environment(event["environment"])
             aliases = self._optional_list(event, "aliases")
-            app_user_id = self._bounded_string(event["app_user_id"], maximum=512)
-            original_app_user_id = self._bounded_string(
-                event["original_app_user_id"], maximum=512
+            app_user_id = self._optional_identifier(event, "app_user_id")
+            original_app_user_id = self._optional_identifier(
+                event, "original_app_user_id"
             )
-            product = self._approved_product(event["product_id"])
+            if event["product_id"] is not None:
+                product = self._approved_product(event["product_id"])
             entitlement_ids = self._resume_entitlements(event["entitlement_ids"])
         result = RevenueCatEvent(
             event_id=self._bounded_string(event.get("id"), maximum=256),
@@ -454,7 +462,7 @@ class RevenueCatWebhook:
     def _optional_list(
         cls, event: dict[object, object], name: str
     ) -> tuple[str, ...]:
-        if name not in event:
+        if name not in event or event[name] is None:
             return ()
         return cls._bounded_list(event[name], maximum=MAX_AFFECTED_APP_USER_IDS)
 

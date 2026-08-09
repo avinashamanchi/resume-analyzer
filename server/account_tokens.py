@@ -19,6 +19,7 @@ _MAX_TTL_SECONDS = 900
 _BASE64URL_PATTERN = re.compile(r"[A-Za-z0-9_-]+")
 _ACCOUNT_PATTERN = re.compile(r"acct_[A-Za-z0-9_-]{16,128}")
 _INSTALLATION_DIGEST_PATTERN = re.compile(r"inst_[A-Za-z0-9_-]{16,128}")
+_REVENUECAT_ACCOUNT_PATTERN = re.compile(r"rai_account_[A-Za-z0-9_-]{16,128}")
 _CLAIMS = frozenset(
     {
         "account_id",
@@ -26,6 +27,7 @@ _CLAIMS = frozenset(
         "iat",
         "installation_digest",
         "purpose",
+        "revenuecat_app_user_id",
         "version",
     }
 )
@@ -40,6 +42,7 @@ class InvalidAccountToken(ValueError):
 class AccountTokenClaims:
     account_id: str = field(repr=False)
     installation_digest: str = field(repr=False)
+    revenuecat_app_user_id: str = field(repr=False)
     issued_at: int
     expires_at: int
     version: int
@@ -69,8 +72,17 @@ class AccountTokenService:
         self._now = now
         self._ttl_seconds = ttl_seconds
 
-    def issue(self, account_id: str, installation_digest: str) -> IssuedAccountToken:
-        self._validate_claims(account_id, installation_digest)
+    def issue(
+        self,
+        account_id: str,
+        installation_digest: str,
+        revenuecat_app_user_id: str,
+    ) -> IssuedAccountToken:
+        self._validate_claims(
+            account_id,
+            installation_digest,
+            revenuecat_app_user_id,
+        )
         issued_at = self._current_time()
         expires_at = issued_at + self._ttl_seconds
         claims = {
@@ -79,6 +91,7 @@ class AccountTokenService:
             "iat": issued_at,
             "installation_digest": installation_digest,
             "purpose": _TOKEN_PURPOSE,
+            "revenuecat_app_user_id": revenuecat_app_user_id,
             "version": _TOKEN_VERSION,
         }
         encoded = _encode_base64url(
@@ -131,7 +144,12 @@ class AccountTokenService:
             raise ValueError
         account_id = payload["account_id"]
         bound_installation = payload["installation_digest"]
-        self._validate_claims(account_id, bound_installation)
+        revenuecat_app_user_id = payload["revenuecat_app_user_id"]
+        self._validate_claims(
+            account_id,
+            bound_installation,
+            revenuecat_app_user_id,
+        )
         if not hmac.compare_digest(bound_installation, installation_digest):
             raise ValueError
         issued_at = _strict_integer(payload["iat"])
@@ -150,16 +168,26 @@ class AccountTokenService:
         return AccountTokenClaims(
             account_id=account_id,
             installation_digest=bound_installation,
+            revenuecat_app_user_id=revenuecat_app_user_id,
             issued_at=issued_at,
             expires_at=expires_at,
             version=version,
         )
 
     @staticmethod
-    def _validate_claims(account_id: object, installation_digest: object) -> None:
+    def _validate_claims(
+        account_id: object,
+        installation_digest: object,
+        revenuecat_app_user_id: object,
+    ) -> None:
         if not isinstance(account_id, str) or _ACCOUNT_PATTERN.fullmatch(account_id) is None:
             raise ValueError("account identity is invalid")
         AccountTokenService._validate_installation_digest(installation_digest)
+        if (
+            not isinstance(revenuecat_app_user_id, str)
+            or _REVENUECAT_ACCOUNT_PATTERN.fullmatch(revenuecat_app_user_id) is None
+        ):
+            raise ValueError("RevenueCat account identity is invalid")
 
     @staticmethod
     def _validate_installation_digest(value: object) -> None:

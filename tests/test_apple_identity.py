@@ -3,6 +3,8 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 
@@ -335,6 +337,81 @@ def test_unknown_kids_are_coalesced_behind_one_refresh_and_cooldown():
         outcomes = list(executor.map(lambda pair: _verify_outcome(checked, *pair), values))
     assert outcomes == ["rejected"] * 8
     assert calls == 1
+
+
+def test_failed_unknown_kid_refresh_is_coalesced_behind_one_shared_cooldown():
+    trusted_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    clock = [NOW]
+    refresh_started = threading.Event()
+    release_refresh = threading.Event()
+    calls = 0
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        refresh_started.set()
+        assert release_refresh.wait(timeout=5)
+        raise httpx.ConnectError("private outage")
+
+    checked, _ = verifier(trusted_key, handler, clock=clock)
+    values = [
+        (unknown_kid_token(f"failed-refresh-{index}"), RAW_NONCE)
+        for index in range(8)
+    ]
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        futures = [
+            executor.submit(_verify_outcome, checked, value, nonce)
+            for value, nonce in values
+        ]
+        assert refresh_started.wait(timeout=5)
+        release_refresh.set()
+        outcomes = [future.result(timeout=5) for future in futures]
+
+    assert outcomes == ["rejected"] * 8
+    assert calls == 1
+    with pytest.raises(InvalidAppleIdentity):
+        checked.verify(unknown_kid_token("failed-refresh-cooldown"), RAW_NONCE)
+    assert calls == 1
+
+    clock[0] += timedelta(seconds=31)
+    with pytest.raises(InvalidAppleIdentity):
+        checked.verify(unknown_kid_token("failed-refresh-after-cooldown"), RAW_NONCE)
+    assert calls == 2
+
+
+def test_jwks_lock_wait_and_fetch_share_the_same_two_second_deadline():
+    trusted_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    refresh_started = threading.Event()
+    release_refresh = threading.Event()
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        refresh_started.set()
+        assert release_refresh.wait(timeout=5)
+        return httpx.Response(200, json={"keys": [jwk(trusted_key)]})
+
+    checked, _ = verifier(trusted_key, handler, monotonic=time.monotonic)
+    executor = ThreadPoolExecutor(max_workers=2)
+    first = executor.submit(
+        _verify_outcome,
+        checked,
+        token(trusted_key, nonce="lock-owner-nonce"),
+        "lock-owner-nonce",
+    )
+    assert refresh_started.wait(timeout=5)
+    started = time.monotonic()
+    waiting = executor.submit(
+        _verify_outcome,
+        checked,
+        unknown_kid_token("lock-waiter"),
+        RAW_NONCE,
+    )
+    try:
+        assert waiting.result(timeout=3) == "rejected"
+        assert time.monotonic() - started <= 2.75
+    finally:
+        release_refresh.set()
+        assert first.result(timeout=5) == "rejected"
+        executor.shutdown(wait=True)
 
 
 def test_unique_unknown_kids_use_constant_memory_global_cooldown_and_expire():

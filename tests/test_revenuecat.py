@@ -139,6 +139,33 @@ def test_pro_verification_is_capped_by_entitlement_expiration():
     assert snapshot.verified_until == expiration
 
 
+@pytest.mark.parametrize(
+    ("grace_expiration", "expected_verified_until"),
+    [
+        (NOW + timedelta(hours=2), NOW + timedelta(hours=2)),
+        (NOW + timedelta(days=2), NOW + timedelta(hours=25)),
+    ],
+)
+def test_documented_future_grace_period_keeps_matching_pro_entitlement_active(
+    grace_expiration: datetime,
+    expected_verified_until: datetime,
+):
+    entitlement = pro_entitlement(
+        (NOW - timedelta(minutes=1)).isoformat().replace("+00:00", "Z"),
+        grace_period_expires_date=grace_expiration.isoformat().replace("+00:00", "Z"),
+    )
+    snapshot = client_for(
+        lambda _request: httpx.Response(
+            200,
+            content=subscriber({"resume_pro": entitlement}),
+        )
+    ).fetch_plan("rai_account_opaque", deadline=1.0)
+
+    assert snapshot.kind == "pro"
+    assert snapshot.entitlement_expires_at == grace_expiration
+    assert snapshot.verified_until == expected_verified_until
+
+
 def test_fractional_revenuecat_expiration_and_webhook_timestamp_are_accepted():
     expiration = NOW + timedelta(hours=2, milliseconds=125)
     payload = subscriber(
@@ -218,6 +245,15 @@ def test_fetch_enforces_declared_and_streamed_body_caps_and_strict_json():
     [
         {"expires_date": "2026-09-01T00:00:00Z"},
         pro_entitlement("2026-09-01T00:00:00Z", product_identifier="unknown.product"),
+        pro_entitlement(
+            "2026-08-07T11:59:00Z",
+            grace_period_expires_date="not-a-timestamp",
+        ),
+        pro_entitlement(
+            "2026-08-07T11:59:00Z",
+            product_identifier="unknown.product",
+            grace_period_expires_date="2026-08-07T14:00:00Z",
+        ),
         pro_entitlement("2026-09-01T00:00:00Z") | {"store": 123},
         pro_entitlement("2026-09-01T00:00:00Z") | {"future": float("inf")},
     ],
@@ -490,6 +526,57 @@ def test_webhook_accepts_documented_null_entitlements_for_lifecycle_invalidation
         "rai_alias_opaque",
     )
     assert not hasattr(decoded, "plan")
+
+
+@pytest.mark.parametrize(
+    ("app_user_id", "original_app_user_id", "affected"),
+    [
+        ("rai_account_opaque", None, ("rai_account_opaque",)),
+        (None, "rai_installation_opaque", ("rai_installation_opaque",)),
+    ],
+)
+def test_lifecycle_null_always_fields_accept_partial_identity_for_invalidation_only(
+    app_user_id: str | None,
+    original_app_user_id: str | None,
+    affected: tuple[str, ...],
+):
+    decoded = webhook().decode(
+        {"Authorization": f"Bearer {WEBHOOK_SECRET}"},
+        encoded_event(
+            lifecycle_event(
+                type="CANCELLATION",
+                app_user_id=app_user_id,
+                original_app_user_id=original_app_user_id,
+                aliases=None,
+                product_id=None,
+                entitlement_ids=None,
+                environment=None,
+            )
+        ),
+    )
+
+    assert decoded.affected_app_user_ids == affected
+    assert decoded.product_id is None
+    assert decoded.entitlement_ids == ()
+    assert not hasattr(decoded, "plan")
+
+
+def test_lifecycle_null_always_fields_still_require_an_affected_identity():
+    with pytest.raises(InvalidRevenueCatWebhook):
+        webhook().decode(
+            {"Authorization": f"Bearer {WEBHOOK_SECRET}"},
+            encoded_event(
+                lifecycle_event(
+                    type="CANCELLATION",
+                    app_user_id=None,
+                    original_app_user_id=None,
+                    aliases=None,
+                    product_id=None,
+                    entitlement_ids=None,
+                    environment=None,
+                )
+            ),
+        )
 
 
 @pytest.mark.parametrize("missing", ["product_id", "entitlement_ids", "environment"])
