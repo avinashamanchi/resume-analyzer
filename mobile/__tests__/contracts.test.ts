@@ -165,6 +165,18 @@ describe('mobile service contracts', () => {
     expect(() => PublicErrorSchema.parse({ ...error, body: 'resume text' })).toThrow();
   });
 
+  it('accepts the content-free capacity response used before body upload', () => {
+    const error = {
+      schemaVersion: 1,
+      code: 'capacity_limited',
+      message: 'The service is busy. Please try again shortly.',
+      requestId: validFixture.analysisId,
+      retryable: true,
+    };
+
+    expect(PublicErrorSchema.parse(error)).toEqual(error);
+  });
+
   it('accepts complete and deterministic-only v2 fixtures with the same score', () => {
     const complete = parseV2(completeV2Fixture);
     const deterministic = parseV2(deterministicOnlyV2Fixture);

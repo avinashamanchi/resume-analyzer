@@ -12,6 +12,7 @@ const ERROR_CODES = [
   'invalid_request',
   'invalid_installation',
   'rate_limited',
+  'capacity_limited',
   'request_in_progress',
   'unsupported_file',
   'file_too_large',

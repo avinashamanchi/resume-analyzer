@@ -78,6 +78,67 @@ def test_analysis_ip_backstop_is_twenty_per_hour_and_sixty_per_day(
     assert limiter.check(UUID(int=99), ip_key).allowed is False
 
 
+def test_v2_analysis_limits_are_identity_based_and_provider_limits_degrade_only_ai(
+    redis_client: fakeredis.FakeRedis,
+):
+    now = [1_800_000_000]
+    limiter = _limiter(redis_client, now)
+    assert hasattr(limiter, "check_v2_analysis"), "v2 identity limiter is missing"
+
+    for _ in range(5):
+        decision = limiter.check_v2_analysis(
+            INSTALLATION_ID,
+            account_id="acct_shared_identity_0001",
+            provider_requested=True,
+        )
+        assert decision.analysis_allowed is True
+        assert decision.provider_allowed is True
+    provider_limited = limiter.check_v2_analysis(
+        INSTALLATION_ID,
+        account_id="acct_shared_identity_0001",
+        provider_requested=True,
+    )
+    assert provider_limited.analysis_allowed is True
+    assert provider_limited.provider_allowed is False
+
+    for _ in range(24):
+        decision = limiter.check_v2_analysis(
+            INSTALLATION_ID,
+            account_id="acct_shared_identity_0001",
+            provider_requested=False,
+        )
+        assert decision.analysis_allowed is True
+    blocked = limiter.check_v2_analysis(
+        INSTALLATION_ID,
+        account_id="acct_shared_identity_0001",
+        provider_requested=False,
+    )
+    assert blocked.analysis_allowed is False
+    assert blocked.retry_after_seconds >= 1
+
+
+def test_v2_account_limit_is_shared_across_installations_without_an_ip_key(
+    redis_client: fakeredis.FakeRedis,
+):
+    now = [1_800_000_000]
+    limiter = _limiter(redis_client, now)
+    assert hasattr(limiter, "check_v2_analysis"), "v2 identity limiter is missing"
+    account_id = "acct_shared_identity_0002"
+    for index in range(60):
+        decision = limiter.check_v2_analysis(
+            UUID(int=1_000 + index),
+            account_id=account_id,
+            provider_requested=False,
+        )
+        assert decision.analysis_allowed is True
+    blocked = limiter.check_v2_analysis(
+        UUID(int=9_999),
+        account_id=account_id,
+        provider_requested=False,
+    )
+    assert blocked.analysis_allowed is False
+
+
 def test_installation_issuance_is_limited_to_five_per_hour_and_twenty_per_day(
     redis_client: fakeredis.FakeRedis,
 ):

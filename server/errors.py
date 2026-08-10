@@ -9,6 +9,7 @@ class ErrorCode(StrEnum):
     INVALID_REQUEST = "invalid_request"
     INVALID_INSTALLATION = "invalid_installation"
     RATE_LIMITED = "rate_limited"
+    CAPACITY_LIMITED = "capacity_limited"
     REQUEST_IN_PROGRESS = "request_in_progress"
     UNSUPPORTED_FILE = "unsupported_file"
     FILE_TOO_LARGE = "file_too_large"

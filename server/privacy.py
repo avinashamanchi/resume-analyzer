@@ -11,6 +11,7 @@ _PUBLIC_MESSAGES: dict[ErrorCode, str] = {
     ErrorCode.INVALID_REQUEST: "The request is invalid.",
     ErrorCode.INVALID_INSTALLATION: "The installation authorization is invalid.",
     ErrorCode.RATE_LIMITED: "Too many requests. Please try again later.",
+    ErrorCode.CAPACITY_LIMITED: "The service is busy. Please try again shortly.",
     ErrorCode.REQUEST_IN_PROGRESS: (
         "A request with this identifier is already in progress."
     ),
@@ -37,6 +38,7 @@ _PUBLIC_STATUSES: dict[ErrorCode, int] = {
     ErrorCode.INVALID_REQUEST: 400,
     ErrorCode.INVALID_INSTALLATION: 401,
     ErrorCode.RATE_LIMITED: 429,
+    ErrorCode.CAPACITY_LIMITED: 503,
     ErrorCode.REQUEST_IN_PROGRESS: 409,
     ErrorCode.UNSUPPORTED_FILE: 415,
     ErrorCode.FILE_TOO_LARGE: 413,

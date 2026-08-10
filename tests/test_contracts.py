@@ -172,6 +172,14 @@ def test_public_error_validates_a_wire_format_error_code():
     assert PublicErrorV1.model_validate(payload).code is ErrorCode.AI_TIMEOUT
 
 
+def test_canonical_error_schema_contains_every_server_error_code():
+    schema = json.loads(Path("contracts/error-v1.schema.json").read_text())
+
+    assert set(schema["properties"]["code"]["enum"]) == {
+        code.value for code in ErrorCode
+    }
+
+
 V2_NON_COMPLETE_STATUSES = (
     "not_requested",
     "quota_exhausted",

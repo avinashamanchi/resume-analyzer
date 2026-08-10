@@ -6,11 +6,12 @@ from pathlib import Path
 import sys
 import time
 from typing import Any
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from flask import Flask, g, jsonify, request
 from werkzeug.exceptions import BadRequest, HTTPException, RequestEntityTooLarge
 
+from .admission import AdmissionRequest
 from .config import ConfigurationError, Settings, canonicalize_origins
 from .errors import ErrorCode, PublicServiceError
 from .privacy import public_error, public_status
@@ -30,6 +31,8 @@ class ServiceRegistry:
     installation_tokens: Any
     rate_limiter: Any
     leases: Any
+    admission: Any | None = None
+    account_tokens: Any | None = None
 
 
 _CONTENT_SECURITY_POLICY = (
@@ -37,8 +40,20 @@ _CONTENT_SECURITY_POLICY = (
     "frame-ancestors 'none'; form-action 'self'"
 )
 _CORS_METHODS = "GET, POST, OPTIONS"
-_CORS_HEADERS = "Authorization, Content-Type"
-_CORS_HEADER_NAMES = frozenset({"authorization", "content-type"})
+_CORS_HEADERS = (
+    "Authorization, Content-Type, X-Resume-Source, X-Resume-AI, "
+    "X-Resume-Request-ID, X-Resume-Account"
+)
+_CORS_HEADER_NAMES = frozenset(
+    {
+        "authorization",
+        "content-type",
+        "x-resume-source",
+        "x-resume-ai",
+        "x-resume-request-id",
+        "x-resume-account",
+    }
+)
 _WEB_STATIC_DIRECTORY = Path(__file__).resolve().parent.parent / "static"
 def _response_size_bucket(response: Any) -> str:
     size = response.calculate_content_length()
@@ -105,12 +120,116 @@ def create_app(
         g.resume_ai_request_id = uuid4()
         g.resume_ai_started_ns = time.monotonic_ns()
 
+    @app.before_request
+    def admit_v2_analysis_before_body() -> None:
+        if request.path != "/v2/analyses" or request.method != "POST":
+            return
+        configured_services = app.extensions.get("resume_ai.services")
+        if (
+            configured_services is None
+            or configured_services.admission is None
+        ):
+            raise PublicServiceError(
+                ErrorCode.SERVICE_UNAVAILABLE,
+                retryable=True,
+            )
+
+        authorization = request.headers.get("Authorization")
+        if not isinstance(authorization, str):
+            raise PublicServiceError(ErrorCode.INVALID_INSTALLATION)
+        authorization_parts = authorization.split(" ")
+        if (
+            len(authorization_parts) != 2
+            or authorization_parts[0] != "Installation"
+            or not authorization_parts[1]
+        ):
+            raise PublicServiceError(ErrorCode.INVALID_INSTALLATION)
+        try:
+            installation_claims = configured_services.installation_tokens.verify(
+                authorization_parts[1]
+            )
+        except Exception:
+            raise PublicServiceError(ErrorCode.INVALID_INSTALLATION) from None
+
+        source = request.headers.get("X-Resume-Source")
+        ai_header = request.headers.get("X-Resume-AI")
+        request_id_text = request.headers.get("X-Resume-Request-ID")
+        content_length = request.content_length
+        try:
+            if source not in {"reviewed_text", "pdf"}:
+                raise ValueError
+            if ai_header not in {"requested", "not_requested"}:
+                raise ValueError
+            if not isinstance(request_id_text, str):
+                raise ValueError
+            request_id = UUID(request_id_text)
+            if str(request_id) != request_id_text:
+                raise ValueError
+            if (
+                isinstance(content_length, bool)
+                or not isinstance(content_length, int)
+                or content_length <= 0
+                or content_length > MAX_REQUEST_BYTES
+            ):
+                raise ValueError
+        except (TypeError, ValueError):
+            raise RequestValidationError(ErrorCode.INVALID_REQUEST) from None
+
+        account_id: str | None = None
+        account_token = request.headers.get("X-Resume-Account")
+        if account_token is not None:
+            if configured_services.account_tokens is None:
+                raise PublicServiceError(
+                    ErrorCode.SERVICE_UNAVAILABLE,
+                    retryable=True,
+                )
+            try:
+                installation_digest = (
+                    configured_services.installation_tokens.installation_digest(
+                        installation_claims
+                    )
+                )
+                account_claims = configured_services.account_tokens.verify(
+                    account_token,
+                    installation_digest,
+                )
+                account_id = account_claims.account_id
+            except Exception:
+                raise PublicServiceError(ErrorCode.INVALID_INSTALLATION) from None
+
+        g.resume_ai_admission = configured_services.admission.admit(
+            AdmissionRequest(
+                installation_id=installation_claims.installation_id,
+                account_id=account_id,
+                request_id=request_id,
+                source=source,
+                ai_requested=ai_header == "requested",
+                content_length=content_length,
+            )
+        )
+
+    @app.teardown_request
+    def release_v2_admission(_error: BaseException | None) -> None:
+        decision = getattr(g, "resume_ai_admission", None)
+        if decision is None:
+            return
+        try:
+            decision.lease.release()
+        except Exception:
+            # Redis reservations expire independently; teardown must not replace
+            # the request response when the best-effort early release fails.
+            return
+
     @app.after_request
     def apply_response_policy(response: Any) -> Any:
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["Content-Security-Policy"] = _CONTENT_SECURITY_POLICY
         response.headers["X-Request-ID"] = str(g.resume_ai_request_id)
-        if request.path in {"/v1/analyses", "/v1/installations"}:
+        if request.path in {
+            "/v1/analyses",
+            "/v1/installations",
+            "/v2/analyses",
+        }:
             response.headers["Cache-Control"] = "no-store"
         request_origin = request.headers.get("Origin")
         if request_origin is not None:

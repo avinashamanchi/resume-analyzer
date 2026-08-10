@@ -787,6 +787,7 @@ def _trusted_retention_files() -> dict[str, str]:
     return {
         relative_path: (ROOT / relative_path).read_text()
         for relative_path in (
+            "server/admission.py",
             "server/app.py",
             "server/gunicorn_logger.py",
             "server/entitlements.py",
@@ -818,8 +819,9 @@ def test_architectural_retention_policy_pins_python_and_capability_counts():
         )
         for path, boundary in retention.TRUSTED_BOUNDARIES.items()
     } == {
+        "server/admission.py": {"durable": 14},
         "server/entitlements.py": {"durable": 55},
-        "server/rate_limit.py": {"durable": 19},
+        "server/rate_limit.py": {"durable": 28},
         "server/app.py": {"logging": 3},
         "server/gunicorn_logger.py": {"logging": 5},
     }
@@ -827,9 +829,10 @@ def test_architectural_retention_policy_pins_python_and_capability_counts():
         path: sum(item.count for item in boundary.approved_security_scopes)
         for path, boundary in retention.TRUSTED_BOUNDARIES.items()
     } == {
+        "server/admission.py": 60,
         "server/entitlements.py": 96,
-        "server/rate_limit.py": 60,
-        "server/app.py": 36,
+        "server/rate_limit.py": 69,
+        "server/app.py": 39,
         "server/gunicorn_logger.py": 7,
     }
 

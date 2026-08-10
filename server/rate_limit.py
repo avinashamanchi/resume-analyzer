@@ -27,6 +27,12 @@ DEFAULT_ANALYSIS_IP_HOURLY_LIMIT = 20
 DEFAULT_ANALYSIS_IP_DAILY_LIMIT = 60
 DEFAULT_INSTALLATION_ISSUE_IP_HOURLY_LIMIT = 5
 DEFAULT_INSTALLATION_ISSUE_IP_DAILY_LIMIT = 20
+V2_ANALYSIS_INSTALLATION_MINUTE_LIMIT = 30
+V2_ANALYSIS_INSTALLATION_DAILY_LIMIT = 300
+V2_ANALYSIS_ACCOUNT_MINUTE_LIMIT = 60
+V2_ANALYSIS_ACCOUNT_DAILY_LIMIT = 600
+V2_PROVIDER_INSTALLATION_MINUTE_LIMIT = 5
+V2_PROVIDER_ACCOUNT_MINUTE_LIMIT = 10
 
 _MAX_TRANSACTION_RETRIES = 100
 _OWNER_NONCE_BYTES = 64
@@ -41,6 +47,13 @@ def build_redis_client(url: str, **options: object) -> Redis:
 @dataclass(frozen=True, slots=True)
 class RateLimitDecision:
     allowed: bool
+    retry_after_seconds: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class V2RateLimitDecision:
+    analysis_allowed: bool
+    provider_allowed: bool
     retry_after_seconds: int = 0
 
 
@@ -144,6 +157,66 @@ class RateLimiter:
         )
         return self._atomic_check(limits, timestamp)
 
+    def check_v2_analysis(
+        self,
+        installation_id: UUID,
+        *,
+        account_id: str | None,
+        provider_requested: bool,
+    ) -> V2RateLimitDecision:
+        _validate_uuid(installation_id, "installation_id")
+        if account_id is not None and (
+            not isinstance(account_id, str)
+            or not account_id.startswith("acct_")
+            or len(account_id) > 160
+            or any(ord(character) < 32 or ord(character) == 127 for character in account_id)
+        ):
+            raise ValueError("account_id is invalid")
+        if type(provider_requested) is not bool:
+            raise TypeError("provider_requested must be a boolean")
+        timestamp = _timestamp(self._now)
+        installation_digest = self._digest(
+            "v2-analysis-installation",
+            str(installation_id),
+        )
+        analysis_limits = self._window_limits(
+            "v2-analysis-installation",
+            installation_digest,
+            (
+                (V2_ANALYSIS_INSTALLATION_MINUTE_LIMIT, 60),
+                (V2_ANALYSIS_INSTALLATION_DAILY_LIMIT, DAY_SECONDS),
+            ),
+            timestamp,
+        )
+        provider_limits = self._window_limits(
+            "v2-provider-installation",
+            installation_digest,
+            ((V2_PROVIDER_INSTALLATION_MINUTE_LIMIT, 60),),
+            timestamp,
+        )
+        if account_id is not None:
+            account_digest = self._digest("v2-analysis-account", account_id)
+            analysis_limits += self._window_limits(
+                "v2-analysis-account",
+                account_digest,
+                (
+                    (V2_ANALYSIS_ACCOUNT_MINUTE_LIMIT, 60),
+                    (V2_ANALYSIS_ACCOUNT_DAILY_LIMIT, DAY_SECONDS),
+                ),
+                timestamp,
+            )
+            provider_limits += self._window_limits(
+                "v2-provider-account",
+                account_digest,
+                ((V2_PROVIDER_ACCOUNT_MINUTE_LIMIT, 60),),
+                timestamp,
+            )
+        return self._atomic_v2_check(
+            analysis_limits,
+            provider_limits if provider_requested else (),
+            timestamp,
+        )
+
     def _window_limits(
         self,
         scope: str,
@@ -206,6 +279,87 @@ class RateLimiter:
         except RedisError:
             pass
         return self._redis_unavailable()
+
+    def _atomic_v2_check(
+        self,
+        analysis_limits: Sequence[_Limit],
+        provider_limits: Sequence[_Limit],
+        timestamp: int,
+    ) -> V2RateLimitDecision:
+        all_limits = (*analysis_limits, *provider_limits)
+        keys = [limit.key for limit in all_limits]
+        try:
+            for _ in range(_MAX_TRANSACTION_RETRIES):
+                with self._redis.pipeline() as transaction:
+                    try:
+                        transaction.watch(*keys)
+                        raw_counts = transaction.mget(keys)
+                        counts = [_counter_value(value) for value in raw_counts]
+                        analysis_count = len(analysis_limits)
+                        blocked_analysis = [
+                            limit.window_seconds
+                            for limit, count in zip(
+                                analysis_limits,
+                                counts[:analysis_count],
+                                strict=True,
+                            )
+                            if count >= limit.maximum
+                        ]
+                        if blocked_analysis:
+                            transaction.unwatch()
+                            return V2RateLimitDecision(
+                                analysis_allowed=False,
+                                provider_allowed=False,
+                                retry_after_seconds=max(
+                                    window - (timestamp % window)
+                                    for window in blocked_analysis
+                                ),
+                            )
+                        provider_counts = counts[analysis_count:]
+                        blocked_provider = [
+                            limit.window_seconds
+                            for limit, count in zip(
+                                provider_limits,
+                                provider_counts,
+                                strict=True,
+                            )
+                            if count >= limit.maximum
+                        ]
+                        provider_allowed = bool(provider_limits) and not blocked_provider
+                        transaction.multi()
+                        for limit in analysis_limits:
+                            transaction.incr(limit.key)
+                            transaction.expire(
+                                limit.key,
+                                limit.window_seconds - (timestamp % limit.window_seconds),
+                            )
+                        if provider_allowed:
+                            for limit in provider_limits:
+                                transaction.incr(limit.key)
+                                transaction.expire(
+                                    limit.key,
+                                    limit.window_seconds - (timestamp % limit.window_seconds),
+                                )
+                        transaction.execute()
+                        retry_after = (
+                            max(
+                                window - (timestamp % window)
+                                for window in blocked_provider
+                            )
+                            if blocked_provider
+                            else 0
+                        )
+                        return V2RateLimitDecision(
+                            analysis_allowed=True,
+                            provider_allowed=provider_allowed,
+                            retry_after_seconds=retry_after,
+                        )
+                    except WatchError:
+                        continue
+        except RedisError:
+            pass
+        self._redis_unavailable()
+        raise AssertionError("unreachable")
 
     def _redis_unavailable(self) -> RateLimitDecision:
         if not self._production:
