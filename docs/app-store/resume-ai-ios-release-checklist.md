@@ -1,6 +1,6 @@
 # Resume.AI iOS release checklist
 
-Last updated: 2026-08-09. `PASS` means directly observed evidence. `BLOCKED` means an authorized account, provider setting, signed binary, hardware check, or App Store action is still required. A local export is not an App Store build.
+Last updated: 2026-08-10. `PASS` means directly observed evidence. `BLOCKED` means an authorized account, provider setting, signed binary, hardware check, or App Store action is still required. A local export is not an App Store build.
 
 ## Repository-controlled implementation
 
@@ -9,7 +9,7 @@ Last updated: 2026-08-09. `PASS` means directly observed evidence. `BLOCKED` mea
 - [x] Pro purchase UI uses RevenueCat's StoreKit boundary, localized price, monthly/annual product identifiers, Restore Purchases, Privacy, Terms, and cancellation/error states.
 - [x] Production EAS profile uses store distribution, the SDK-selected Xcode image, remote build-number auto-increment, and no submission credentials.
 - [x] OTA updates are disabled for the first binary, export compliance is declared, tablet support is disabled, and the icon is configured.
-- [ ] Final clean-checkout backend, browser, mobile, native invariant, retention, secret, dependency, Expo Doctor, and iOS export evidence must be recorded for the exact candidate after the 25k hardening changes.
+- [x] Final clean-checkout evidence through `de57991`: backend 745 tests passed with 6 explicit real-Redis skips, browser 25 tests passed, mobile 31 suites / 670 tests passed, and TypeScript, lint, native invariant, retention, secret, dependency, Expo Doctor 18/18, prebuild stability, and a 1,174-module / 5.01 MB Hermes iOS export passed.
 - [x] Production configuration fails closed unless the exact HTTPS API origin and a non-placeholder public RevenueCat Apple SDK key are present. The key is public app configuration, not a RevenueCat secret API key.
 - [x] Resume.AI is guest-first and the first binary exposes no login, account creation, or Sign in with Apple capability. Users can delete individual local records, Delete All active workspace data, and retry temporary-file cleanup.
 - [x] Mobile CI fails closed on any high/critical advisory except the two explicitly reviewed `image-size` parser advisories (GitHub sources `1138808` and `1138809`) through Expo/Metro. The current report has 12 transitive findings; npm proposes only a breaking Expo/React Native downgrade. Project-owned images are signature-checked before export and CI rejects disguised ICNS, JPEG XL, HEIF, and AVIF content. The exception still must be rechecked before the signed candidate.
@@ -19,7 +19,7 @@ Last updated: 2026-08-09. `PASS` means directly observed evidence. `BLOCKED` mea
 ## Public service and privacy gates
 
 - [ ] `BLOCKED` — production API health and complete analysis flow must pass anonymously against the deployed Render service.
-- [ ] `BLOCKED` — Privacy timed out, while Terms and Support returned HTTP 404, during the anonymous 2026-08-09 release check; all three must return HTTPS 200 before submission.
+- [ ] `BLOCKED` — Privacy timed out, while Terms and Support returned HTTP 404, during the anonymous 2026-08-10 release check; all three must return HTTPS 200 before submission.
 - [ ] `BLOCKED` — Groq Zero Data Retention or the exact production retention configuration must be verified in the authoritative provider console and reflected in the policy.
 - [ ] `BLOCKED` — Render retention, content-free application logging, rate limiting, and deletion behavior must match the submitted privacy answers.
 
@@ -52,6 +52,6 @@ Last updated: 2026-08-09. `PASS` means directly observed evidence. `BLOCKED` mea
 
 ## Current environment boundary
 
-On 2026-08-09, EAS reported `Not logged in`; this Mac had Command Line Tools selected with no full Xcode. CocoaPods 1.17.0 is installed, but it cannot replace full Xcode, signing, or an authorized Apple account. Repository work may continue, but signed build, StoreKit, TestFlight, upload, review, and publication cannot be completed until those credentialed steps are performed.
+On 2026-08-09, EAS reported `Not logged in`; on 2026-08-10 this Mac still had Command Line Tools selected with no full Xcode. CocoaPods 1.17.0 is installed, but it cannot replace full Xcode, signing, or an authorized Apple account. Repository work may continue, but signed build, StoreKit, TestFlight, upload, review, and publication cannot be completed until those credentialed steps are performed.
 
 No App Store acceptance or publication is claimed by this checklist.
