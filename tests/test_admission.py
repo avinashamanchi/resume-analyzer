@@ -314,8 +314,8 @@ def test_flask_admits_v2_from_headers_without_reading_body_and_releases_teardown
 
     response = Response.from_app(app, environment)
 
-    assert response.status_code == 404
-    assert body_reads == [0]
+    assert response.status_code == 503
+    assert body_reads == [1]
     assert len(admission.requests) == 1
     assert admission.requests[0].request_id == UUID(request_id)
     assert admission.requests[0].content_length == 2_048
@@ -424,6 +424,7 @@ def test_v2_account_token_is_bound_to_the_verified_installation_before_admission
 
     class AccountClaims:
         account_id = "acct_bound_identity_0009"
+        revenuecat_app_user_id = "rai_account_" + "c" * 43
 
     class AccountTokens:
         def verify(self, token: str, digest: str):
@@ -475,6 +476,6 @@ def test_v2_account_token_is_bound_to_the_verified_installation_before_admission
         },
     )
 
-    assert response.status_code == 404
+    assert response.status_code == 400
     assert verified == [("signed-account-token", "inst_" + "b" * 43)]
     assert admitted_accounts == ["acct_bound_identity_0009"]

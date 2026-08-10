@@ -41,6 +41,8 @@ services:
         value: "10"
       - key: REVENUECAT_SECRET_API_KEY
         sync: false
+      - key: REVENUECAT_APP_ID
+        sync: false
       - key: REVENUECAT_WEBHOOK_SECRET
         sync: false
       - key: REVENUECAT_WEBHOOK_SIGNING_SECRET

@@ -33,6 +33,11 @@ class ServiceRegistry:
     leases: Any
     admission: Any | None = None
     account_tokens: Any | None = None
+    allowances: Any | None = None
+    entitlements: Any | None = None
+    revenuecat: Any | None = None
+    apple_identity: Any | None = None
+    revenuecat_webhook: Any | None = None
 
 
 _CONTENT_SECURITY_POLICY = (
@@ -176,6 +181,31 @@ def create_app(
             raise RequestValidationError(ErrorCode.INVALID_REQUEST) from None
 
         account_id: str | None = None
+        revenuecat_app_user_id: str | None = None
+        quota_subject: str | None = None
+        installation_digest_method = getattr(
+            configured_services.installation_tokens,
+            "installation_digest",
+            None,
+        )
+        revenuecat_identity_method = getattr(
+            configured_services.installation_tokens,
+            "revenuecat_app_user_id",
+            None,
+        )
+        if callable(installation_digest_method) and callable(
+            revenuecat_identity_method
+        ):
+            try:
+                quota_subject = installation_digest_method(installation_claims)
+                revenuecat_app_user_id = revenuecat_identity_method(
+                    installation_claims
+                )
+            except Exception:
+                raise PublicServiceError(
+                    ErrorCode.SERVICE_UNAVAILABLE,
+                    retryable=True,
+                ) from None
         account_token = request.headers.get("X-Resume-Account")
         if account_token is not None:
             if configured_services.account_tokens is None:
@@ -194,19 +224,24 @@ def create_app(
                     installation_digest,
                 )
                 account_id = account_claims.account_id
+                revenuecat_app_user_id = account_claims.revenuecat_app_user_id
+                quota_subject = account_claims.account_id
             except Exception:
                 raise PublicServiceError(ErrorCode.INVALID_INSTALLATION) from None
 
-        g.resume_ai_admission = configured_services.admission.admit(
-            AdmissionRequest(
-                installation_id=installation_claims.installation_id,
-                account_id=account_id,
-                request_id=request_id,
-                source=source,
-                ai_requested=ai_header == "requested",
-                content_length=content_length,
-            )
+        admission_request = AdmissionRequest(
+            installation_id=installation_claims.installation_id,
+            account_id=account_id,
+            request_id=request_id,
+            source=source,
+            ai_requested=ai_header == "requested",
+            content_length=content_length,
+            revenuecat_app_user_id=revenuecat_app_user_id,
+            quota_subject=quota_subject,
         )
+        g.resume_ai_request_id = request_id
+        g.resume_ai_admission_request = admission_request
+        g.resume_ai_admission = configured_services.admission.admit(admission_request)
 
     @app.teardown_request
     def release_v2_admission(_error: BaseException | None) -> None:
@@ -229,6 +264,10 @@ def create_app(
             "/v1/analyses",
             "/v1/installations",
             "/v2/analyses",
+            "/v2/installations",
+            "/v2/entitlements/sync",
+            "/v2/identity/apple",
+            "/v2/revenuecat/webhook",
         }:
             response.headers["Cache-Control"] = "no-store"
         request_origin = request.headers.get("Origin")

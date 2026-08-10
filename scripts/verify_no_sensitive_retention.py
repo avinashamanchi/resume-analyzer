@@ -363,7 +363,7 @@ TRUSTED_BOUNDARIES: dict[str, TrustedBoundary] = {
     ),
     "server/admission.py": TrustedBoundary(
         module_fingerprint=(
-            "ace11d68df5dd1e24b877a52677f4d342fc5e07a81204218ba8e5aea1a3b6904"
+            "ea768237dc32eb4628c1da4785d57b8aeaaff785fa7c366605ef67d3248cac78"
         ),
         approved_capabilities=(
             CapabilityAttestation("durable", "0f18ee8fdcb6967b6fd77238872d58c46ecfffaef3e2db41d0812bc21fb94ed3", 1),
@@ -387,7 +387,7 @@ TRUSTED_BOUNDARIES: dict[str, TrustedBoundary] = {
             SecurityScopeAttestation("0aa9c9b1f4582f00207e74b81becdfbd30b5bc9dcfe3b7e614eff764dbd8cb72", 1),
             SecurityScopeAttestation("19a797610c44f55246890c1104227b316eb038087540c2bf9fcd70524fb68636", 1),
             SecurityScopeAttestation("217bb7bcfe89ef4068c7942703544257805539b62c76940b271b24f2b69e7a8d", 1),
-            SecurityScopeAttestation("22723e2e5564f1127c4254e56a8669babbb2ecc37c2c873fc59556bba0cb3573", 1),
+            SecurityScopeAttestation("39aba93bb0fdb8d40318fabedc9f7c8b4c283c380b07876017ec7f8e31c6e63e", 1),
             SecurityScopeAttestation("25aba28982881608db5d32ed0ef2daa93645ca7259d2bbb1639d37687354547b", 1),
             SecurityScopeAttestation("2aa44e84d29486eced5a629e3569959d7c9221c7867c805ae21d5ca14d7bc15c", 1),
             SecurityScopeAttestation("30ecd0c9ed49ce922f8c5a58264c18695a382d57e74792b1150c95c0e435e628", 1),
@@ -407,7 +407,7 @@ TRUSTED_BOUNDARIES: dict[str, TrustedBoundary] = {
             SecurityScopeAttestation("838708d90963236700f921e9c20e69ee2a4ed8bed16119689856f83ad72ce131", 1),
             SecurityScopeAttestation("84ddf7b91c2ce5a50ab1ff28eaea5166de803ea6eee32eeaa1c2f2b941a3b362", 1),
             SecurityScopeAttestation("87c6db4d8627208b3b1b4058011ebca43aa18464e8e64778a26f353684129f91", 1),
-            SecurityScopeAttestation("8b2280bad678a370fea082dd824d70c05916733562ce9ed2c0f89c2cccc3f70b", 1),
+            SecurityScopeAttestation("452cb13054a82b3d0fb57b254ceae8b73a074c7914eda25690b77b3aa355b397", 1),
             SecurityScopeAttestation("8ba56185153afbb82589d53b0571fc2ec41227d4e43737b481d6fa115b7ca441", 1),
             SecurityScopeAttestation("94413aeadf8c91ae98d29e324d03733f8adc5a4341ab163f31696f2472d68700", 1),
             SecurityScopeAttestation("965245cf05ced7ed1afb51c6991195e996e458a64d1b515adf904b7423d69567", 1),
@@ -600,7 +600,7 @@ TRUSTED_BOUNDARIES: dict[str, TrustedBoundary] = {
     ),
     "server/app.py": TrustedBoundary(
         module_fingerprint=(
-            "cefc7eb7704d9dc8c37bd03aa05981cf0b3d13a944a668df3ea86f334863b5b6"
+            "9aa4f42ae4a9e5b7dd976c4d429de5bd4a482477a144cbb9c8dde147011aded9"
         ),
         approved_capabilities=(
             # sys.stderr (write receiver and explicit flush receiver)
@@ -633,14 +633,14 @@ TRUSTED_BOUNDARIES: dict[str, TrustedBoundary] = {
             SecurityScopeAttestation("59e30dd9f61b76da01c5dae045b4b4e671436c5dfa93a11e7695ccb2d616ed85", 1),
             SecurityScopeAttestation("60cb8a23aa3edaf117f5fd51244c88dbed49534aac213f6a3648adb4c53c8b67", 1),
             SecurityScopeAttestation("4902c037909440e199912b8ccaa863d33681f61ad29353b4105dfd7d5c915fc0", 1),
-            SecurityScopeAttestation("8f9ba79e898f1521ae1a077043ecbbeee99e83d7caf3e08b38620494baadf7f6", 1),
+            SecurityScopeAttestation("3cac787e288ea2e41774d4272777f2289d48fbc7af714354d735075f282e9a49", 1),
             SecurityScopeAttestation("98493834f58f879b3c197bdee89c1c143c312149125e7b387017ea7f5e6be148", 1),
             SecurityScopeAttestation("a7c95592c33396cd17fbfc2d52a23a8c7ff8336bd8aa95157cf5119ffc4dc783", 1),
-            SecurityScopeAttestation("abfe4cff4907745d387113295804e92358cc486df9b76867b32fd614f48108af", 1),
+            SecurityScopeAttestation("479adc44f75bb1a8a83d2a5c91486249ed44866dcbc98417ec4ba134d66a1f93", 1),
             SecurityScopeAttestation("bc74446b3685c474820a65734b69512b2f1ef24988a380dd58afc2764511dcfb", 1),
-            SecurityScopeAttestation("cfbdd3d3ad58b24f4e45ef4492722cacca12b2d24a90b2ba058c957bacc6ff7b", 1),
+            SecurityScopeAttestation("5d3b9fa37a59982ff50805e973214c165f333e6993c18cbfc4ef48dcd7eb75c1", 1),
             SecurityScopeAttestation("ed57173f86b8756f82e5b060fee41bee584b684890861d6ef998fd6b57b7f4a1", 1),
-            SecurityScopeAttestation("fd7e517593db2ca790e4b72afe4fac97ada6d45662e4616b0973a9e5e7bdcd93", 1),
+            SecurityScopeAttestation("8c227b72ab1d2b7fe5007153f3cfaf3d62973f0dcbd480d0443909a8be99f2b4", 1),
             SecurityScopeAttestation("8a3880f52e8176ded0cd888ba1615ff98e7c68cd1794a7cd6ce5c0dae720105c", 1),
             SecurityScopeAttestation("8c6e58964f1661d063ab79debb75e6a23156d531e46c3a642c947f4f9eaa7c8a", 1),
             SecurityScopeAttestation("8dc6ba25e69e259f912bb34d0430506fe49cbc8af26ec97825a69b2f923892f7", 1),

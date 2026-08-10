@@ -167,6 +167,7 @@ class Settings:
     provider_deadline_seconds: float
     request_deadline_seconds: float
     revenuecat_secret_api_key: str = field(default="", repr=False)
+    revenuecat_app_id: str = field(default="", repr=False)
     revenuecat_webhook_secret: str = field(default="", repr=False)
     revenuecat_webhook_signing_secret: str = field(default="", repr=False)
     apple_bundle_id: str = ""
@@ -209,6 +210,7 @@ class Settings:
             revenuecat_secret_api_key=environ.get(
                 "REVENUECAT_SECRET_API_KEY", ""
             ).strip(),
+            revenuecat_app_id=environ.get("REVENUECAT_APP_ID", "").strip(),
             revenuecat_webhook_secret=environ.get(
                 "REVENUECAT_WEBHOOK_SECRET", ""
             ).strip(),
@@ -307,6 +309,16 @@ class Settings:
             or _is_placeholder(self.revenuecat_secret_api_key)
         ):
             raise ConfigurationError("REVENUECAT_SECRET_API_KEY is invalid")
+        if (
+            not isinstance(self.revenuecat_app_id, str)
+            or _is_placeholder(self.revenuecat_app_id)
+            or len(self.revenuecat_app_id) > 128
+            or any(
+                ord(character) < 33 or ord(character) == 127
+                for character in self.revenuecat_app_id
+            )
+        ):
+            raise ConfigurationError("REVENUECAT_APP_ID is invalid")
         if (
             not isinstance(self.revenuecat_webhook_secret, str)
             or len(self.revenuecat_webhook_secret) < 32

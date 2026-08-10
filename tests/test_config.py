@@ -17,6 +17,7 @@ def production_environ(**overrides: str) -> dict[str, str]:
         "REQUEST_DEADLINE_SECONDS": "10",
         "DEBUG": "false",
         "REVENUECAT_SECRET_API_KEY": "sk_" + "r" * 40,
+        "REVENUECAT_APP_ID": "app_resume_ai_ios",
         "REVENUECAT_WEBHOOK_SECRET": "w" * 40,
         "REVENUECAT_WEBHOOK_SIGNING_SECRET": "s" * 40,
         "APPLE_BUNDLE_ID": "com.avinashamanchi.resumeai",
@@ -93,6 +94,7 @@ def test_development_settings_parse_origins_and_deadlines():
     assert settings.provider_deadline_seconds == 4.5
     assert settings.request_deadline_seconds == 7.0
     assert settings.revenuecat_secret_api_key == ""
+    assert settings.revenuecat_app_id == ""
     assert settings.revenuecat_webhook_secret == ""
     assert settings.revenuecat_webhook_signing_secret == ""
     assert settings.apple_bundle_id == ""
@@ -106,6 +108,8 @@ def test_development_settings_parse_origins_and_deadlines():
         ("REVENUECAT_SECRET_API_KEY", ""),
         ("REVENUECAT_SECRET_API_KEY", "appl_" + "p" * 40),
         ("REVENUECAT_SECRET_API_KEY", "sk_short"),
+        ("REVENUECAT_APP_ID", "replace-with-revenuecat-app-id"),
+        ("REVENUECAT_APP_ID", "bad app id"),
         ("REVENUECAT_WEBHOOK_SECRET", "replace-with-webhook-secret"),
         ("REVENUECAT_WEBHOOK_SECRET", "short"),
         ("REVENUECAT_WEBHOOK_SIGNING_SECRET", "replace-with-signing-secret"),
@@ -134,6 +138,7 @@ def test_settings_repr_redacts_all_service_secrets():
         "GROQ_API_KEY",
         "INSTALLATION_SIGNING_KEY",
         "REVENUECAT_SECRET_API_KEY",
+        "REVENUECAT_APP_ID",
         "REVENUECAT_WEBHOOK_SECRET",
         "REVENUECAT_WEBHOOK_SIGNING_SECRET",
     ):

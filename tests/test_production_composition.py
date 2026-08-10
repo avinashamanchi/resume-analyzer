@@ -10,12 +10,14 @@ from typing import Any
 from uuid import uuid4
 
 import fakeredis
+import httpx
 import pytest
 
 import server.app as app_module
 from server.app import ServiceRegistry, create_app
 from server.config import ConfigurationError, Settings
 from server.production import build_production_services
+from server.contracts import AnalysisResponseV2, PlanSnapshotV2
 
 
 def production_settings(**overrides: Any) -> Settings:
@@ -30,6 +32,7 @@ def production_settings(**overrides: Any) -> Settings:
         "provider_deadline_seconds": 8.0,
         "request_deadline_seconds": 10.0,
         "revenuecat_secret_api_key": "sk_" + "r" * 40,
+        "revenuecat_app_id": "app_resume_ai_ios",
         "revenuecat_webhook_secret": "w" * 40,
         "revenuecat_webhook_signing_secret": "s" * 40,
         "apple_bundle_id": "com.avinashamanchi.resumeai",
@@ -77,6 +80,7 @@ def test_importing_application_factory_does_not_construct_clients_or_touch_netwo
             "REDIS_URL": "rediss://unreachable.invalid:6380/0",
             "ALLOWED_WEB_ORIGINS": "https://resume-ai.onrender.com",
             "REVENUECAT_SECRET_API_KEY": "sk_" + "r" * 40,
+            "REVENUECAT_APP_ID": "app_resume_ai_ios",
             "REVENUECAT_WEBHOOK_SECRET": "w" * 40,
             "REVENUECAT_WEBHOOK_SIGNING_SECRET": "s" * 40,
             "APPLE_BUNDLE_ID": "com.avinashamanchi.resumeai",
@@ -138,12 +142,34 @@ def test_production_builder_reuses_one_client_per_process_and_separates_keys():
     assert services.rate_limiter._redis is redis_client
     assert services.leases._redis is redis_client
     assert services.ai_gateway._client is groq_client
+    assert services.admission is not None
+    assert services.allowances is not None
+    assert services.entitlements is not None
+    assert services.revenuecat is not None
+    assert services.apple_identity is not None
+    assert services.account_tokens is not None
+    assert services.revenuecat_webhook is not None
+    assert services.allowances._redis is redis_client
+    assert services.entitlements._redis is redis_client
+    assert services.admission._capacity._redis is redis_client
+    assert services.apple_identity._replay_store._redis is redis_client
+    assert services.revenuecat._cache is services.entitlements
+    assert services.revenuecat._client._http_client is (
+        services.apple_identity._http_client
+    )
     runtime_keys = {
         services.installation_tokens._secret,
+        services.installation_tokens._revenuecat_identity_key,
         services.rate_limiter._key_secret,
         services.leases._key_secret,
+        services.admission._capacity._key_secret,
+        services.allowances._key_secret,
+        services.entitlements._key_secret,
+        services.apple_identity._key_secret,
+        services.apple_identity._replay_store._key_secret,
+        services.account_tokens._secret,
     }
-    assert len(runtime_keys) == 3
+    assert len(runtime_keys) == 10
     assert all(type(key) is bytes and len(key) == 32 for key in runtime_keys)
 
 
@@ -195,6 +221,77 @@ def test_gunicorn_factory_auto_composes_once_and_reaches_health_and_analysis(
     assert len(groq_client.calls) == 1
     assert redis_client.keys("rai:request-lease:v1:*") == []
     assert services.leases._owned_leases.get() is None
+
+
+def test_production_composition_runs_v2_score_ai_quota_and_verified_sync() -> None:
+    redis_client = fakeredis.FakeRedis()
+    groq_client = FakeGroqClient()
+    revenuecat_calls: list[str] = []
+
+    def revenuecat_handler(request: httpx.Request) -> httpx.Response:
+        revenuecat_calls.append(str(request.url))
+        assert request.headers["Authorization"].startswith("Bearer sk_")
+        assert request.headers["Accept-Encoding"] == "identity"
+        return httpx.Response(
+            200,
+            json={"subscriber": {"entitlements": {}}},
+            headers={"Content-Type": "application/json"},
+        )
+
+    http_client = httpx.Client(
+        transport=httpx.MockTransport(revenuecat_handler),
+        follow_redirects=False,
+    )
+    services = build_production_services(
+        production_settings(),
+        redis_factory=lambda _url, **_kwargs: redis_client,
+        groq_factory=lambda **_kwargs: groq_client,
+        http_client_factory=lambda **_kwargs: http_client,
+    )
+    app = create_app(production_settings(), services)
+    app.config["TESTING"] = True
+    client = app.test_client()
+    forwarded_headers = {"X-Forwarded-For": "203.0.113.17"}
+
+    issued = client.post("/v2/installations", headers=forwarded_headers)
+    token = issued.get_json()["installationToken"]
+    request_id = str(uuid4())
+    analysis = client.post(
+        "/v2/analyses",
+        data={
+            "resume_text": Path("tests/fixtures/resumes/strong.txt").read_text(),
+            "job_description": "Python reliability engineer",
+            "consent_version": "2026-08-04.v1",
+            "request_id": request_id,
+        },
+        content_type="multipart/form-data",
+        headers={
+            "Authorization": f"Installation {token}",
+            "X-Resume-Source": "reviewed_text",
+            "X-Resume-AI": "requested",
+            "X-Resume-Request-ID": request_id,
+        },
+    )
+    sync = client.post(
+        "/v2/entitlements/sync",
+        json={},
+        headers={"Authorization": f"Installation {token}"},
+    )
+
+    assert issued.status_code == 201
+    parsed_analysis = AnalysisResponseV2.model_validate(analysis.get_json())
+    assert parsed_analysis.ai.status == "complete"
+    assert parsed_analysis.ai.allowance is not None
+    assert parsed_analysis.ai.allowance.used == 1
+    parsed_sync = PlanSnapshotV2.model_validate(sync.get_json())
+    assert parsed_sync.plan == "free"
+    assert parsed_sync.allowance.used == 1
+    assert len(revenuecat_calls) == 1
+    assert len(groq_client.calls) == 1
+    admission_keys = redis_client.keys("rai:admission:v1:*")
+    assert len(admission_keys) == 1
+    assert {redis_client.type(key) for key in admission_keys} == {b"string"}
+    http_client.close()
 
 
 def test_explicit_injected_services_remain_authoritative(

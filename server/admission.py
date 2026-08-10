@@ -65,6 +65,8 @@ class AdmissionRequest:
     source: Literal["reviewed_text", "pdf"]
     ai_requested: bool
     content_length: int
+    revenuecat_app_user_id: str | None = None
+    quota_subject: str | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.installation_id, UUID):
@@ -88,6 +90,28 @@ class AdmissionRequest:
             or self.content_length > MAX_REQUEST_BYTES
         ):
             raise ValueError("content_length is invalid")
+        if self.revenuecat_app_user_id is not None and (
+            not isinstance(self.revenuecat_app_user_id, str)
+            or not self.revenuecat_app_user_id.startswith(
+                ("rai_installation_", "rai_account_")
+            )
+            or len(self.revenuecat_app_user_id) > 160
+            or any(
+                ord(character) < 33 or ord(character) == 127
+                for character in self.revenuecat_app_user_id
+            )
+        ):
+            raise ValueError("revenuecat_app_user_id is invalid")
+        if self.quota_subject is not None and (
+            not isinstance(self.quota_subject, str)
+            or not self.quota_subject.startswith(("inst_", "acct_"))
+            or len(self.quota_subject) > 160
+            or any(
+                ord(character) < 33 or ord(character) == 127
+                for character in self.quota_subject
+            )
+        ):
+            raise ValueError("quota_subject is invalid")
 
 
 @dataclass(slots=True)
