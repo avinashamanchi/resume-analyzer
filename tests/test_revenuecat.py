@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import json
+import hashlib
+import hmac
+import inspect
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
@@ -22,6 +25,7 @@ from server.revenuecat import (
 NOW = datetime(2026, 8, 7, 12, tzinfo=UTC)
 API_KEY = "sk_" + "s" * 40
 WEBHOOK_SECRET = "w" * 40
+WEBHOOK_SIGNING_SECRET = "s" * 40
 APP_ID = "app_resume_ai"
 MONTHLY_PRODUCT = "com.avinashamanchi.resumeai.pro.monthly"
 ANNUAL_PRODUCT = "com.avinashamanchi.resumeai.pro.annual"
@@ -368,9 +372,25 @@ def event_body(**event_overrides: object) -> bytes:
     return encoded_event(lifecycle_event(**event_overrides))
 
 
+class _SignedWebhook(RevenueCatWebhook):
+    def decode(self, headers: dict[str, str], body: bytes):
+        timestamp = str(int(NOW.timestamp()))
+        signature = hmac.new(
+            WEBHOOK_SIGNING_SECRET.encode(),
+            timestamp.encode() + b"." + body,
+            hashlib.sha256,
+        ).hexdigest()
+        signed_headers = dict(headers)
+        signed_headers["X-RevenueCat-Webhook-Signature"] = (
+            f"t={timestamp},v1={signature}"
+        )
+        return super().decode(signed_headers, body)
+
+
 def webhook() -> RevenueCatWebhook:
-    return RevenueCatWebhook(
+    return _SignedWebhook(
         webhook_secret=WEBHOOK_SECRET,
+        webhook_signing_secret=WEBHOOK_SIGNING_SECRET,
         app_id=APP_ID,
         now=lambda: NOW,
     )
@@ -388,6 +408,44 @@ def test_webhook_validates_bearer_and_decodes_all_affected_identities_without_gr
         "rai_alias_opaque",
     )
     assert not hasattr(decoded, "plan")
+
+
+def test_webhook_requires_fresh_raw_body_hmac_and_rejects_tampering():
+    parameters = inspect.signature(RevenueCatWebhook).parameters
+    assert "webhook_signing_secret" in parameters
+    secured = RevenueCatWebhook(
+        webhook_secret=WEBHOOK_SECRET,
+        webhook_signing_secret=WEBHOOK_SIGNING_SECRET,
+        app_id=APP_ID,
+        now=lambda: NOW,
+    )
+    body = event_body()
+    timestamp = str(int(NOW.timestamp()))
+    signature = hmac.new(
+        WEBHOOK_SIGNING_SECRET.encode(),
+        timestamp.encode() + b"." + body,
+        hashlib.sha256,
+    ).hexdigest()
+    signed = {
+        "Authorization": f"Bearer {WEBHOOK_SECRET}",
+        "X-RevenueCat-Webhook-Signature": f"t={timestamp},v1={signature}",
+    }
+
+    assert secured.decode(signed, body).event_id == "evt_01"
+    for headers, candidate in (
+        ({"Authorization": f"Bearer {WEBHOOK_SECRET}"}, body),
+        (signed, body + b" "),
+        (
+            signed | {
+                "X-RevenueCat-Webhook-Signature": (
+                    f"t={int(timestamp) - 301},v1={signature}"
+                )
+            },
+            body,
+        ),
+    ):
+        with pytest.raises(InvalidRevenueCatWebhook):
+            secured.decode(headers, candidate)
 
 
 @pytest.mark.parametrize(

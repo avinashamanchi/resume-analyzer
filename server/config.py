@@ -168,6 +168,7 @@ class Settings:
     request_deadline_seconds: float
     revenuecat_secret_api_key: str = field(default="", repr=False)
     revenuecat_webhook_secret: str = field(default="", repr=False)
+    revenuecat_webhook_signing_secret: str = field(default="", repr=False)
     apple_bundle_id: str = ""
     apple_team_id: str = ""
     apple_jwks_url: str = "https://appleid.apple.com/auth/keys"
@@ -210,6 +211,9 @@ class Settings:
             ).strip(),
             revenuecat_webhook_secret=environ.get(
                 "REVENUECAT_WEBHOOK_SECRET", ""
+            ).strip(),
+            revenuecat_webhook_signing_secret=environ.get(
+                "REVENUECAT_WEBHOOK_SIGNING_SECRET", ""
             ).strip(),
             apple_bundle_id=environ.get("APPLE_BUNDLE_ID", "").strip(),
             apple_team_id=environ.get("APPLE_TEAM_ID", "").strip(),
@@ -309,6 +313,14 @@ class Settings:
             or _is_placeholder(self.revenuecat_webhook_secret)
         ):
             raise ConfigurationError("REVENUECAT_WEBHOOK_SECRET is invalid")
+        if (
+            not isinstance(self.revenuecat_webhook_signing_secret, str)
+            or len(self.revenuecat_webhook_signing_secret) < 32
+            or _is_placeholder(self.revenuecat_webhook_signing_secret)
+        ):
+            raise ConfigurationError(
+                "REVENUECAT_WEBHOOK_SIGNING_SECRET is invalid"
+            )
         if self.apple_bundle_id != "com.avinashamanchi.resumeai":
             raise ConfigurationError("APPLE_BUNDLE_ID is invalid")
         if (

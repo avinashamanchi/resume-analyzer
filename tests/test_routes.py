@@ -258,6 +258,7 @@ def production_app(harness: Harness):
             allowed_web_origins=("https://resume-ai.onrender.com",),
             revenuecat_secret_api_key="sk_" + "r" * 40,
             revenuecat_webhook_secret="w" * 40,
+            revenuecat_webhook_signing_secret="s" * 40,
             apple_bundle_id="com.avinashamanchi.resumeai",
             apple_team_id="A1B2C3D4E5",
             apple_jwks_url="https://appleid.apple.com/auth/keys",

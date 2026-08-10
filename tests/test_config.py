@@ -18,6 +18,7 @@ def production_environ(**overrides: str) -> dict[str, str]:
         "DEBUG": "false",
         "REVENUECAT_SECRET_API_KEY": "sk_" + "r" * 40,
         "REVENUECAT_WEBHOOK_SECRET": "w" * 40,
+        "REVENUECAT_WEBHOOK_SIGNING_SECRET": "s" * 40,
         "APPLE_BUNDLE_ID": "com.avinashamanchi.resumeai",
         "APPLE_TEAM_ID": "A1B2C3D4E5",
         "APPLE_JWKS_URL": "https://appleid.apple.com/auth/keys",
@@ -93,6 +94,7 @@ def test_development_settings_parse_origins_and_deadlines():
     assert settings.request_deadline_seconds == 7.0
     assert settings.revenuecat_secret_api_key == ""
     assert settings.revenuecat_webhook_secret == ""
+    assert settings.revenuecat_webhook_signing_secret == ""
     assert settings.apple_bundle_id == ""
     assert settings.apple_team_id == ""
     assert settings.apple_jwks_url == "https://appleid.apple.com/auth/keys"
@@ -106,6 +108,8 @@ def test_development_settings_parse_origins_and_deadlines():
         ("REVENUECAT_SECRET_API_KEY", "sk_short"),
         ("REVENUECAT_WEBHOOK_SECRET", "replace-with-webhook-secret"),
         ("REVENUECAT_WEBHOOK_SECRET", "short"),
+        ("REVENUECAT_WEBHOOK_SIGNING_SECRET", "replace-with-signing-secret"),
+        ("REVENUECAT_WEBHOOK_SIGNING_SECRET", "short"),
         ("APPLE_BUNDLE_ID", "com.example.resumeai"),
         ("APPLE_TEAM_ID", "lowercase01"),
         ("APPLE_TEAM_ID", "TOO-SHORT"),
@@ -131,6 +135,7 @@ def test_settings_repr_redacts_all_service_secrets():
         "INSTALLATION_SIGNING_KEY",
         "REVENUECAT_SECRET_API_KEY",
         "REVENUECAT_WEBHOOK_SECRET",
+        "REVENUECAT_WEBHOOK_SIGNING_SECRET",
     ):
         assert production_environ()[secret_name] not in rendered
 

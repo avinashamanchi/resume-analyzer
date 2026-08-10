@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import hmac
 import math
 import time
@@ -22,6 +23,7 @@ from .plans import PLAN_CACHE_MAX_SECONDS, PlanSnapshot
 _API_BASE = "https://api.revenuecat.com/v1/subscribers/"
 _MAX_RESPONSE_BYTES = 256 * 1024
 _MAX_WEBHOOK_FUTURE_SKEW = timedelta(minutes=5)
+_MAX_WEBHOOK_SIGNATURE_SKEW_SECONDS = 300
 _EARLIEST_WEBHOOK = datetime(2015, 1, 1, tzinfo=UTC)
 _APPROVED_PRODUCTS = frozenset(
     {
@@ -347,12 +349,19 @@ class RevenueCatWebhook:
         self,
         *,
         webhook_secret: str,
+        webhook_signing_secret: str,
         app_id: str,
         now: Callable[[], datetime] = lambda: datetime.now(UTC),
     ) -> None:
         if not isinstance(webhook_secret, str) or len(webhook_secret) < 32:
             raise ValueError("webhook secret is invalid")
+        if (
+            not isinstance(webhook_signing_secret, str)
+            or len(webhook_signing_secret) < 32
+        ):
+            raise ValueError("webhook signing secret is invalid")
         self._webhook_secret = webhook_secret
+        self._webhook_signing_secret = webhook_signing_secret
         self._app_id = self._bounded_string(app_id, maximum=128)
         self._now = now
 
@@ -364,6 +373,9 @@ class RevenueCatWebhook:
             expected = f"Bearer {self._webhook_secret}"
             if not hmac.compare_digest(authorization, expected):
                 raise ValueError
+            signature_header = headers.get("X-RevenueCat-Webhook-Signature", "")
+            if not self._verify_signature(signature_header, body):
+                raise ValueError
             payload = decode_bounded_json(body, max_bytes=_MAX_RESPONSE_BYTES)
             result = self._decode_event(payload)
         except Exception:
@@ -371,6 +383,41 @@ class RevenueCatWebhook:
         if failed or result is None:
             raise InvalidRevenueCatWebhook()
         return result
+
+    def _verify_signature(self, header: str, body: bytes) -> bool:
+        if not isinstance(header, str) or not isinstance(body, bytes):
+            return False
+        parts: dict[str, str] = {}
+        for component in header.split(","):
+            key, separator, value = component.partition("=")
+            key = key.strip()
+            value = value.strip()
+            if not separator or not key or not value or key in parts:
+                return False
+            parts[key] = value
+        timestamp = parts.get("t", "")
+        supplied = parts.get("v1", "")
+        if (
+            not timestamp.isascii()
+            or not timestamp.isdecimal()
+            or len(timestamp) > 13
+            or len(supplied) != 64
+            or any(character not in "0123456789abcdef" for character in supplied)
+        ):
+            return False
+        try:
+            timestamp_seconds = int(timestamp)
+            now_seconds = int(RevenueCatClient._aware_second(self._now()).timestamp())
+        except (OverflowError, TypeError, ValueError):
+            return False
+        if abs(now_seconds - timestamp_seconds) > _MAX_WEBHOOK_SIGNATURE_SKEW_SECONDS:
+            return False
+        expected = hmac.new(
+            self._webhook_signing_secret.encode("utf-8"),
+            timestamp.encode("ascii") + b"." + body,
+            hashlib.sha256,
+        ).hexdigest()
+        return hmac.compare_digest(expected, supplied)
 
     def _decode_event(self, payload: object) -> RevenueCatEvent:
         RevenueCatClient._validate_bounded_value(payload)

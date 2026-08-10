@@ -39,6 +39,18 @@ services:
         value: "8"
       - key: REQUEST_DEADLINE_SECONDS
         value: "10"
+      - key: REVENUECAT_SECRET_API_KEY
+        sync: false
+      - key: REVENUECAT_WEBHOOK_SECRET
+        sync: false
+      - key: REVENUECAT_WEBHOOK_SIGNING_SECRET
+        sync: false
+      - key: APPLE_BUNDLE_ID
+        value: com.avinashamanchi.resumeai
+      - key: APPLE_TEAM_ID
+        sync: false
+      - key: APPLE_JWKS_URL
+        value: https://appleid.apple.com/auth/keys
 
   - type: keyvalue
     name: resume-ai-rate-limit

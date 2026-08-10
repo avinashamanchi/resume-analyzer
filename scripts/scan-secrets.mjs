@@ -44,6 +44,7 @@ const globalRules = [
 
 const productionRules = [
   ['production-placeholder-secret', /(?:GROQ_API_KEY|INSTALLATION_SIGNING_KEY)\s*[:=]\s*["']?(?:change-me|placeholder|replace|example|your[_-])/i],
+  ['private-env-assignment', /(?:INSTALLATION_SIGNING_KEY|REVENUECAT_SECRET_API_KEY|REVENUECAT_WEBHOOK_SECRET|REVENUECAT_WEBHOOK_SIGNING_SECRET)\s*[:=]\s*["']?(?!\$\{|process\.env|os\.environ|<|REDACTED\b|replace(?:-|_)|example\b)[A-Za-z0-9._~+\/-]{20,}/i],
   ['permissive-cors', /ALLOWED_WEB_ORIGINS\s*[:=]\s*["']?\*["']?/i],
   ['debug-enabled', /(?:app\.run\s*\([^)]*debug\s*=\s*True|DEBUG\s*[:=]\s*["']?(?:true|1|yes|on)\b)/i],
   ['request-header-log', /(?:log(?:ger|ging)?|print)\s*\.?(?:info|debug|warning|error)?\s*\([^\n]*(?:request\.(?:headers|cookies)|authorization)/i],
