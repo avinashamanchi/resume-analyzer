@@ -57,6 +57,8 @@
     "test": "jest",
     "typecheck": "tsc --noEmit",
     "expo:doctor": "npx --yes expo-doctor@latest",
+    "verify:release-assets": "node scripts/verify-release-assets.mjs",
+    "preexport:ios": "npm run verify:release-assets",
     "export:ios": "expo export --platform ios"
   },
   "overrides": {

@@ -3,6 +3,7 @@ services:
     name: resume-analyzer-al3g
     runtime: python
     plan: starter
+    numInstances: 2
     region: oregon
     autoDeployTrigger: off
     previews:

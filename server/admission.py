@@ -234,6 +234,31 @@ class RedisCapacityStore:
     def reserve_pdf(self) -> _CapacityReservation | None:
         return self._reserve("pdf", PDF_GLOBAL_CONCURRENCY)
 
+    def capacity_snapshot(self) -> dict[str, int]:
+        now = self._timestamp()
+        try:
+            with self._redis.pipeline() as pipe:
+                pipe.zcount(self._key("provider-reservations"), f"({now}", "+inf")
+                pipe.zcount(self._key("pdf-reservations"), f"({now}", "+inf")
+                values = pipe.execute()
+        except RedisError:
+            raise CapacityUnavailable() from None
+        if (
+            not isinstance(values, (list, tuple))
+            or len(values) != 2
+            or any(isinstance(value, bool) or not isinstance(value, int) for value in values)
+        ):
+            raise CapacityUnavailable()
+        provider_slots, pdf_slots = values
+        if not 0 <= provider_slots <= PROVIDER_CONCURRENCY:
+            raise CapacityUnavailable()
+        if not 0 <= pdf_slots <= PDF_GLOBAL_CONCURRENCY:
+            raise CapacityUnavailable()
+        return {
+            "provider_slots": provider_slots,
+            "pdf_slots": pdf_slots,
+        }
+
     def _reserve(
         self,
         resource: Literal["provider", "pdf"],
@@ -372,6 +397,22 @@ class AdmissionController:
             return self._admit_emergency(request)
         except CapacityUnavailable:
             return self._admit_emergency(request)
+
+    def capacity_snapshot(self) -> dict[str, int]:
+        distributed = self._capacity.capacity_snapshot()
+        with self._local_lock:
+            local_pdf_slots = self._local_pdf_count
+            local_declared_pdf_bytes = self._local_pdf_bytes
+        if (
+            not 0 <= local_pdf_slots <= PDF_PROCESS_CONCURRENCY
+            or not 0 <= local_declared_pdf_bytes <= PDF_PROCESS_BYTES
+        ):
+            raise CapacityUnavailable()
+        return {
+            **distributed,
+            "local_pdf_slots": local_pdf_slots,
+            "local_declared_pdf_bytes": local_declared_pdf_bytes,
+        }
 
     def _admit_with_store(self, request: AdmissionRequest) -> AdmissionDecision:
         lease = AdmissionLease()

@@ -1,26 +1,24 @@
 # App Store privacy answers — draft only
 
-Last reviewed: August 9, 2026. Do not submit these answers until the shipping binary, production URL, provider configuration, and App Store Connect fields are verified.
-
-Evidence reviewed: https://console.groq.com/docs/your-data, https://render.com/docs/logging, https://render.com/privacy, https://render.com/privacy-update, https://support.apple.com/en-bh/108771, https://support.apple.com/en-ie/108353, and https://support.apple.com/en-ie/102651.
+Last reviewed: August 10, 2026. Do not submit these answers until the shipping binary, production URL, provider configuration, privacy report, and App Store Connect fields are verified.
 
 ## Data used for app functionality
 
-- User Content: after explicit consent, standard PDFs are transiently sent to the Resume.AI server on Render. Raw PDF bytes are not sent to Groq. Reviewed, pasted, extracted, or on-device Vision OCR resume text and optional job-description text are sent to Groq for one analysis.
-- Identifiers: an installation security identifier and coarse pseudonymous rate-limit key protect the service. They are not linked to an account and are not used for advertising or tracking.
-- Purchases: Apple processes App Store payments. RevenueCat generates an anonymous app-user identifier and receives product, purchase, entitlement, and expiration information for Analytics and App Functionality, including offering, restoring, and verifying Resume.AI Pro. Resume.AI has no account, supplies no custom account identifier to RevenueCat, does not link this purchase history to the user, and does not use it for tracking. Resume.AI does not receive full payment-card details. Deleting the app or local reports does not cancel an Apple subscription.
-- Diagnostics: app-controlled logs contain only an app request ID, coarse status class, coarse response-size bucket, and bounded latency. They contain no resume text, job text, PDF, filename, token, IP address, header, cookie, authorization value, or body.
+- **User Content:** in the signed iOS app, PDFKit or Vision extracts PDF text on-device. Only text the user reviews, plus an optional job description, is sent through Resume.AI to Groq after consent. The signed iOS app does not upload raw PDF bytes. The compatibility web app can transiently upload a standard PDF to Render for bounded extraction; raw bytes are not sent to Groq or retained as report history.
+- **Identifiers:** an opaque installation security identifier and server-side rate-limit state authenticate requests, prevent replay, enforce plan allowances, and protect the service. The first release has no login or Resume.AI account. The identifier is not used for advertising or tracking.
+- **Purchases:** Apple processes App Store payments. RevenueCat processes an anonymous entitlement identity and product, entitlement, expiration, refund, and revocation history for Analytics and App Functionality. Resume.AI does not receive full payment-card details, provide a personal profile to RevenueCat, or use purchase history for tracking. Deleting the app or local data does not cancel an Apple subscription.
+- **Diagnostics:** app-controlled metrics use fixed, content-free categories and exclude resume or job content, local workspace content, filenames, IP addresses, identifiers, headers, cookies, authorization values, request bodies, provider responses, and raw exceptions. Hosting providers may independently process infrastructure metadata under their policies.
 
-The app server keeps no report or content history. Browser history is not kept. Optional iOS reports use the app's local SQLite store. Raw/original PDF bytes, filenames, resume-input fields, job-description-input fields, installation tokens, and request identifiers are not stored in local reports. Generated feedback and bullet drafts may quote, transform, or restate names, contact information, resume content, or job-description content. Review generated feedback before saving, sharing, or allowing it to enter device backups. Saved reports may be included in iPhone or iPad backups stored in iCloud or on a Mac or PC. iCloud backups are always encrypted, but iCloud Backup is end-to-end encrypted only when Advanced Data Protection is enabled. Computer backups are not encrypted by default; encryption depends on the user enabling Encrypt local backup. Restoring an existing backup may restore reports deleted from the active app. Shipping-binary backup and restore behavior is UNVERIFIED and blocks final App Store answers until Task 17 observes it.
+The iOS app can store local reports, local resume versions, comparisons, and job notes in SQLite. This data does not sync to Resume.AI servers. It may enter device backups. Delete All removes the active local workspace, but restoring an older backup may restore previously deleted data. Shipping-binary backup and restore behavior is **UNVERIFIED** and blocks the final answers.
 
 ## Third-party processing and retention
 
-Groq retains usage metadata and may temporarily log inference content for up to 30 days for reliability and abuse prevention unless Zero Data Retention is enabled. The relevant Zero Data Retention console state is **UNVERIFIED** and is a release blocker. Render application-log retention is 7, 14, or 30 days by plan. Render may also process provider-side connection and HTTP request metadata, Device/IP Data, and IP-based geolocation under its privacy terms. Do not promise deletion beyond published and verified terms.
+Groq retains usage metadata and may temporarily log inference content for up to 30 days for reliability and abuse prevention unless Zero Data Retention is enabled. The production setting is **UNVERIFIED** and is a release blocker. Render application-log retention depends on plan and may include provider-controlled connection/HTTP metadata, Device/IP Data, and IP-based geolocation. The submitted policy must match the authoritative settings and terms.
 
 ## Tracking
 
-No data is used for advertising, cross-app tracking, or data-broker profiling. Resume.AI performs no behavioral or product-interaction analytics; RevenueCat processes purchase history for subscription analytics as disclosed above.
+No data is used for advertising, cross-app tracking, data-broker profiling, or behavioral/product-interaction analytics. RevenueCat processes purchase history only for subscription analytics and app functionality as disclosed above.
 
-## Limits
+## Product limits
 
-Resume.AI offers deterministic resume-readiness feedback plus AI coaching. It is not an exact ATS, does not predict employment, provides no hiring guarantee, and is not professional, legal, or employment advice.
+Resume.AI offers deterministic resume-readiness feedback plus optional AI coaching. It is not an employer's ATS, does not predict employment, provides no hiring guarantee, and is not professional, legal, or employment advice. AI may be incomplete or wrong.

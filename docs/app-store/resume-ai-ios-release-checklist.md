@@ -5,14 +5,14 @@ Last updated: 2026-08-09. `PASS` means directly observed evidence. `BLOCKED` mea
 ## Repository-controlled implementation
 
 - [x] Native Expo Router app supports PDF selection, pasted text, optional job-description matching, review/consent, deterministic readiness feedback, separate AI coaching, local history, text sharing, and temporary PDF export.
-- [x] Free users retain analysis, text sharing, and up to three local reports; Pro gates unlimited local history and PDF export without blocking Continue Free.
+- [x] Free users retain deterministic analysis, text sharing, 3 local reports, 1 resume version, 3 tracked jobs, and up to 3 monthly AI requests. Verified Pro permits up to 10,000 local reports, 200 resume versions, 500 tracked jobs, 100 snapshots, 100 monthly AI requests, and PDF export without blocking Continue Free.
 - [x] Pro purchase UI uses RevenueCat's StoreKit boundary, localized price, monthly/annual product identifiers, Restore Purchases, Privacy, Terms, and cancellation/error states.
 - [x] Production EAS profile uses store distribution, the SDK-selected Xcode image, remote build-number auto-increment, and no submission credentials.
 - [x] OTA updates are disabled for the first binary, export compliance is declared, tablet support is disabled, and the icon is configured.
-- [x] Fresh local checks on 2026-08-09: 23 mobile suites / 611 tests, typecheck, lint, Expo Doctor 18/18, and a successful 1,147-module iOS export; backend 683 passed with 6 explicit real-Redis tests skipped locally, browser suite 25 passed, and the 191-file tracked secret scan plus retention checks passed.
+- [ ] Final clean-checkout backend, browser, mobile, native invariant, retention, secret, dependency, Expo Doctor, and iOS export evidence must be recorded for the exact candidate after the 25k hardening changes.
 - [x] Production configuration fails closed unless the exact HTTPS API origin and a non-placeholder public RevenueCat Apple SDK key are present. The key is public app configuration, not a RevenueCat secret API key.
-- [x] Resume.AI is guest-first and creates no user account, so Sign in with Apple and in-app account deletion are not applicable to this binary; users can delete individual reports, all local reports, and temporary files in-app.
-- [x] Mobile CI fails closed on any high/critical advisory except the two explicitly reviewed `image-size` parser advisories (GitHub sources `1138808` and `1138809`) through Expo/Metro. The current report has 12 transitive findings; npm proposes only a breaking Expo/React Native downgrade, so the gate records the exception and must be rechecked before the signed candidate.
+- [x] Resume.AI is guest-first and the first binary exposes no login, account creation, or Sign in with Apple capability. Users can delete individual local records, Delete All active workspace data, and retry temporary-file cleanup.
+- [x] Mobile CI fails closed on any high/critical advisory except the two explicitly reviewed `image-size` parser advisories (GitHub sources `1138808` and `1138809`) through Expo/Metro. The current report has 12 transitive findings; npm proposes only a breaking Expo/React Native downgrade. Project-owned images are signature-checked before export and CI rejects disguised ICNS, JPEG XL, HEIF, and AVIF content. The exception still must be rechecked before the signed candidate.
 - [x] In-app and static Privacy, Terms, and Support pages disclose content processing, local history, backups, providers, deletion, subscription terms, and product limitations.
 - [x] PDF parsing and OCR boundaries enforce the repository's size, page, text, time, stream, and cleanup limits.
 
@@ -35,7 +35,7 @@ Last updated: 2026-08-09. `PASS` means directly observed evidence. `BLOCKED` mea
 
 - [ ] Expo Go free-flow checkpoint observed on a physical iPhone.
 - [ ] Signed Apple Vision OCR development build compiles and handles scanned PDFs on hardware.
-- [ ] PDF picker, standard PDF upload, pasted text, consent, analysis, local save limits, deletion, text share, temporary PDF cleanup, offline states, and retry pass on hardware.
+- [ ] PDF picker, on-device PDFKit extraction, Vision OCR, reviewed-text consent, pasted text, analysis, local workspace limits, deletion, text share, temporary PDF cleanup, offline states, and retry pass on hardware.
 - [ ] VoiceOver, 200% Dynamic Type, Reduce Motion, dark appearance, keyboard avoidance, safe areas, and focus restoration pass on hardware.
 - [ ] Backup/restore behavior is observed for iCloud and encrypted/unencrypted computer backups and matches the policy.
 

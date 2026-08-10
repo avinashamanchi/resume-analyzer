@@ -27,6 +27,6 @@ Status vocabulary: `PASS`, `FAIL`, `BLOCKED`, `UNVERIFIED`. A successful archive
 - [ ] Privacy and self-help links open anonymously from the TestFlight build.
 - [ ] Full physical-device checklist passes on the TestFlight binary, including Vision OCR and backup/restore observations.
 - [ ] Crash/diagnostic output contains no source content, generated feedback, filenames, contact values, tokens, direct IPs, or request bodies.
-- [ ] Twelve high-severity transitive Expo/Metro `image-size` advisories are rechecked; no breaking `--force` downgrade is applied silently while no safe published in-range resolution is available.
+- [ ] Twelve high-severity transitive Expo/Metro `image-size` advisories are rechecked; the project-owned release-image gate passes, and no breaking `--force` downgrade is applied silently while no safe published in-range resolution is available.
 
 Store the EAS/App Store build identifiers, dates, and redacted screenshots under `docs/release/evidence/` only after they exist. Do not store credentials, signing material, personal resumes, device identifiers, or provider secrets.

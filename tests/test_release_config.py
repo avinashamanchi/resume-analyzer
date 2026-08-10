@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import shutil
 import struct
+import subprocess
 
+import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 MOBILE = ROOT / "mobile"
@@ -37,12 +40,47 @@ def test_ios_release_identity_assets_and_update_policy_are_explicit():
         "bundleIdentifier": "com.avinashamanchi.resumeai",
         "buildNumber": "1",
         "icon": "./assets/icon.png",
-        "usesAppleSignIn": False,
         "infoPlist": {"ITSAppUsesNonExemptEncryption": False},
     }
 
     icon = MOBILE / "assets" / "icon.png"
     assert _png_ihdr(icon) == (1024, 1024, 2)
+
+
+def test_ios_export_runs_the_project_owned_asset_parser_gate():
+    package = _read_json(MOBILE / "package.json")
+    scripts = package["scripts"]
+
+    assert scripts["verify:release-assets"] == (
+        "node scripts/verify-release-assets.mjs"
+    )
+    assert scripts["preexport:ios"] == "npm run verify:release-assets"
+    assert (MOBILE / "scripts" / "verify-release-assets.mjs").is_file()
+    workflow = yaml.safe_load((ROOT / ".github" / "workflows" / "verify.yml").read_text())
+    commands = {
+        step.get("run")
+        for job in workflow["jobs"].values()
+        for step in job.get("steps", [])
+        if isinstance(step, dict)
+    }
+    assert "npm run verify:release-assets" in commands
+
+
+def test_release_asset_gate_rejects_a_disguised_image(tmp_path: Path):
+    node = shutil.which("node")
+    assert node is not None
+    (tmp_path / "hostile.png").write_bytes(b"icns" + b"\0" * 64)
+
+    completed = subprocess.run(
+        [node, str(MOBILE / "scripts" / "verify-release-assets.mjs"), str(tmp_path)],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 1
+    assert "disguised ICNS" in completed.stderr
+    assert str(tmp_path) not in completed.stderr
 
 
 def test_eas_profiles_are_commit_gated_and_use_the_candidate_origin():
@@ -134,3 +172,88 @@ def test_app_store_metadata_candidate_is_valid_and_truthful():
     assert "not linked" in purchase_history
     assert "not used for tracking" in purchase_history
     assert "userId" not in metadata["appPrivacyDraft"]
+
+
+def test_render_declares_two_instances_and_every_backend_only_billing_secret():
+    render = yaml.safe_load((ROOT / "render.yaml").read_text())
+    service = next(item for item in render["services"] if item["type"] == "web")
+
+    assert service["numInstances"] >= 2
+    assert {item["key"] for item in service["envVars"]} >= {
+        "REVENUECAT_SECRET_API_KEY",
+        "REVENUECAT_APP_ID",
+        "REVENUECAT_WEBHOOK_SECRET",
+        "REVENUECAT_WEBHOOK_SIGNING_SECRET",
+        "APPLE_BUNDLE_ID",
+        "APPLE_TEAM_ID",
+        "APPLE_JWKS_URL",
+    }
+    assert next(
+        item for item in service["envVars"] if item["key"] == "APPLE_BUNDLE_ID"
+    )["value"] == "com.avinashamanchi.resumeai"
+    assert next(
+        item for item in service["envVars"] if item["key"] == "APPLE_JWKS_URL"
+    )["value"] == "https://appleid.apple.com/auth/keys"
+    assert all(
+        "RESUME_AI_LOAD_STAGING_MARKER" != item["key"]
+        for item in service["envVars"]
+    )
+
+
+def test_25k_external_evidence_is_explicit_and_has_no_false_completed_gate():
+    gates = (ROOT / "docs" / "release" / "resume-ai-25k-external-gates.md").read_text()
+    evidence = (ROOT / "docs" / "release" / "25k-load-evidence.md").read_text()
+
+    assert "- [x]" not in gates
+    for phrase in (
+        "Apple sandbox evidence:",
+        "RevenueCat webhook evidence:",
+        "Render sustained load evidence:",
+        "Signed PDFKit/Vision evidence:",
+        "TestFlight evidence:",
+        "App Review result:",
+        "UNVERIFIED",
+    ):
+        assert phrase in gates
+    for phrase in (
+        "Release SHA:",
+        "Render service shape:",
+        "Redis shape:",
+        "Provider mode:",
+        "Identity principals seen:",
+        "p50 / p95 / p99:",
+        "Breaker maxima:",
+        "Privacy scan digest:",
+        "UNVERIFIED",
+    ):
+        assert phrase in evidence
+    assert "25,000 requests at 5 requests/second requires about 84 minutes" in gates
+
+
+def test_public_disclosures_match_signed_ios_web_workspace_and_bounded_pro_limits():
+    documents = "\n".join(
+        path.read_text()
+        for path in (
+            ROOT / "docs" / "privacy-policy.md",
+            ROOT / "docs" / "app-store" / "review-notes-draft.md",
+            ROOT / "static" / "privacy.html",
+            ROOT / "static" / "terms.html",
+        )
+    ).casefold()
+
+    for phrase in (
+        "signed ios",
+        "reviewed text",
+        "compatibility web",
+        "local resume versions",
+        "job notes",
+        "device backups",
+        "apple",
+        "revenuecat",
+        "does not sync",
+        "200 resume versions",
+        "500 tracked jobs",
+        "10,000 local reports",
+    ):
+        assert phrase in documents
+    assert "unlimited local report" not in documents

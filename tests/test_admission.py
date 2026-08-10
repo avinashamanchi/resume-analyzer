@@ -136,6 +136,30 @@ def test_process_pdf_count_and_bytes_are_released_exactly_once():
     replacement.lease.release()
 
 
+def test_capacity_snapshot_reports_only_bounded_counts_and_returns_to_zero():
+    controller_type, _rejected_type, _request_type, _store_type = _admission_types()
+    clock = [1_800_000_000.0]
+    controller = controller_type(_capacity(clock))
+
+    decision = controller.admit(
+        _request(41, source="pdf", ai_requested=True, content_length=4_096)
+    )
+
+    assert controller.capacity_snapshot() == {
+        "provider_slots": 1,
+        "pdf_slots": 1,
+        "local_pdf_slots": 1,
+        "local_declared_pdf_bytes": 4_096,
+    }
+    decision.lease.release()
+    assert controller.capacity_snapshot() == {
+        "provider_slots": 0,
+        "pdf_slots": 0,
+        "local_pdf_slots": 0,
+        "local_declared_pdf_bytes": 0,
+    }
+
+
 def test_global_token_bucket_is_atomic_at_twenty_request_burst():
     controller_type, rejected_type, _request_type, _store_type = _admission_types()
     clock = [1_800_000_000.0]

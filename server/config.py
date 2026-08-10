@@ -173,6 +173,7 @@ class Settings:
     apple_bundle_id: str = ""
     apple_team_id: str = ""
     apple_jwks_url: str = "https://appleid.apple.com/auth/keys"
+    load_test_staging_marker: str = field(default="", repr=False)
 
     @classmethod
     def from_environ(cls, environ: Mapping[str, str]) -> Settings:
@@ -221,6 +222,9 @@ class Settings:
             apple_team_id=environ.get("APPLE_TEAM_ID", "").strip(),
             apple_jwks_url=environ.get(
                 "APPLE_JWKS_URL", "https://appleid.apple.com/auth/keys"
+            ).strip(),
+            load_test_staging_marker=environ.get(
+                "RESUME_AI_LOAD_STAGING_MARKER", ""
             ).strip(),
         )
         if settings.app_env == "production":
@@ -342,3 +346,16 @@ class Settings:
             raise ConfigurationError("APPLE_TEAM_ID is invalid")
         if self.apple_jwks_url != "https://appleid.apple.com/auth/keys":
             raise ConfigurationError("APPLE_JWKS_URL is invalid")
+        if not isinstance(self.load_test_staging_marker, str) or (
+            self.load_test_staging_marker
+            and (
+                len(self.load_test_staging_marker) < 32
+                or len(self.load_test_staging_marker) > 256
+                or _is_placeholder(self.load_test_staging_marker)
+                or any(
+                    ord(character) < 33 or ord(character) == 127
+                    for character in self.load_test_staging_marker
+                )
+            )
+        ):
+            raise ConfigurationError("RESUME_AI_LOAD_STAGING_MARKER is invalid")

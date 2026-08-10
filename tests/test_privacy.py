@@ -1,11 +1,26 @@
 from __future__ import annotations
 
+from dataclasses import replace
+import json
 from uuid import UUID
 
 import pytest
 
 from server.errors import ErrorCode
+from server.app import create_app
 from server.privacy import coarse_ip_key, public_error
+from server.telemetry import Telemetry
+from scripts.verify_no_sensitive_retention import verify_artifacts
+from tests.test_routes import (
+    FakeAiGateway,
+    FakeLeases,
+    FakePdfParser,
+    FakeRateLimiter,
+    FakeTokens,
+    Harness,
+    settings,
+    submit_text,
+)
 
 
 REQUEST_ID = UUID("6ef499c6-a2c7-4314-b88b-af45c53da38a")
@@ -58,3 +73,50 @@ def test_public_error_retryability_is_explicit_not_inferred_from_private_state()
 
     assert transient.retryable is True
     assert permanent.retryable is False
+
+
+def test_sensitive_fixture_markers_never_reach_telemetry_sink():
+    records: list[dict[str, object]] = []
+
+    class Sink:
+        def emit(self, record: dict[str, object]) -> None:
+            records.append(record)
+
+    harness = Harness(
+        pdf_parser=FakePdfParser(),
+        ai_gateway=FakeAiGateway(),
+        installation_tokens=FakeTokens(),
+        rate_limiter=FakeRateLimiter(),
+        leases=FakeLeases(),
+    )
+    services = replace(harness.registry(), telemetry=Telemetry(sink=Sink()))
+    client = create_app(settings(), services).test_client()
+
+    response = submit_text(client, "PRIVATE_MARKER_7f82")
+
+    assert response.status_code == 200
+    rendered = json.dumps(records, sort_keys=True)
+    assert records
+    assert "PRIVATE_MARKER_7f82" not in rendered
+    assert "resume_text" not in rendered
+    assert "installation_id" not in rendered
+
+
+def test_external_log_metric_and_load_artifact_scan_is_content_aware(tmp_path):
+    safe = tmp_path / "safe.jsonl"
+    safe.write_text(
+        '{"name":"http_requests","labels":{"route":"analyses_v2","status_class":"2xx"}}\n'
+        '{"principalCount":25000,"identityPrincipalsSeen":25000}\n'
+    )
+    unsafe = tmp_path / "unsafe.log"
+    unsafe.write_text(
+        'PRIVATE_MARKER_7f82 resume_text=/Users/private/resume.pdf '
+        'installation_id=signed-installation-token\n'
+    )
+
+    assert verify_artifacts((safe,), forbidden_values=()) == ()
+    findings = verify_artifacts((unsafe,), forbidden_values=("signed-installation-token",))
+    assert "sensitive-field-name" in findings
+    assert "fixture-marker" in findings
+    assert "absolute-path" in findings
+    assert "forbidden-value" in findings

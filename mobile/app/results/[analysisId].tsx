@@ -333,7 +333,7 @@ function ResultsScreenContent({
 
   const save = async () => {
     if (!entitlementActive && !saved && history.reportCount !== null && history.reportCount >= 3) {
-      publishReceipt('Free includes up to 3 saved reports. Resume.AI Pro unlocks unlimited local history.');
+      publishReceipt('Free includes up to 3 saved reports. Resume.AI Pro allows up to 10,000 local reports.');
       onUpgrade();
       return;
     }

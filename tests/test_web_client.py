@@ -107,31 +107,33 @@ def test_flask_serves_documented_first_party_web_assets(web_client, path, conten
         assert "https://" not in body
 
 
-def test_every_public_web_page_has_exact_privacy_boundaries(web_client):
-    disclosures = (
-        "Selected standard PDFs are transiently sent to the Resume.AI server hosted on Render for text extraction.",
-        "Raw PDF bytes are never sent to Groq.",
-        "Reviewed, pasted, or extracted resume text and any optional job description are sent to Groq only after consent.",
-        "The app server keeps no report or content history, and this browser keeps no report history.",
-        "No advertising, cross-app tracking, or behavioral/product-interaction analytics are used. RevenueCat processes purchase history for subscription analytics.",
-        "An installation security identifier and coarse pseudonymous rate-limit key are used without ads or tracking.",
-        "Groq always retains usage metadata and may retain inference content for up to 30 days for reliability and abuse prevention unless Zero Data Retention is enabled; Resume.AI has not verified that setting.",
-        "Render may retain provider-side connection and HTTP request metadata under its policy; Resume.AI controls only its content-free application logs.",
-        "Render may process Device/IP Data and IP-based geolocation under its policy.",
-        "Saved reports may be included in iPhone or iPad backups stored in iCloud or on a Mac or PC. iCloud backups are always encrypted, but iCloud Backup is end-to-end encrypted only when Advanced Data Protection is enabled. Computer backups are not encrypted by default; encryption depends on the user enabling Encrypt local backup. Restoring an existing backup may restore reports deleted from the active app.",
-        "Raw/original PDF bytes, filenames, resume-input fields, job-description-input fields, installation tokens, and request identifiers are not stored in local reports.",
-        "Generated feedback and bullet drafts may quote, transform, or restate names, contact information, resume content, or job-description content.",
-        "Review generated feedback before saving, sharing, or allowing it to enter device backups.",
-    )
-
-    for filename in ("index.html", "privacy.html", "support.html"):
-        response = web_client.get(f"/static/{filename}")
-        assert response.status_code == 200
-        text = response.get_data(as_text=True)
-        for disclosure in disclosures:
-            assert disclosure in text
-
+def test_public_pages_distinguish_signed_ios_from_compatibility_web(web_client):
+    index = web_client.get("/static/index.html").get_data(as_text=True)
+    privacy = web_client.get("/static/privacy.html").get_data(as_text=True)
     support = web_client.get("/static/support.html").get_data(as_text=True)
+
+    assert "This compatibility web app transiently sends a selected standard PDF" in index
+    assert "Raw PDF bytes never go to Groq and are not retained as report history" in index
+    assert "The service and this browser keep no content or report history" in index
+
+    for disclosure in (
+        "In the signed iOS app, a PDF stays on the device",
+        "The compatibility web app can transiently upload a standard PDF",
+        "local reports, local resume versions, comparisons, and job notes",
+        "This data does not sync to Resume.AI servers",
+        "App-controlled telemetry uses fixed, content-free event categories",
+        "RevenueCat processes an anonymous entitlement identity and purchase history",
+        "up to 10,000 local reports",
+        "up to 100 AI requests per month",
+    ):
+        assert disclosure in privacy
+
+    assert "The signed iOS app extracts PDF text on-device" in support
+    assert "The compatibility web app transiently uploads a selected standard PDF" in support
+    assert "Local reports, local resume versions, and job notes do not sync" in support
+    for page in (index, privacy, support):
+        assert "Selected standard PDFs are transiently sent" not in page
+
     assert 'href="https://resume-analyzer-al3g.onrender.com/static/support.html"' in support
     assert 'rel="noreferrer"' in support
     for intake_phrase in ("Request help", "Share only", "Contact support"):

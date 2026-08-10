@@ -149,6 +149,7 @@ def test_production_builder_reuses_one_client_per_process_and_separates_keys():
     assert services.apple_identity is not None
     assert services.account_tokens is not None
     assert services.revenuecat_webhook is not None
+    assert services.telemetry is not None
     assert services.allowances._redis is redis_client
     assert services.entitlements._redis is redis_client
     assert services.admission._capacity._redis is redis_client

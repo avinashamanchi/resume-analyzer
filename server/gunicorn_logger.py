@@ -1,8 +1,15 @@
 from __future__ import annotations
 
+import sys
 from typing import Any
 
 from gunicorn.glogging import Logger
+
+
+def write_content_free_metric(value: str) -> None:
+    """Write a telemetry line whose schema was validated before this boundary."""
+    sys.stderr.write(value)
+    sys.stderr.flush()
 
 
 class ContentFreeGunicornLogger(Logger):

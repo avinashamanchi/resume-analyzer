@@ -103,6 +103,10 @@ jobs:
         working-directory: mobile
         run: npx --yes expo-doctor@latest
 
+      - name: Verify project-owned release images
+        working-directory: mobile
+        run: npm run verify:release-assets
+
       - name: Export iOS bundle
         working-directory: mobile
         run: npx expo export --platform ios

@@ -46,6 +46,8 @@ it('keeps the fourth saved report and PDF export behind Resume.AI Pro', async ()
   await act(async () => { fireEvent.press(view.getByRole('button', { name: 'Save locally' })); });
   expect(values.history.saveCurrent).not.toHaveBeenCalled();
   expect(onUpgrade).toHaveBeenCalledTimes(1);
+  expect(view.getByText(/Pro allows up to 10,000 local reports/i)).toBeTruthy();
+  expect(view.queryByText(/unlimited/i)).toBeNull();
 
   await act(async () => { fireEvent.press(view.getByRole('button', { name: 'Unlock PDF report' })); });
   expect(exporter.export).not.toHaveBeenCalled();

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import replace
+
 import pytest
 
 from server.config import ConfigurationError, Settings
@@ -143,6 +145,13 @@ def test_settings_repr_redacts_all_service_secrets():
         "REVENUECAT_WEBHOOK_SIGNING_SECRET",
     ):
         assert production_environ()[secret_name] not in rendered
+
+
+def test_production_rejects_a_non_string_staging_marker_even_when_falsy():
+    configured = Settings.from_environ(production_environ())
+
+    with pytest.raises(ConfigurationError, match="RESUME_AI_LOAD_STAGING_MARKER"):
+        replace(configured, load_test_staging_marker=0).validate_production()
 
 
 @pytest.mark.parametrize("origin", ["*", "https://*.example.com"])

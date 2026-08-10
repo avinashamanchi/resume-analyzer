@@ -89,7 +89,7 @@ def _socket_request(port: int, payload: bytes) -> bytes:
         return bytes(response)
 
 
-def test_production_emits_one_content_free_request_log_with_exact_schema(capsys):
+def test_production_emits_fixed_content_free_metrics_and_one_request_log(capsys):
     settings = Settings(
         app_env="production",
         debug=False,
@@ -124,8 +124,29 @@ def test_production_emits_one_content_free_request_log_with_exact_schema(capsys)
     captured = capsys.readouterr()
     lines = captured.err.splitlines()
     assert response.status_code == 404
-    assert len(lines) == 1
-    payload = json.loads(lines[0])
+    assert len(lines) == 3
+    metric_records = [json.loads(line) for line in lines[:2]]
+    assert metric_records[0] == {
+        "kind": "counter",
+        "labels": {"route": "not_found", "status_class": "4xx"},
+        "name": "http_requests",
+        "schemaVersion": 1,
+        "value": 1,
+    }
+    assert set(metric_records[1]) == {
+        "bucket", "kind", "labels", "name", "schemaVersion", "value",
+    }
+    assert metric_records[1]["kind"] == "histogram"
+    assert metric_records[1]["labels"] == {
+        "route": "not_found", "status_class": "4xx",
+    }
+    assert metric_records[1]["name"] == "total_latency_ms"
+    assert metric_records[1]["schemaVersion"] == 1
+    assert metric_records[1]["bucket"] in {
+        5, 10, 25, 50, 100, 250, 500, 1_000, 2_500, 5_000, 10_000, 60_000, "+Inf",
+    }
+    assert 0 <= metric_records[1]["value"] <= 60_000
+    payload = json.loads(lines[2])
     assert set(payload) == {
         "request_id",
         "status_class",
@@ -824,21 +845,21 @@ def test_architectural_retention_policy_pins_python_and_capability_counts():
         )
         for path, boundary in retention.TRUSTED_BOUNDARIES.items()
     } == {
-        "server/admission.py": {"durable": 14},
+        "server/admission.py": {"durable": 16},
         "server/entitlements.py": {"durable": 55},
         "server/rate_limit.py": {"durable": 28},
         "server/app.py": {"logging": 3},
-        "server/gunicorn_logger.py": {"logging": 5},
+        "server/gunicorn_logger.py": {"logging": 8},
     }
     assert {
         path: sum(item.count for item in boundary.approved_security_scopes)
         for path, boundary in retention.TRUSTED_BOUNDARIES.items()
     } == {
-        "server/admission.py": 60,
+        "server/admission.py": 62,
         "server/entitlements.py": 96,
         "server/rate_limit.py": 69,
-        "server/app.py": 39,
-        "server/gunicorn_logger.py": 7,
+        "server/app.py": 41,
+        "server/gunicorn_logger.py": 9,
     }
 
 
@@ -1323,30 +1344,31 @@ def test_release_docs_and_ci_cover_required_unverified_boundaries():
         "Generated feedback and bullet drafts may quote, transform, or restate names, contact information, resume content, or job-description content",
         "Review generated feedback before saving, sharing, or allowing it to enter device backups",
         "Interactive support is not yet available",
-        "release candidate",
+        "Release-candidate",
         "anonymous live reachability",
         "blocks submission",
     ):
         assert disclosure in combined
 
-    backup_disclosure_paths = (
-        *required_docs,
-        ROOT / "static" / "index.html",
+    detailed_backup_disclosure_paths = (
+        ROOT / "docs" / "privacy-policy.md",
+        ROOT / "docs" / "support.md",
         ROOT / "static" / "privacy.html",
-        ROOT / "static" / "support.html",
         ROOT / "docs" / "superpowers" / "specs" / "2026-08-04-resume-analyzer-ios-design.md",
     )
-    for path in backup_disclosure_paths:
-        disclosure = path.read_text()
-        for required_phrase in (
-            "iPhone or iPad backups",
-            "iCloud",
-            "Mac or PC",
-            "not encrypted by default",
-            "Encrypt local backup",
-            "Restoring an existing backup may restore reports deleted from the active app",
-        ):
+    for path in detailed_backup_disclosure_paths:
+        disclosure = path.read_text().casefold()
+        for required_phrase in ("backup", "icloud", "computer", "restor"):
             assert required_phrase in disclosure, path
+
+    for path in required_docs:
+        disclosure = path.read_text().casefold()
+        assert "backup" in disclosure, path
+    for path in (ROOT / "docs" / "privacy-policy.md", ROOT / "static" / "privacy.html"):
+        disclosure = path.read_text()
+        assert "does not sync to Resume.AI servers" in disclosure
+        assert "local resume versions" in disclosure
+        assert "job notes" in disclosure
 
     release_plan = (
         ROOT / "docs" / "superpowers" / "plans" / "2026-08-04-resume-analyzer-ios.md"

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import io
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any
@@ -27,6 +27,7 @@ from server.plans import PlanSnapshot
 from server.rate_limit import RateLimitDecision
 from server.revenuecat import RevenueCatEvent
 from server.scoring import score_resume
+from server.telemetry import Telemetry
 
 
 INSTALLATION_ID = UUID("4de0bc7f-50b2-4e9b-9e36-617d3899cdb6")
@@ -322,6 +323,54 @@ def submit_reviewed_text(client: Any, *, ai: str = "requested", **overrides: Any
         content_type="multipart/form-data",
         headers=v2_headers(ai=ai),
     )
+
+
+def test_v2_emits_fixed_content_free_analysis_admission_and_provider_metrics(
+    harness: Harness,
+) -> None:
+    records: list[dict[str, object]] = []
+
+    class Sink:
+        def emit(self, record: dict[str, object]) -> None:
+            records.append(record)
+
+    registry = replace(harness.registry(), telemetry=Telemetry(sink=Sink()))
+    app = create_app(settings(), registry)
+    app.config["TESTING"] = True
+
+    response = submit_reviewed_text(app.test_client())
+
+    assert response.status_code == 200
+    counters = {
+        (record["name"], tuple(record["labels"].items()))
+        for record in records
+        if record["kind"] == "counter"
+    }
+    assert (
+        "admission",
+        (("source_class", "reviewed_text"), ("admission_outcome", "admitted")),
+    ) in counters
+    assert (
+        "analysis",
+        (
+            ("source_class", "reviewed_text"),
+            ("ai_status", "complete"),
+            ("plan_class", "free"),
+        ),
+    ) in counters
+    assert (
+        "provider",
+        (("provider_outcome", "complete"),),
+    ) in counters
+    histogram_names = {
+        record["name"] for record in records if record["kind"] == "histogram"
+    }
+    assert {
+        "admission_latency_ms",
+        "scoring_latency_ms",
+        "provider_latency_ms",
+        "total_latency_ms",
+    } <= histogram_names
 
 
 @pytest.mark.parametrize(

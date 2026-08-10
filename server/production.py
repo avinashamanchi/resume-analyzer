@@ -20,6 +20,7 @@ from .entitlements import (
     VerifiedEntitlementCache,
 )
 from .installations import InstallationTokenService
+from .gunicorn_logger import write_content_free_metric
 from .pdf_parser import extract_pdf_text
 from .rate_limit import RateLimiter, RedisRequestLeaseStore, build_redis_client
 from .revenuecat import (
@@ -29,6 +30,7 @@ from .revenuecat import (
     RevenueCatWebhook,
 )
 from .scoring import score_resume
+from .telemetry import ContentFreeJsonSink, Telemetry
 
 if TYPE_CHECKING:
     from .app import ServiceRegistry
@@ -185,6 +187,7 @@ def build_production_services(
                 ),
                 app_id=settings.revenuecat_app_id,
             ),
+            telemetry=Telemetry(sink=ContentFreeJsonSink(write_content_free_metric)),
         )
     except ConfigurationError:
         raise

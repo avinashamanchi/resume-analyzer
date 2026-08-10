@@ -1,17 +1,35 @@
 # App Review notes — draft only
 
-Resume.AI reviews a standard PDF or user-reviewed text after explicit consent. Standard PDFs are transiently uploaded to the Resume.AI server hosted on Render; raw PDF bytes are never sent to Groq. Reviewed, pasted, extracted, and optional job-description text are sent to Groq for AI coaching. Scanned-PDF Vision OCR runs on-device in the iOS development build and its text does not leave the device until the user reviews it and consents.
+Resume.AI is a guest-first resume coaching app. The first release has no login, account creation, Sign in with Apple, profile, cloud workspace, or account deletion flow. Users can delete individual local records or use Delete All for the active on-device workspace.
 
-The service returns deterministic readiness feedback and separate AI coaching. It is not an exact ATS or employment prediction, has no hiring guarantee, and is not professional, legal, or employment advice.
+## Review path
 
-No account is required. The server keeps no content or report history. Browser history is not kept. iOS reports use the app's local SQLite store only when the user chooses Save locally; deletion controls remove active local records. Raw/original PDF bytes, filenames, resume-input fields, job-description-input fields, installation tokens, and request identifiers are not stored in local reports. Generated feedback and bullet drafts may quote, transform, or restate names, contact information, resume content, or job-description content. Review generated feedback before saving, sharing, or allowing it to enter device backups. Saved reports may be included in iPhone or iPad backups stored in iCloud or on a Mac or PC. iCloud backups are always encrypted, but iCloud Backup is end-to-end encrypted only when Advanced Data Protection is enabled. Computer backups are not encrypted by default; encryption depends on the user enabling Encrypt local backup. Restoring an existing backup may restore reports deleted from the active app. Shipping-binary backup and restore behavior is UNVERIFIED and remains a Task 17 gate. An installation security identifier and coarse pseudonymous rate-limit key are used without advertising or tracking.
+1. Continue Free on the paywall; no purchase is required to review the primary workflow.
+2. Paste synthetic resume text or choose a synthetic PDF.
+3. In the signed iOS app, PDFKit extracts selectable text on-device and Apple Vision handles scanned text on-device. The app displays extracted text for review.
+4. Confirm the consent sheet. Only reviewed text and an optional job description are sent for analysis; the signed iOS app does not upload raw PDF bytes.
+5. Inspect deterministic readiness components separately from optional AI coaching. AI may be unavailable without blocking the deterministic result.
+6. Save locally only when prompted. Exercise the local report, local resume versions, comparison, and job notes screens; this workspace does not sync to Resume.AI servers.
+7. Use Settings > Delete All to erase the active local workspace. Device backups may restore earlier local data, as disclosed in Privacy.
 
-Free users can analyze, share text, and keep up to three local reports. Resume.AI Pro is an auto-renewable monthly or annual subscription for unlimited local report history and PDF exports. The Pro screen shows Apple's localized StoreKit prices, a Continue Free action, subscription terms, Privacy and Terms links, Restore Purchases, and Apple subscription management. Exact products and sandbox verification are documented in `monetization-setup.md`; they remain BLOCKED until configured in the authorized Apple and RevenueCat accounts and exercised in the submitted TestFlight build. Apple processes payment; RevenueCat generates an anonymous app-user identifier and processes purchase/entitlement history for subscription analytics and app functionality. Resume.AI has no account, supplies no custom account identifier, does not link this purchase history to the user, and does not use it for tracking. Deleting local reports or the app does not cancel an Apple subscription.
+The compatibility web app differs: it may transiently upload a standard PDF to Render for bounded extraction. Raw PDF bytes are never sent to Groq and are not retained as report history.
 
-Provider disclosure: Groq retains usage metadata and may retain inference content for up to 30 days for reliability and abuse prevention unless Zero Data Retention is enabled. Zero Data Retention is **UNVERIFIED** in the authoritative Groq console and blocks release. Render application logs are retained for 7, 14, or 30 days by plan. App-controlled logs are content-free, while Render may retain provider-side connection and HTTP request metadata, Device/IP Data, and IP-based geolocation under its own policy.
+## Purchases
 
-Support release candidate: https://resume-analyzer-al3g.onrender.com/static/support.html. Interactive support is not yet available. Anonymous live reachability is **UNVERIFIED** until an authorized production deployment; failure to verify it blocks submission. Users are told never to send or publish resumes, job descriptions, tokens, request identifiers, or private identifiers.
+Free users may keep 3 local reports, 1 resume version, 3 tracked jobs, and request up to 3 AI analyses per month. Resume.AI Pro uses Apple's in-app purchase sheet through RevenueCat. A verified entitlement permits up to 10,000 local reports, 200 resume versions, 500 tracked jobs, 100 comparison snapshots, and 100 AI analyses per month, plus PDF export. The screen uses Apple's localized price and includes Continue Free, Restore Purchases, Terms, Privacy, and Apple subscription-management links.
 
-This metadata is not submitted. Production deployment, live provider settings, the public privacy URL, full Xcode device builds, TestFlight, and App Store submission remain later release gates. CocoaPods 1.17.0 is installed, but CocoaPods alone cannot replace full Xcode or signing.
+Apple processes payment. RevenueCat processes anonymous entitlement identity and purchase history for app functionality and subscription analytics. Resume.AI receives no payment-card details and uses no purchase data for tracking. Purchase, cancellation, pending, renewal, expiration, refund/revoke, reinstall, and restore evidence remains **BLOCKED** until the exact products are configured and exercised in Apple Sandbox and the submitted TestFlight candidate.
 
-Release URL status: Privacy timed out while Terms and Support returned HTTP 404 during anonymous checks on 2026-08-09. The exact production deployment must wake successfully and return HTTPS 200 for all three before these notes are submitted.
+## Privacy and limitations
+
+The server keeps no content or report history. App-controlled telemetry is content-free. Generated feedback may restate submitted content. Saved reports, local resume versions, and job notes can enter device backups. Groq retention and the production Zero Data Retention setting are described in Privacy; the authoritative setting is still **UNVERIFIED**. Render can retain provider-side connection metadata under its terms.
+
+The readiness score is deterministic coaching, not an exact ATS or hiring decision. AI may be incomplete or wrong. Resume.AI makes no hiring, interview, or employment guarantee and does not provide professional, legal, or employment advice.
+
+Support candidate: https://resume-analyzer-al3g.onrender.com/static/support.html
+
+Privacy candidate: https://resume-analyzer-al3g.onrender.com/static/privacy.html
+
+Terms candidate: https://resume-analyzer-al3g.onrender.com/static/terms.html
+
+All three URLs must return HTTPS 200 anonymously from the exact production release before submission. Signed PDFKit/Vision device evidence, Apple Sandbox, RevenueCat webhooks, production-like load evidence, TestFlight, and App Review remain external gates. These notes have not been submitted and no Apple approval is claimed.

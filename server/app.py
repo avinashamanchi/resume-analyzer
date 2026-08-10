@@ -38,6 +38,7 @@ class ServiceRegistry:
     revenuecat: Any | None = None
     apple_identity: Any | None = None
     revenuecat_webhook: Any | None = None
+    telemetry: Any | None = None
 
 
 _CONTENT_SECURITY_POLICY = (
@@ -60,6 +61,31 @@ _CORS_HEADER_NAMES = frozenset(
     }
 )
 _WEB_STATIC_DIRECTORY = Path(__file__).resolve().parent.parent / "static"
+
+_ROUTE_LABELS = {
+    "web_index": "root",
+    "static": "static",
+    "resume_ai_v1.health": "health",
+    "resume_ai_v1.issue_installation": "installations_v1",
+    "resume_ai_v1.issue_installation_v2": "installations_v2",
+    "resume_ai_v1.analyze_resume": "analyses_v1",
+    "resume_ai_v1.analyze_resume_v2": "analyses_v2",
+    "resume_ai_v1.sync_entitlements_v2": "entitlements_sync_v2",
+    "resume_ai_v1.link_apple_identity_v2": "identity_apple_v2",
+    "resume_ai_v1.receive_revenuecat_webhook_v2": "revenuecat_webhook_v2",
+    "resume_ai_v1.load_identity_canary_v2": "identity_canary_v2",
+    "resume_ai_v1.load_capacity_snapshot_v2": "capacity_snapshot_v2",
+}
+
+
+def _route_label() -> str:
+    if request.method == "OPTIONS":
+        return "preflight"
+    if request.url_rule is None:
+        return "not_found"
+    return _ROUTE_LABELS.get(request.endpoint or "", "other")
+
+
 def _response_size_bucket(response: Any) -> str:
     size = response.calculate_content_length()
     if size is None:
@@ -241,7 +267,29 @@ def create_app(
         )
         g.resume_ai_request_id = request_id
         g.resume_ai_admission_request = admission_request
-        g.resume_ai_admission = configured_services.admission.admit(admission_request)
+        g.resume_ai_source_class = source
+        admission_started_ns = time.monotonic_ns()
+        try:
+            decision = configured_services.admission.admit(admission_request)
+            g.resume_ai_admission = decision
+            g.resume_ai_admission_outcome = decision.ai_status
+        except Exception as error:
+            code = getattr(error, "code", None)
+            if code is ErrorCode.RATE_LIMITED:
+                outcome = "rate_limited"
+            elif code is ErrorCode.CAPACITY_LIMITED:
+                outcome = "capacity_limited"
+            elif code is ErrorCode.INVALID_REQUEST:
+                outcome = "invalid"
+            else:
+                outcome = "unknown"
+            g.resume_ai_admission_outcome = outcome
+            raise
+        finally:
+            g.resume_ai_admission_latency_ms = max(
+                0,
+                (time.monotonic_ns() - admission_started_ns) / 1_000_000,
+            )
 
     @app.teardown_request
     def release_v2_admission(_error: BaseException | None) -> None:
@@ -268,6 +316,8 @@ def create_app(
             "/v2/entitlements/sync",
             "/v2/identity/apple",
             "/v2/revenuecat/webhook",
+            "/v2/load/identity-canary",
+            "/v2/load/capacity-snapshot",
         }:
             response.headers["Cache-Control"] = "no-store"
         request_origin = request.headers.get("Origin")
@@ -307,6 +357,83 @@ def create_app(
             "response_size_bucket": _response_size_bucket(response),
             "latency_ms": min(elapsed_ms, 60_000),
         }
+        configured_services = app.extensions.get("resume_ai.services")
+        telemetry = getattr(configured_services, "telemetry", None)
+        if telemetry is not None:
+            route = _route_label()
+            status_class = payload["status_class"]
+            if status_class not in {"2xx", "3xx", "4xx", "5xx"}:
+                status_class = "5xx"
+            try:
+                telemetry.counter(
+                    "http_requests",
+                    {"route": route, "status_class": status_class},
+                )
+                telemetry.histogram(
+                    "total_latency_ms",
+                    payload["latency_ms"],
+                    {"route": route, "status_class": status_class},
+                )
+                source_class = getattr(g, "resume_ai_source_class", "unknown")
+                admission_outcome = getattr(
+                    g, "resume_ai_admission_outcome", None
+                )
+                if admission_outcome is not None:
+                    admission_labels = {
+                        "source_class": source_class,
+                        "admission_outcome": admission_outcome,
+                    }
+                    telemetry.counter("admission", admission_labels)
+                    telemetry.histogram(
+                        "admission_latency_ms",
+                        getattr(g, "resume_ai_admission_latency_ms", 0),
+                        admission_labels,
+                    )
+                ai_status = getattr(g, "resume_ai_ai_status", None)
+                if ai_status is not None:
+                    telemetry.counter(
+                        "analysis",
+                        {
+                            "source_class": source_class,
+                            "ai_status": ai_status,
+                            "plan_class": getattr(
+                                g, "resume_ai_plan_class", "unknown"
+                            ),
+                        },
+                    )
+                    telemetry.histogram(
+                        "scoring_latency_ms",
+                        getattr(g, "resume_ai_scoring_latency_ms", 0),
+                        {"source_class": source_class},
+                    )
+                provider_outcome = getattr(
+                    g, "resume_ai_provider_outcome", None
+                )
+                if provider_outcome is not None:
+                    telemetry.counter(
+                        "provider",
+                        {"provider_outcome": provider_outcome},
+                    )
+                    provider_latency = getattr(
+                        g, "resume_ai_provider_latency_ms", None
+                    )
+                    if provider_latency is not None:
+                        telemetry.histogram(
+                            "provider_latency_ms",
+                            provider_latency,
+                            {"provider_outcome": provider_outcome},
+                        )
+                pdf_outcome = getattr(g, "resume_ai_pdf_outcome", None)
+                if pdf_outcome is not None:
+                    telemetry.counter("pdf", {"pdf_outcome": pdf_outcome})
+                    telemetry.histogram(
+                        "pdf_latency_ms",
+                        getattr(g, "resume_ai_pdf_latency_ms", 0),
+                        {"pdf_outcome": pdf_outcome},
+                    )
+            except Exception:
+                # Operational metrics must never change the public response.
+                pass
         sys.stderr.write(
             json.dumps(payload, separators=(",", ":"), sort_keys=True) + "\n"
         )

@@ -8,7 +8,9 @@ import ast
 from collections import Counter
 from dataclasses import dataclass
 import hashlib
+import os
 import re
+import stat
 import subprocess
 import sys
 from pathlib import Path
@@ -17,6 +19,27 @@ from pathlib import Path
 PRODUCTION_PREFIXES = ("server/", "static/", "contracts/")
 PRODUCTION_FILES = {"app.py", "render.yaml", "Procfile"}
 SENSITIVE_FIELDS = r"(?:resume_text|job_description|filename|pdf_base64)"
+
+ARTIFACT_MAX_BYTES = 32 * 1024 * 1024
+ARTIFACT_RULES = (
+    (
+        "sensitive-field-name",
+        re.compile(
+            r"(?i)(?:resume_text|job_description|pdf_base64|installation_id|account_id|account_token|installation_token)"
+        ),
+    ),
+    ("fixture-marker", re.compile(r"PRIVATE_MARKER_[A-Za-z0-9_-]+")),
+    (
+        "absolute-path",
+        re.compile(r"(?:/Users/|/home/|/var/folders/|[A-Za-z]:\\Users\\)"),
+    ),
+    (
+        "token-shape",
+        re.compile(
+            r"(?:signed-installation-token|rai_(?:installation|account)_[A-Za-z0-9_-]{16,}|(?:inst|acct)_[A-Za-z0-9_-]{16,})"
+        ),
+    ),
+)
 
 # Text gates remain for schemas, browser persistence, and non-AST store creation.
 RULES = (
@@ -363,14 +386,14 @@ TRUSTED_BOUNDARIES: dict[str, TrustedBoundary] = {
     ),
     "server/admission.py": TrustedBoundary(
         module_fingerprint=(
-            "ea768237dc32eb4628c1da4785d57b8aeaaff785fa7c366605ef67d3248cac78"
+            "682335c1b4bd81e5725702ab89102464c6279abdb41b73d347e444e2c14210ad"
         ),
         approved_capabilities=(
             CapabilityAttestation("durable", "0f18ee8fdcb6967b6fd77238872d58c46ecfffaef3e2db41d0812bc21fb94ed3", 1),
             CapabilityAttestation("durable", "41bb6862b9e67384b3b5bf4c6d2abfca15c92a15e6476ae98f0c5b06e4e655ad", 1),
-            CapabilityAttestation("durable", "4e7660224a10225d5d36de126bf8627b22ab45310bfb9ce4879c7b7f849d84bb", 2),
+            CapabilityAttestation("durable", "4e7660224a10225d5d36de126bf8627b22ab45310bfb9ce4879c7b7f849d84bb", 3),
             CapabilityAttestation("durable", "53ae361092cafa3b79d326d48440765d5abee76871ec43189346d97e6a728180", 2),
-            CapabilityAttestation("durable", "75783dc68a2064d137e3377c77abd2e4e5b9ec74465b7e791684970e0a6a5135", 2),
+            CapabilityAttestation("durable", "75783dc68a2064d137e3377c77abd2e4e5b9ec74465b7e791684970e0a6a5135", 3),
             CapabilityAttestation("durable", "8349509b08b84e01224a9ccd4c8732a198d72179ab99ae6f579412cff44c22cb", 1),
             CapabilityAttestation("durable", "8a257d0743fd79683a2999d8cf64d756916d63b66e024145faccc37cdb19b3d9", 2),
             CapabilityAttestation("durable", "8bd04c74f45d8fce0a9dc935c4b4e84c25321dfab70b36bacef596827b624310", 1),
@@ -391,7 +414,7 @@ TRUSTED_BOUNDARIES: dict[str, TrustedBoundary] = {
             SecurityScopeAttestation("25aba28982881608db5d32ed0ef2daa93645ca7259d2bbb1639d37687354547b", 1),
             SecurityScopeAttestation("2aa44e84d29486eced5a629e3569959d7c9221c7867c805ae21d5ca14d7bc15c", 1),
             SecurityScopeAttestation("30ecd0c9ed49ce922f8c5a58264c18695a382d57e74792b1150c95c0e435e628", 1),
-            SecurityScopeAttestation("39890e31ac22b9e4a547838850893d1e95074311967087f02e7f1e2aba2bdd73", 1),
+            SecurityScopeAttestation("447d6209290f3356530c440aa899054b2b16b8f54205df94127663b2a8ffb033", 1),
             SecurityScopeAttestation("41bb6862b9e67384b3b5bf4c6d2abfca15c92a15e6476ae98f0c5b06e4e655ad", 1),
             SecurityScopeAttestation("468f56a93c10055bc5fe1390c2f62deb538487885fce54436b5e92b5aaf555a6", 1),
             SecurityScopeAttestation("56368c0d75e76c681203a498d6cf63f937e80894ec4ad316ba7264a6eda17774", 1),
@@ -408,7 +431,9 @@ TRUSTED_BOUNDARIES: dict[str, TrustedBoundary] = {
             SecurityScopeAttestation("84ddf7b91c2ce5a50ab1ff28eaea5166de803ea6eee32eeaa1c2f2b941a3b362", 1),
             SecurityScopeAttestation("87c6db4d8627208b3b1b4058011ebca43aa18464e8e64778a26f353684129f91", 1),
             SecurityScopeAttestation("452cb13054a82b3d0fb57b254ceae8b73a074c7914eda25690b77b3aa355b397", 1),
-            SecurityScopeAttestation("8ba56185153afbb82589d53b0571fc2ec41227d4e43737b481d6fa115b7ca441", 1),
+            SecurityScopeAttestation("54a8cea6ebac758179d300db01b5023b9140c989ba22c01ea64cc7d32308bf93", 1),
+            SecurityScopeAttestation("c82b235f5693796e5afa66eea3f95587871cc2fdee4e682ee1c8082e96fce6fd", 1),
+            SecurityScopeAttestation("6871e093d1debf8c4c001d532c4cdaf1832865b7a5e066cbc804498b9850269f", 1),
             SecurityScopeAttestation("94413aeadf8c91ae98d29e324d03733f8adc5a4341ab163f31696f2472d68700", 1),
             SecurityScopeAttestation("965245cf05ced7ed1afb51c6991195e996e458a64d1b515adf904b7423d69567", 1),
             SecurityScopeAttestation("a1eb5d6c9210f799e9028b3c6c61d63baee029cf9b883b26d63ab54207db6d98", 1),
@@ -600,7 +625,7 @@ TRUSTED_BOUNDARIES: dict[str, TrustedBoundary] = {
     ),
     "server/app.py": TrustedBoundary(
         module_fingerprint=(
-            "9aa4f42ae4a9e5b7dd976c4d429de5bd4a482477a144cbb9c8dde147011aded9"
+            "15e539ce643b67dcadcbd08661dfa892cf1e6ae0766f99627976137acc770f77"
         ),
         approved_capabilities=(
             # sys.stderr (write receiver and explicit flush receiver)
@@ -633,14 +658,14 @@ TRUSTED_BOUNDARIES: dict[str, TrustedBoundary] = {
             SecurityScopeAttestation("59e30dd9f61b76da01c5dae045b4b4e671436c5dfa93a11e7695ccb2d616ed85", 1),
             SecurityScopeAttestation("60cb8a23aa3edaf117f5fd51244c88dbed49534aac213f6a3648adb4c53c8b67", 1),
             SecurityScopeAttestation("4902c037909440e199912b8ccaa863d33681f61ad29353b4105dfd7d5c915fc0", 1),
-            SecurityScopeAttestation("3cac787e288ea2e41774d4272777f2289d48fbc7af714354d735075f282e9a49", 1),
+            SecurityScopeAttestation("ff1a2cf5becf9e5bb1e2a53f7437ff6439220f7d0b028072736f7afcec669942", 1),
             SecurityScopeAttestation("98493834f58f879b3c197bdee89c1c143c312149125e7b387017ea7f5e6be148", 1),
             SecurityScopeAttestation("a7c95592c33396cd17fbfc2d52a23a8c7ff8336bd8aa95157cf5119ffc4dc783", 1),
-            SecurityScopeAttestation("479adc44f75bb1a8a83d2a5c91486249ed44866dcbc98417ec4ba134d66a1f93", 1),
+            SecurityScopeAttestation("7937bfeebdae869d99466370787244d1b0a26b59e07a826921b6494a6c1ce3df", 1),
             SecurityScopeAttestation("bc74446b3685c474820a65734b69512b2f1ef24988a380dd58afc2764511dcfb", 1),
-            SecurityScopeAttestation("5d3b9fa37a59982ff50805e973214c165f333e6993c18cbfc4ef48dcd7eb75c1", 1),
+            SecurityScopeAttestation("c8483fed8e2669449049b9d4726c4a0e0d7f4a1772ad7fff3e5c6b327267942a", 1),
             SecurityScopeAttestation("ed57173f86b8756f82e5b060fee41bee584b684890861d6ef998fd6b57b7f4a1", 1),
-            SecurityScopeAttestation("8c227b72ab1d2b7fe5007153f3cfaf3d62973f0dcbd480d0443909a8be99f2b4", 1),
+            SecurityScopeAttestation("f6758baf75398d28149a76a884b1f8b62e4e041768a21ce63f6b5a615d0ff2d2", 1),
             SecurityScopeAttestation("8a3880f52e8176ded0cd888ba1615ff98e7c68cd1794a7cd6ce5c0dae720105c", 1),
             SecurityScopeAttestation("8c6e58964f1661d063ab79debb75e6a23156d531e46c3a642c947f4f9eaa7c8a", 1),
             SecurityScopeAttestation("8dc6ba25e69e259f912bb34d0430506fe49cbc8af26ec97825a69b2f923892f7", 1),
@@ -652,7 +677,9 @@ TRUSTED_BOUNDARIES: dict[str, TrustedBoundary] = {
             SecurityScopeAttestation("d8fd5ceeb197fcd9a2b6129717ba6da1835a7e703876da13e8f9008d726f41a2", 1),
             SecurityScopeAttestation("e176e239aa8cb44065f57dc167e3c53f6fc9bfd8d552da46b23aea6394f81043", 1),
             SecurityScopeAttestation("e389bc64f7c73a277eab1c8c907384cf00d6995b8db724ebaef0395f838f60ec", 1),
-            SecurityScopeAttestation("e75748f30137a2612c3db979a0fb860b85681dd53d219fd2cc415699ae770660", 1),
+            SecurityScopeAttestation("476a9ea3cecdee7acb54de0f4f9598c9cebb197db5748040649c7e66be439596", 1),
+            SecurityScopeAttestation("5db7bd510f11141503e7ed087347851c52ad67ca386cbb114a7d8114e5842e58", 1),
+            SecurityScopeAttestation("4d4e7e6c91eedbe4d07967d44bfd4fb1785af2508a85dba81e732b2b3863f36f", 1),
             SecurityScopeAttestation("ea11d9d9266d5c9349445097963044391bb02617283be360f8e21bf8461051d0", 1),
             SecurityScopeAttestation("ee09ac8c0a35032aa14ab63a94d50bd4a6f6378e898e76af5b08e19f02423567", 1),
             SecurityScopeAttestation("fe25d3cd0d050418a98f7d71d06d7f0a927cb07acad269980dd165c59101ce1c", 1),
@@ -660,7 +687,7 @@ TRUSTED_BOUNDARIES: dict[str, TrustedBoundary] = {
     ),
     "server/gunicorn_logger.py": TrustedBoundary(
         module_fingerprint=(
-            "b7aca9195ba3e7ae399aab1f398ee1e18adcb4510bb6095e9e31d5dd9d2bfd24"
+            "ece60ef08260b60e62447a2fb3a81e3d8d687837c8615772fe7dee999a9514ba"
         ),
         approved_capabilities=(
             # gunicorn.glogging.Logger import
@@ -687,6 +714,18 @@ TRUSTED_BOUNDARIES: dict[str, TrustedBoundary] = {
                 "94c6bc7efaf9ed9ff637b8f520dae3c28d07d97fec9e8e5659cf4aaedcfda5c1",
                 2,
             ),
+            # sys.stderr (write and flush receivers)
+            CapabilityAttestation(
+                "logging",
+                "2c37fe503c4be9ad195b19655760a05c7ee9ff98e50100b31f2adb399baed6cb",
+                2,
+            ),
+            # sys.stderr.write
+            CapabilityAttestation(
+                "logging",
+                "f48fb992d4d732200eb68eb4ece8779628415e407dfeae7b6d69c2698a82fa1a",
+                1,
+            ),
         ),
         approved_security_scopes=(
             SecurityScopeAttestation("03ffad9cd56fb7b8f5c90580d32db75f8ef06c0502aaedf1889f683780035758", 1),
@@ -695,6 +734,8 @@ TRUSTED_BOUNDARIES: dict[str, TrustedBoundary] = {
             SecurityScopeAttestation("2cf24e7c4e0991fd9cae84a578776e60e41b058e9a67a7be352976ed3f3b61c5", 1),
             SecurityScopeAttestation("59e30dd9f61b76da01c5dae045b4b4e671436c5dfa93a11e7695ccb2d616ed85", 1),
             SecurityScopeAttestation("af7b0c07c8c4544d4e5800ad94e3ab53537775c960105fc68d9e80628045e73f", 1),
+            SecurityScopeAttestation("fcf9fbfd3bdf4d022209610ca09b126e264c3dd7465c71fc69ee48f7b42a93ad", 1),
+            SecurityScopeAttestation("e389bc64f7c73a277eab1c8c907384cf00d6995b8db724ebaef0395f838f60ec", 1),
             SecurityScopeAttestation("fe25d3cd0d050418a98f7d71d06d7f0a927cb07acad269980dd165c59101ce1c", 1),
         ),
     ),
@@ -1517,6 +1558,74 @@ def is_production_path(relative_path: str) -> bool:
     )
 
 
+def verify_artifacts(
+    paths: tuple[Path, ...],
+    *,
+    forbidden_values: tuple[str, ...],
+) -> tuple[str, ...]:
+    if len(paths) > 32 or len(forbidden_values) > 64:
+        return ("artifact-input-bound",)
+    normalized_forbidden: list[str] = []
+    for value in forbidden_values:
+        if (
+            not isinstance(value, str)
+            or not 8 <= len(value) <= 4_096
+            or "\x00" in value
+        ):
+            return ("forbidden-value-contract",)
+        normalized_forbidden.append(value)
+
+    findings: set[str] = set()
+    for path in paths:
+        try:
+            metadata = path.lstat()
+            if (
+                not stat.S_ISREG(metadata.st_mode)
+                or metadata.st_size < 0
+                or metadata.st_size > ARTIFACT_MAX_BYTES
+            ):
+                findings.add("artifact-file-contract")
+                continue
+            content = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeError):
+            findings.add("artifact-file-contract")
+            continue
+        for name, pattern in ARTIFACT_RULES:
+            if pattern.search(content):
+                findings.add(name)
+        if any(value in content for value in normalized_forbidden):
+            findings.add("forbidden-value")
+    return tuple(sorted(findings))
+
+
+def _private_forbidden_values(paths: tuple[Path, ...]) -> tuple[str, ...]:
+    values: list[str] = []
+    if len(paths) > 16:
+        raise ValueError
+    for path in paths:
+        metadata = path.lstat()
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or metadata.st_mode & 0o777 != 0o600
+            or metadata.st_size <= 0
+            or metadata.st_size > 64 * 1024
+        ):
+            raise ValueError
+        flags = os.O_RDONLY
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        descriptor = os.open(path, flags)
+        try:
+            raw = os.read(descriptor, 64 * 1024 + 1)
+        finally:
+            os.close(descriptor)
+        if len(raw) > 64 * 1024:
+            raise ValueError
+        decoded = raw.decode("utf-8")
+        values.extend(line for line in decoded.splitlines() if line)
+    return tuple(values)
+
+
 def verify(root: Path) -> int:
     if sys.version_info[:2] != CANONICAL_AST_PYTHON:
         print(
@@ -1573,8 +1682,40 @@ def verify(root: Path) -> int:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--root", type=Path, default=Path.cwd())
+    parser.add_argument("--artifact", action="append", type=Path, default=[])
+    parser.add_argument(
+        "--forbidden-value-file", action="append", type=Path, default=[]
+    )
     args = parser.parse_args()
-    return verify(args.root.resolve())
+    result = verify(args.root.resolve())
+    if result != 0:
+        return result
+    try:
+        forbidden_values = _private_forbidden_values(
+            tuple(args.forbidden_value_file)
+        )
+    except (OSError, UnicodeError, ValueError):
+        print(
+            "Sensitive-retention artifact verification failed: private comparison values are unavailable.",
+            file=sys.stderr,
+        )
+        return 2
+    findings = verify_artifacts(
+        tuple(args.artifact),
+        forbidden_values=forbidden_values,
+    )
+    if findings:
+        print(
+            f"Sensitive-retention artifact verification failed: {len(findings)} bounded rule"
+            f"{'s' if len(findings) != 1 else ''}.",
+            file=sys.stderr,
+        )
+        for finding in findings:
+            print(f"- {finding}", file=sys.stderr)
+        return 1
+    if args.artifact:
+        print("Sensitive-retention artifact verification passed.")
+    return 0
 
 
 if __name__ == "__main__":

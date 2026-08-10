@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import hmac
 import math
 import time
 from datetime import UTC, datetime
@@ -8,7 +10,7 @@ from uuid import uuid4
 
 from flask import Blueprint, Flask, Response, current_app, g, jsonify, request
 from pydantic import ValidationError
-from werkzeug.exceptions import BadRequest
+from werkzeug.exceptions import BadRequest, NotFound
 
 from .apple_identity import InvalidAppleIdentity
 from .contracts import (
@@ -45,6 +47,21 @@ from .revenuecat import (
 
 
 routes = Blueprint("resume_ai_v1", __name__)
+
+_LOAD_CAPACITY_KEYS = frozenset(
+    {
+        "provider_slots",
+        "pdf_slots",
+        "local_pdf_slots",
+        "local_declared_pdf_bytes",
+    }
+)
+_LOAD_CAPACITY_LIMITS = {
+    "provider_slots": 48,
+    "pdf_slots": 8,
+    "local_pdf_slots": 2,
+    "local_declared_pdf_bytes": 20 * 1024 * 1024,
+}
 
 
 class RouteError(PublicServiceError):
@@ -118,6 +135,30 @@ def _client_rate_limit_key() -> str:
         ) from None
 
 
+def _load_target_marker_digest(services: Any) -> str:
+    settings = current_app.extensions.get("resume_ai.settings")
+    configured = getattr(settings, "load_test_staging_marker", "")
+    supplied = request.headers.get("X-Resume-Load-Marker")
+    origin = request.headers.get("Origin")
+    allowed_origins = getattr(settings, "allowed_web_origins", ())
+    if (
+        not isinstance(configured, str)
+        or len(configured) < 32
+        or not isinstance(supplied, str)
+        or not hmac.compare_digest(configured, supplied)
+        or not isinstance(origin, str)
+        or origin not in allowed_origins
+    ):
+        raise NotFound()
+    _authorize(services)
+    return hashlib.sha256(configured.encode("utf-8")).hexdigest()
+
+
+def _load_response_marker(response: Response, digest: str) -> Response:
+    response.headers["X-Resume-AI-Staging"] = digest
+    return response
+
+
 @routes.post("/v1/installations")
 def issue_installation() -> tuple[Response, int]:
     content_length = request.content_length
@@ -175,8 +216,19 @@ def _resume_text(parsed: ParsedAnalysisRequest, services: Any) -> str:
     upload = parsed.resume_pdf
     if upload is None or parsed.pdf_size is None or upload.filename is None:
         raise RequestValidationError()
-    extracted = services.pdf_parser(upload.stream, parsed.pdf_size, upload.filename)
-    return extracted.text
+    started_ns = time.monotonic_ns()
+    try:
+        extracted = services.pdf_parser(upload.stream, parsed.pdf_size, upload.filename)
+        g.resume_ai_pdf_outcome = "complete"
+        return extracted.text
+    except Exception:
+        g.resume_ai_pdf_outcome = "invalid"
+        raise
+    finally:
+        g.resume_ai_pdf_latency_ms = max(
+            0,
+            (time.monotonic_ns() - started_ns) / 1_000_000,
+        )
 
 
 def _resume_text_v2(parsed: ParsedAnalysisRequestV2, services: Any) -> str:
@@ -185,8 +237,28 @@ def _resume_text_v2(parsed: ParsedAnalysisRequestV2, services: Any) -> str:
     upload = parsed.resume_pdf
     if upload is None or parsed.pdf_size is None or upload.filename is None:
         raise RequestValidationError()
-    extracted = services.pdf_parser(upload.stream, parsed.pdf_size, upload.filename)
-    return extracted.text
+    started_ns = time.monotonic_ns()
+    try:
+        extracted = services.pdf_parser(upload.stream, parsed.pdf_size, upload.filename)
+        g.resume_ai_pdf_outcome = "complete"
+        return extracted.text
+    except Exception:
+        g.resume_ai_pdf_outcome = "invalid"
+        raise
+    finally:
+        g.resume_ai_pdf_latency_ms = max(
+            0,
+            (time.monotonic_ns() - started_ns) / 1_000_000,
+        )
+
+
+def _plan_class(allowance: Any) -> str:
+    limit = getattr(allowance, "limit", None)
+    if limit == 3:
+        return "free"
+    if limit == 100:
+        return "pro"
+    return "unknown"
 
 
 def _ai_allowance(snapshot: AllowanceSnapshot | None) -> AiAllowanceV2 | None:
@@ -283,6 +355,7 @@ def _v2_ai_result(
     services: Any,
     started_at: float,
 ) -> AiResultV2:
+    g.resume_ai_provider_outcome = "not_requested"
     if admission.ai_status != "admitted":
         return AiResultV2(
             status=admission.ai_status,
@@ -324,35 +397,53 @@ def _v2_ai_result(
         remaining,
     )
     if ai_deadline <= 0 or not math.isfinite(ai_deadline):
+        g.resume_ai_provider_outcome = "timeout"
         return AiResultV2(status="timeout", feedback=None, allowance=charged)
+    provider_started_ns = time.monotonic_ns()
     try:
         feedback = services.ai_gateway.analyze(
             parsed.resume_text if parsed.resume_text is not None else "",
             parsed.job_description,
             ai_deadline,
         )
+        g.resume_ai_provider_outcome = "complete"
         return AiResultV2(
             status="complete",
             feedback=feedback,
             allowance=charged,
         )
     except PublicServiceError as error:
+        provider_status = _provider_failure_status(error.code)
+        g.resume_ai_provider_outcome = (
+            "timeout"
+            if provider_status == "timeout"
+            else "invalid_response"
+            if provider_status == "invalid_provider_response"
+            else "unavailable"
+        )
         return AiResultV2(
-            status=_provider_failure_status(error.code),
+            status=provider_status,
             feedback=None,
             allowance=charged,
         )
     except ValidationError:
+        g.resume_ai_provider_outcome = "invalid_response"
         return AiResultV2(
             status="invalid_provider_response",
             feedback=None,
             allowance=charged,
         )
     except Exception:
+        g.resume_ai_provider_outcome = "unavailable"
         return AiResultV2(
             status="temporarily_unavailable",
             feedback=None,
             allowance=charged,
+        )
+    finally:
+        g.resume_ai_provider_latency_ms = max(
+            0,
+            (time.monotonic_ns() - provider_started_ns) / 1_000_000,
         )
 
 
@@ -382,8 +473,18 @@ def analyze_resume() -> tuple[Response, int]:
         ) as acquired:
             if not acquired:
                 raise RouteError(ErrorCode.REQUEST_IN_PROGRESS)
+            g.resume_ai_source_class = (
+                "pdf" if parsed.source_type == "pdf" else "reviewed_text"
+            )
             resume_text = _resume_text(parsed, services)
-            score = services.scorer(resume_text, parsed.job_description)
+            scoring_started_ns = time.monotonic_ns()
+            try:
+                score = services.scorer(resume_text, parsed.job_description)
+            finally:
+                g.resume_ai_scoring_latency_ms = max(
+                    0,
+                    (time.monotonic_ns() - scoring_started_ns) / 1_000_000,
+                )
             elapsed = time.monotonic() - started_at
             remaining = current_app.config["REQUEST_DEADLINE_SECONDS"] - elapsed
             ai_deadline = min(
@@ -392,11 +493,21 @@ def analyze_resume() -> tuple[Response, int]:
             )
             if ai_deadline <= 0 or not math.isfinite(ai_deadline):
                 raise RouteError(ErrorCode.AI_TIMEOUT, retryable=True)
-            feedback = services.ai_gateway.analyze(
-                resume_text,
-                parsed.job_description,
-                ai_deadline,
-            )
+            provider_started_ns = time.monotonic_ns()
+            try:
+                feedback = services.ai_gateway.analyze(
+                    resume_text,
+                    parsed.job_description,
+                    ai_deadline,
+                )
+                g.resume_ai_provider_outcome = "complete"
+            finally:
+                g.resume_ai_provider_latency_ms = max(
+                    0,
+                    (time.monotonic_ns() - provider_started_ns) / 1_000_000,
+                )
+            g.resume_ai_ai_status = "complete"
+            g.resume_ai_plan_class = "unknown"
             response = AnalysisResponseV1(
                 schemaVersion=1,
                 analysisId=uuid4(),
@@ -428,8 +539,16 @@ def analyze_resume_v2() -> tuple[Response, int]:
     )
     resume_text: str | None = None
     try:
+        g.resume_ai_source_class = admitted_request.source
         resume_text = _resume_text_v2(parsed, services)
-        score = services.scorer(resume_text, parsed.job_description)
+        scoring_started_ns = time.monotonic_ns()
+        try:
+            score = services.scorer(resume_text, parsed.job_description)
+        finally:
+            g.resume_ai_scoring_latency_ms = max(
+                0,
+                (time.monotonic_ns() - scoring_started_ns) / 1_000_000,
+            )
         ai_parsed = ParsedAnalysisRequestV2(
             request_id=parsed.request_id,
             source_type=parsed.source_type,
@@ -439,6 +558,8 @@ def analyze_resume_v2() -> tuple[Response, int]:
             job_description=parsed.job_description,
         )
         ai_result = _v2_ai_result(ai_parsed, admission, services, started_at)
+        g.resume_ai_ai_status = ai_result.status
+        g.resume_ai_plan_class = _plan_class(admission.allowance)
         response = AnalysisResponseV2(
             schemaVersion=2,
             analysisId=str(uuid4()),
@@ -611,6 +732,48 @@ def health() -> tuple[Response, int]:
     except Exception:
         raise RouteError(ErrorCode.SERVICE_UNAVAILABLE, retryable=True) from None
     return jsonify({"status": "ok"}), 200
+
+
+@routes.get("/v2/load/identity-canary")
+def load_identity_canary_v2() -> Response:
+    services = _services()
+    digest = _load_target_marker_digest(services)
+    return _load_response_marker(Response(status=204), digest)
+
+
+@routes.get("/v2/load/capacity-snapshot")
+def load_capacity_snapshot_v2() -> Response:
+    services = _services()
+    digest = _load_target_marker_digest(services)
+    snapshot_method = getattr(services.admission, "capacity_snapshot", None)
+    if not callable(snapshot_method):
+        raise RouteError(ErrorCode.SERVICE_UNAVAILABLE, retryable=True)
+    try:
+        snapshot = snapshot_method()
+    except Exception:
+        raise RouteError(ErrorCode.SERVICE_UNAVAILABLE, retryable=True) from None
+    if not isinstance(snapshot, dict) or set(snapshot) != _LOAD_CAPACITY_KEYS:
+        raise RouteError(ErrorCode.SERVICE_UNAVAILABLE, retryable=True)
+    normalized: dict[str, int] = {}
+    for name, maximum in _LOAD_CAPACITY_LIMITS.items():
+        value = snapshot.get(name)
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, int)
+            or value < 0
+            or value > maximum
+        ):
+            raise RouteError(ErrorCode.SERVICE_UNAVAILABLE, retryable=True)
+        normalized[name] = value
+    telemetry = getattr(services, "telemetry", None)
+    if telemetry is not None:
+        try:
+            for name, value in normalized.items():
+                telemetry.gauge(name, value, {})
+        except Exception:
+            pass
+    response = jsonify({"schemaVersion": 1, **normalized})
+    return _load_response_marker(response, digest)
 
 
 def register_routes(app: Flask) -> None:

@@ -5,27 +5,14 @@
   <header class="site-header wrap"><a class="wordmark" href="/static/index.html">Resume<span>.</span>AI</a><nav aria-label="Utility"><a href="/static/privacy.html">Privacy</a><a href="/static/terms.html">Terms</a></nav></header>
   <main class="wrap prose">
     <p class="eyebrow">Support and limits</p><h1>Useful feedback has limits.</h1>
-    <h2>Privacy boundary</h2><ul>
-      <li>Selected standard PDFs are transiently sent to the Resume.AI server hosted on Render for text extraction.</li>
-      <li>Raw PDF bytes are never sent to Groq.</li>
-      <li>Reviewed, pasted, or extracted resume text and any optional job description are sent to Groq only after consent.</li>
-      <li>The app server keeps no report or content history, and this browser keeps no report history.</li>
-      <li>Saved reports may be included in iPhone or iPad backups stored in iCloud or on a Mac or PC. iCloud backups are always encrypted, but iCloud Backup is end-to-end encrypted only when Advanced Data Protection is enabled. Computer backups are not encrypted by default; encryption depends on the user enabling Encrypt local backup. Restoring an existing backup may restore reports deleted from the active app.</li>
-      <li>Raw/original PDF bytes, filenames, resume-input fields, job-description-input fields, installation tokens, and request identifiers are not stored in local reports.</li>
-      <li>Generated feedback and bullet drafts may quote, transform, or restate names, contact information, resume content, or job-description content.</li>
-      <li>Review generated feedback before saving, sharing, or allowing it to enter device backups.</li>
-      <li>No advertising, cross-app tracking, or behavioral/product-interaction analytics are used. RevenueCat processes purchase history for subscription analytics.</li>
-      <li>An installation security identifier and coarse pseudonymous rate-limit key are used without ads or tracking.</li>
-      <li>Groq always retains usage metadata and may retain inference content for up to 30 days for reliability and abuse prevention unless Zero Data Retention is enabled; Resume.AI has not verified that setting.</li>
-      <li>Render may retain provider-side connection and HTTP request metadata under its policy; Resume.AI controls only its content-free application logs.</li>
-      <li>Render may process Device/IP Data and IP-based geolocation under its policy.</li>
-    </ul>
-    <h2>What the readiness review does</h2><p>It combines deterministic checks with AI coaching from Groq. It is not an exact ATS or employment prediction, has no hiring guarantee, and is not professional, legal, or employment advice.</p>
-    <h2>File help</h2><p>Use a readable, unencrypted PDF under 10 MB, or paste up to 30,000 characters of resume text. The optional role description accepts up to 20,000 characters.</p>
-    <h2>Content-free troubleshooting</h2><p>Interactive support is not yet available. This <a href="https://resume-analyzer-al3g.onrender.com/static/support.html" rel="noreferrer">first-party support page</a> is the release-candidate help surface.</p>
-    <ul><li>Confirm the app version, iOS version, and stable error category shown on screen.</li><li>Retry on a trusted network and use a readable, unencrypted PDF under 10 MB, or paste text within the displayed limit.</li><li>If the service is unavailable, keep the error category and try again later.</li></ul>
-    <p>Never send or publish a resume, job description, token, request identifier, filename, contact detail, or other private data. No interactive intake channel is available yet.</p>
-    <h2>Self-help checks</h2><p>There is no automatic retry. If a request times out or the service is unavailable, wait and submit again manually. Keep a local note of the app version, operating-system version, action taken, and stable error category; there is no intake channel to send it to.</p>
+    <h2>iPhone document help</h2><p>The signed iOS app extracts PDF text on-device with Apple PDFKit or Vision and asks you to review it before consent. Use a readable, unencrypted PDF under 10 MB. If recognition is incomplete, correct the reviewed text or paste up to 30,000 characters. The optional role description accepts up to 20,000 characters.</p>
+    <h2>Compatibility web help</h2><p>The compatibility web app transiently uploads a selected standard PDF to Render for bounded extraction. Raw PDF bytes never go to Groq. This browser does not save report history.</p>
+    <h2>Local workspace</h2><p>Local reports, local resume versions, and job notes do not sync to Resume.AI servers. Use in-app deletion for individual records or Delete All for the active workspace. Restoring a device backup can restore older local data.</p>
+    <h2>Subscriptions</h2><p>Use Restore Purchases if a valid Apple subscription is not reflected. Apple manages payment, cancellation, and refunds; deleting the app does not cancel a subscription. RevenueCat verifies the entitlement but does not receive full payment-card details from Resume.AI.</p>
+    <h2>Troubleshooting</h2><ul><li>Confirm the app version, iOS version, and stable error category displayed.</li><li>Retry manually on a trusted network; the app does not silently repeat an AI request.</li><li>If deterministic feedback appears without AI, capacity or the provider may be temporarily unavailable; the deterministic result remains usable.</li><li>If purchase state is stale, use Restore Purchases and reopen the plan screen.</li></ul>
+    <p>Interactive support is not yet available. This <a href="https://resume-analyzer-al3g.onrender.com/static/support.html" rel="noreferrer">first-party support page</a> is the release-candidate self-help surface.</p>
+    <p>Never send or publish a resume, job description, token, request identifier, filename, contact detail, or other private data when asking for help. Keep only a private note of the app version, operating-system version, action taken, and stable error category.</p>
+    <h2>Product limit</h2><p>Resume.AI is coaching, not an exact ATS, hiring decision, employment prediction, or professional advice. AI can be incomplete or wrong.</p>
   </main>
   <footer class="site-footer wrap"><span>Resume.AI coaching</span><a href="/static/index.html">Back to review</a></footer>
 </body>
