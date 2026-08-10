@@ -15,13 +15,14 @@
       "bundleIdentifier": "com.avinashamanchi.resumeai",
       "buildNumber": "1",
       "icon": "./assets/icon.png",
-      "usesAppleSignIn": false,
+      "usesAppleSignIn": true,
       "infoPlist": {
         "ITSAppUsesNonExemptEncryption": false
       }
     },
     "plugins": [
       "expo-router",
+      "expo-apple-authentication",
       "expo-sqlite",
       [
         "expo-secure-store",

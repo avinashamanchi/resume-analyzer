@@ -12,7 +12,9 @@ jest.mock('expo-linking', () => ({ openURL: jest.fn(async () => undefined) }));
 
 const ready: BillingSnapshot = {
   availability: 'ready',
+  planStatus: 'free',
   entitlementActive: false,
+  allowance: { used: 1, limit: 3, resetsAt: '2099-09-01T00:00:00Z' },
   products: [{
     id: 'com.avinashamanchi.resumeai.pro.monthly',
     title: 'Resume.AI Pro Monthly',
@@ -25,8 +27,9 @@ const ready: BillingSnapshot = {
 function service(snapshot: BillingSnapshot = ready): BillingService {
   return {
     load: jest.fn(async () => snapshot),
-    purchase: jest.fn(async () => ({ ...snapshot, entitlementActive: true })),
+    purchase: jest.fn(async () => ({ ...snapshot, planStatus: 'pro_verified' as const, entitlementActive: true })),
     restore: jest.fn(async () => snapshot),
+    linkApple: jest.fn(async () => snapshot),
   };
 }
 
@@ -48,6 +51,9 @@ it('shows a clear free escape, StoreKit price, restore, and legal links', async 
   await act(async () => { fireEvent.press(view.getByRole('button', { name: 'Restore Purchases' })); });
   expect(billing.restore).toHaveBeenCalledTimes(1);
 
+  await act(async () => { fireEvent.press(view.getByRole('button', { name: 'Sign in with Apple to restore across devices' })); });
+  expect(billing.linkApple).toHaveBeenCalledTimes(1);
+
   await act(async () => { fireEvent.press(view.getByRole('link', { name: 'Privacy Policy' })); });
   expect(Linking.openURL).toHaveBeenCalledWith(PRIVACY_URL);
   await act(async () => { fireEvent.press(view.getByRole('link', { name: 'Terms of Use' })); });
@@ -59,7 +65,9 @@ it('shows a clear free escape, StoreKit price, restore, and legal links', async 
 it('keeps restore available when offerings fail to load', async () => {
   const failed: BillingSnapshot = {
     availability: 'error',
+    planStatus: 'free',
     entitlementActive: false,
+    allowance: null,
     products: [],
   };
   const billing = service(failed);
@@ -74,7 +82,9 @@ it('keeps restore available when offerings fail to load', async () => {
 it('labels Expo Go as a preview and never exposes a fake purchase action', async () => {
   const preview: BillingSnapshot = {
     availability: 'preview',
+    planStatus: 'free',
     entitlementActive: false,
+    allowance: null,
     products: [],
   };
   const view = render(<BillingProvider service={service(preview)}><UpgradeScreen /></BillingProvider>);

@@ -86,6 +86,17 @@ export default function UpgradeScreen() {
         disabled={billing.busy || billing.availability === 'loading' || billing.availability === 'preview' || billing.availability === 'configuration'}
         tone="secondary"
       />
+      {billing.availability === 'ready' || billing.availability === 'error' ? (
+        <>
+          <AppButton
+            label="Sign in with Apple to restore across devices"
+            onPress={() => { void billing.linkApple(); }}
+            disabled={billing.busy}
+            tone="secondary"
+          />
+          <Text style={uiStyles.caption}>Optional. Resume.AI uses an opaque Apple account identifier to verify a purchase; it does not request or save your name or email.</Text>
+        </>
+      ) : null}
       <AppButton label="Manage Apple subscription" onPress={() => { void Linking.openURL(MANAGE_SUBSCRIPTIONS_URL); }} disabled={billing.busy} tone="quiet" />
 
       <Text style={uiStyles.caption}>Payment is charged to your Apple Account at confirmation. Subscriptions renew automatically unless canceled at least 24 hours before the current period ends. You can manage or cancel in App Store account settings.</Text>

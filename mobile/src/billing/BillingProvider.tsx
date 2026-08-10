@@ -1,4 +1,3 @@
-import Constants from 'expo-constants';
 import React, {
   createContext,
   type ReactNode,
@@ -13,11 +12,12 @@ import React, {
 import {
   BillingUnavailableError,
   PurchaseCancelledError,
-  RevenueCatBillingService,
   type BillingAvailability,
+  type BillingPlanStatus,
   type BillingProduct,
   type BillingSnapshot,
 } from './revenueCatService';
+import { AppleSignInCancelledError } from './appleAccountLinker';
 
 export const RESUME_PRO_ENTITLEMENT = 'resume_pro';
 export const RESUME_PRO_PRODUCT_IDS = Object.freeze([
@@ -29,22 +29,28 @@ export interface BillingService {
   load(): Promise<BillingSnapshot>;
   purchase(productId: string): Promise<BillingSnapshot>;
   restore(): Promise<BillingSnapshot>;
+  linkApple(): Promise<BillingSnapshot>;
 }
 
 export type BillingContextValue = Readonly<{
   availability: BillingAvailability | 'loading';
+  planStatus: BillingPlanStatus;
   entitlementActive: boolean;
+  allowance: BillingSnapshot['allowance'];
   products: readonly BillingProduct[];
   busy: boolean;
   message: string | null;
   purchase(productId: string): Promise<void>;
   restore(): Promise<void>;
+  linkApple(): Promise<void>;
   reload(): Promise<void>;
 }>;
 
 const defaultSnapshot: BillingSnapshot = {
-  availability: 'preview',
+  availability: 'configuration',
+  planStatus: 'free',
   entitlementActive: false,
+  allowance: null,
   products: [],
 };
 
@@ -54,17 +60,18 @@ const defaultContext: BillingContextValue = {
   message: null,
   purchase: async () => {},
   restore: async () => {},
+  linkApple: async () => {},
   reload: async () => {},
 };
 
 const BillingContext = createContext<BillingContextValue>(defaultContext);
 
-const defaultService = new RevenueCatBillingService({
-  apiKey: process.env.EXPO_PUBLIC_REVENUECAT_IOS_API_KEY,
-  entitlementId: RESUME_PRO_ENTITLEMENT,
-  executionEnvironment: Constants.executionEnvironment,
-  productIds: RESUME_PRO_PRODUCT_IDS,
-});
+const defaultService: BillingService = {
+  load: async () => defaultSnapshot,
+  purchase: async () => { throw new BillingUnavailableError(); },
+  restore: async () => { throw new BillingUnavailableError(); },
+  linkApple: async () => { throw new BillingUnavailableError(); },
+};
 
 export function BillingProvider({
   children,
@@ -111,7 +118,9 @@ export function BillingProvider({
       if (mounted.current) {
         setMessage(next.entitlementActive
           ? 'Resume.AI Pro is active.'
-          : 'The purchase did not activate Resume.AI Pro. Try Restore Purchases.');
+          : next.planStatus === 'pro_verification_needed'
+            ? 'Purchase received. Pro is locked until secure verification succeeds; try again shortly.'
+            : 'The purchase did not activate Resume.AI Pro. Try Restore Purchases.');
       }
     } catch (error) {
       if (mounted.current) {
@@ -136,7 +145,9 @@ export function BillingProvider({
       if (mounted.current) {
         setMessage(next.entitlementActive
           ? 'Purchases restored. Resume.AI Pro is active.'
-          : 'No active Resume.AI Pro purchase was found.');
+          : next.planStatus === 'pro_verification_needed'
+            ? 'Purchase found. Pro is locked until secure verification succeeds; try again shortly.'
+            : 'No active Resume.AI Pro purchase was found.');
       }
     } catch (error) {
       if (mounted.current) {
@@ -150,16 +161,46 @@ export function BillingProvider({
     }
   }, [commit, service]);
 
+  const linkApple = useCallback(async () => {
+    if (operationLocked.current) return;
+    operationLocked.current = true;
+    setBusy(true);
+    setMessage(null);
+    try {
+      const next = await service.linkApple();
+      commit(next);
+      if (mounted.current) {
+        setMessage(next.entitlementActive
+          ? 'Apple account linked. Resume.AI Pro was securely restored.'
+          : next.planStatus === 'pro_verification_needed'
+            ? 'Apple sign-in succeeded, but Pro could not be securely verified yet.'
+            : 'Apple sign-in succeeded. No active Resume.AI Pro purchase was found.');
+      }
+    } catch (error) {
+      if (mounted.current) {
+        setMessage(error instanceof AppleSignInCancelledError
+          ? 'Sign in with Apple was cancelled.'
+          : 'Sign in with Apple could not restore purchases. Try again later.');
+      }
+    } finally {
+      operationLocked.current = false;
+      if (mounted.current) setBusy(false);
+    }
+  }, [commit, service]);
+
   const value = useMemo<BillingContextValue>(() => ({
     availability: snapshot?.availability ?? 'loading',
+    planStatus: snapshot?.planStatus ?? 'loading',
     entitlementActive: snapshot?.entitlementActive ?? false,
+    allowance: snapshot?.allowance ?? null,
     products: snapshot?.products ?? [],
     busy,
     message,
     purchase,
     restore,
+    linkApple,
     reload,
-  }), [busy, message, purchase, reload, restore, snapshot]);
+  }), [busy, linkApple, message, purchase, reload, restore, snapshot]);
 
   return <BillingContext.Provider value={value}>{children}</BillingContext.Provider>;
 }

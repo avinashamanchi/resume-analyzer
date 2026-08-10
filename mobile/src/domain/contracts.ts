@@ -204,6 +204,14 @@ export const InstallationResponseSchema = z
   })
   .strict();
 
+export const InstallationResponseV2Schema = z
+  .object({
+    schemaVersion: z.literal(2),
+    installationToken: codePointText(1, 2_048),
+    revenueCatAppUserId: z.string().regex(/^rai_installation_[A-Za-z0-9_-]{43}$/),
+  })
+  .strict();
+
 export const PublicErrorSchema = z
   .object({
     schemaVersion: z.literal(1),
@@ -219,6 +227,7 @@ const AnalysisRequestContextSchema = z.object({ hasJobDescription: z.boolean() }
 export type AnalysisResponse = z.infer<typeof AnalysisResponseSchema>;
 export type AnalysisResponseV2 = z.infer<typeof AnalysisResponseV2Schema>;
 export type InstallationResponse = z.infer<typeof InstallationResponseSchema>;
+export type InstallationResponseV2 = z.infer<typeof InstallationResponseV2Schema>;
 export type PublicError = z.infer<typeof PublicErrorSchema>;
 export type AnalysisRequestContext = Readonly<z.infer<typeof AnalysisRequestContextSchema>>;
 

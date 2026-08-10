@@ -87,7 +87,10 @@ describe('native foundation', () => {
       process.env.EXPO_PUBLIC_RESUME_API_URL = 'http://localhost:5000';
       expect(() => appConfig({ config: appManifest } as never)).toThrow('EXPO_PUBLIC_RESUME_API_URL');
       process.env.EXPO_PUBLIC_RESUME_API_URL = 'https://resume-analyzer-al3g.onrender.com';
-      expect(appConfig({ config: appManifest } as never).ios?.usesAppleSignIn).toBe(false);
+      expect(appConfig({ config: appManifest } as never).ios?.usesAppleSignIn).toBe(true);
+      expect(appConfig({ config: appManifest } as never).plugins).toContain(
+        'expo-apple-authentication',
+      );
     } finally {
       if (originalProfile === undefined) delete process.env.EAS_BUILD_PROFILE;
       else process.env.EAS_BUILD_PROFILE = originalProfile;

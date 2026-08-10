@@ -23,6 +23,7 @@ import { CONSENT_VERSION, ConsentStore } from '../src/security/consentStore';
 import {
   INSTALLATION_TOKEN_KEY,
   InstallationTokenStore,
+  installationRevenueCatSlot,
 } from '../src/security/installationToken';
 import { SQLiteTokenAuthorityStore } from '../src/security/tokenAuthority';
 
@@ -251,9 +252,22 @@ async function waitForMockCalls(mock: { mock: { calls: unknown[][] } }, minimum 
 }
 
 function response(status: number, data: unknown) {
+  const normalized = (
+    status === 201 &&
+    data !== null &&
+    typeof data === 'object' &&
+    !Array.isArray(data) &&
+    Object.keys(data).length === 2 &&
+    (data as Record<string, unknown>).schemaVersion === 1 &&
+    typeof (data as Record<string, unknown>).installationToken === 'string'
+  ) ? {
+    schemaVersion: 2,
+    installationToken: (data as Record<string, unknown>).installationToken,
+    revenueCatAppUserId: `rai_installation_${'i'.repeat(43)}`,
+  } : data;
   return {
     status,
-    json: jest.fn().mockResolvedValue(data),
+    json: jest.fn().mockResolvedValue(normalized),
   } as unknown as Response;
 }
 
@@ -273,6 +287,35 @@ describe('installation token boundary', () => {
   beforeEach(() => {
     jest.resetAllMocks();
     jest.mocked(SecureStore.getItemAsync).mockResolvedValue(null);
+  });
+
+  it('issues and durably restores the server-derived RevenueCat installation identity', async () => {
+    const revenueCatAppUserId = `rai_installation_${'i'.repeat(43)}`;
+    const slots = secureTokenSlots();
+    fetchMock.mockResolvedValueOnce(response(201, {
+      schemaVersion: 2,
+      installationToken: 'signed-token',
+      revenueCatAppUserId,
+    }));
+    const authority = authorityStore();
+    const { store } = createTokenStore(authority);
+
+    await expect(store.getOrIssueIdentity(new AbortController().signal)).resolves.toEqual({
+      installationToken: 'signed-token',
+      revenueCatAppUserId,
+    });
+    expect(fetchMock).toHaveBeenCalledWith(
+      'https://api.example.test/v2/installations',
+      expect.objectContaining({ method: 'POST' }),
+    );
+    expect(slots.get(installationRevenueCatSlot(1))).toBe(revenueCatAppUserId);
+
+    const { store: restartedStore } = createTokenStore(authority);
+    await expect(restartedStore.getOrIssueIdentity(new AbortController().signal)).resolves.toEqual({
+      installationToken: 'signed-token',
+      revenueCatAppUserId,
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
   it('stores only the signed installation token in device-only SecureStore', async () => {
@@ -306,7 +349,7 @@ describe('installation token boundary', () => {
     await expect(cancelled).rejects.toMatchObject({ category: 'cancelled' });
     await expect(waiting).resolves.toBe('signed-token');
     expect(fetchMock).toHaveBeenCalledTimes(1);
-    expect(SecureStore.setItemAsync).toHaveBeenCalledTimes(1);
+    expect(SecureStore.setItemAsync).toHaveBeenCalledTimes(2);
   });
 
   it('does not persist a late issuance after every caller cancels', async () => {
@@ -384,7 +427,11 @@ describe('installation token boundary', () => {
       value: 'fresh-token',
     });
     expect(fetchMock).toHaveBeenCalledTimes(2);
-    blockedBody.resolve({ schemaVersion: 1, installationToken: 'cancelled-token' });
+    blockedBody.resolve({
+      schemaVersion: 2,
+      installationToken: 'cancelled-token',
+      revenueCatAppUserId: `rai_installation_${'i'.repeat(43)}`,
+    });
     await flushAsync();
   });
 

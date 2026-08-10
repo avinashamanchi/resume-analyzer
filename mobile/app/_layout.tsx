@@ -13,7 +13,7 @@ export default function RootLayout() {
   const [runtime] = useState(createRuntimeComposition);
   return (
     <SafeAreaProvider>
-      <BillingProvider>
+      <BillingProvider service={runtime.billingService}>
         <DataProvider createRepository={runtime.createRepository}>
           <AnalysisProvider coordinator={runtime.coordinator}>
             <AppControllerRoot services={runtime.services}>

@@ -1,4 +1,7 @@
+import type { InstallationIdentityProvider, VerifiedPlanSnapshot } from '../api/planApi';
+
 export type BillingAvailability = 'ready' | 'preview' | 'configuration' | 'error';
+export type BillingPlanStatus = 'loading' | 'free' | 'pro_verified' | 'pro_verification_needed';
 
 export type BillingProduct = Readonly<{
   id: string;
@@ -10,7 +13,9 @@ export type BillingProduct = Readonly<{
 
 export type BillingSnapshot = Readonly<{
   availability: BillingAvailability;
+  planStatus: BillingPlanStatus;
   entitlementActive: boolean;
+  allowance: VerifiedPlanSnapshot['allowance'] | null;
   products: readonly BillingProduct[];
 }>;
 
@@ -33,7 +38,8 @@ type RevenueCatCustomerInfo = Readonly<{
 }>;
 
 export type RevenueCatModule = Readonly<{
-  configure(options: Readonly<{ apiKey: string }>): void;
+  configure(options: Readonly<{ apiKey: string; appUserID: string }>): void;
+  getAppUserID(): Promise<string>;
   getOfferings(): Promise<Readonly<{
     current: Readonly<{ availablePackages: readonly RevenueCatPackage[] }> | null;
   }>>;
@@ -42,14 +48,26 @@ export type RevenueCatModule = Readonly<{
     customerInfo: RevenueCatCustomerInfo;
   }>>;
   restorePurchases(): Promise<RevenueCatCustomerInfo>;
+  logIn(appUserID: string): Promise<Readonly<{
+    customerInfo: RevenueCatCustomerInfo;
+    created: boolean;
+  }>>;
+  logOut(): Promise<RevenueCatCustomerInfo>;
 }>;
 
-type RevenueCatBillingOptions = Readonly<{
+export type PlanVerifier = Readonly<{
+  sync(signal: AbortSignal): Promise<VerifiedPlanSnapshot>;
+}>;
+
+export type RevenueCatBillingOptions = Readonly<{
   apiKey: string | undefined;
   entitlementId: string;
   executionEnvironment: string;
+  installationTokens: InstallationIdentityProvider;
+  planApi: PlanVerifier;
   moduleLoader?: () => RevenueCatModule | Promise<RevenueCatModule>;
   productIds: readonly string[];
+  now?: () => number;
 }>;
 
 const EMPTY_PRODUCTS: readonly BillingProduct[] = Object.freeze([]);
@@ -73,14 +91,24 @@ const defaultModuleLoader = async (): Promise<RevenueCatModule> => {
   return loaded.default as unknown as RevenueCatModule;
 };
 
+function sdkEntitlementActive(info: RevenueCatCustomerInfo, entitlementId: string): boolean {
+  return info.entitlements.active[entitlementId]?.isActive === true;
+}
+
 export class RevenueCatBillingService {
   private module: RevenueCatModule | null = null;
-  private configured = false;
+  private configuration: Promise<RevenueCatModule> | null = null;
   private readonly packageByProductId = new Map<string, RevenueCatPackage>();
   private products: readonly BillingProduct[] = EMPTY_PRODUCTS;
+  private planStatus: BillingPlanStatus = 'loading';
   private entitlementActive = false;
+  private allowance: VerifiedPlanSnapshot['allowance'] | null = null;
+  private sdkShowsPro = false;
+  private readonly now: () => number;
 
-  constructor(private readonly options: RevenueCatBillingOptions) {}
+  constructor(private readonly options: RevenueCatBillingOptions) {
+    this.now = options.now ?? Date.now;
+  }
 
   async load(): Promise<BillingSnapshot> {
     const unavailable = this.unavailableSnapshot();
@@ -88,34 +116,26 @@ export class RevenueCatBillingService {
 
     try {
       const purchases = await this.getConfiguredModule();
-      const [offeringsResult, customerInfoResult] = await Promise.allSettled([
+      const [offeringsResult, customerInfoResult, planResult] = await Promise.allSettled([
         purchases.getOfferings(),
         purchases.getCustomerInfo(),
+        this.options.planApi.sync(new AbortController().signal),
       ]);
-      if (offeringsResult.status === 'fulfilled') {
-        const offerings = offeringsResult.value;
-        this.packageByProductId.clear();
-        const allowed = new Set(this.options.productIds);
-        const packages = offerings.current?.availablePackages ?? [];
-        for (const item of packages) {
-          if (allowed.has(item.product.identifier)) {
-            this.packageByProductId.set(item.product.identifier, item);
-          }
-        }
-        this.products = this.options.productIds.flatMap((productId) => {
-          const item = this.packageByProductId.get(productId);
-          return item ? [this.mapProduct(item)] : [];
-        });
-      }
+      if (offeringsResult.status === 'fulfilled') this.rememberProducts(offeringsResult.value);
       if (customerInfoResult.status === 'fulfilled') {
-        const verified = this.readySnapshot(customerInfoResult.value);
-        return offeringsResult.status === 'fulfilled'
-          ? verified
-          : { ...verified, availability: 'error' };
+        this.sdkShowsPro = sdkEntitlementActive(customerInfoResult.value, this.options.entitlementId);
       }
-      return this.errorSnapshot();
+      if (planResult.status === 'fulfilled') this.applyVerifiedPlan(planResult.value);
+      else this.requireVerification();
+
+      return this.snapshot(
+        offeringsResult.status === 'fulfilled' && planResult.status === 'fulfilled'
+          ? 'ready'
+          : 'error',
+      );
     } catch {
-      return this.errorSnapshot();
+      this.requireVerification();
+      return this.snapshot('error');
     }
   }
 
@@ -123,14 +143,12 @@ export class RevenueCatBillingService {
     const unavailable = this.unavailableSnapshot();
     if (unavailable !== null) throw new BillingUnavailableError();
     const purchases = await this.getConfiguredModule();
-    if (this.packageByProductId.size === 0) {
-      await this.load();
-    }
+    if (this.packageByProductId.size === 0) await this.load();
     const item = this.packageByProductId.get(productId);
     if (!item) throw new BillingUnavailableError();
+    let customerInfo: RevenueCatCustomerInfo;
     try {
-      const result = await purchases.purchasePackage(item);
-      return this.readySnapshot(result.customerInfo);
+      customerInfo = (await purchases.purchasePackage(item)).customerInfo;
     } catch (error) {
       if (
         typeof error === 'object' &&
@@ -142,16 +160,77 @@ export class RevenueCatBillingService {
       }
       throw new BillingUnavailableError();
     }
+    this.sdkShowsPro = sdkEntitlementActive(customerInfo, this.options.entitlementId);
+    return this.refreshVerifiedPlan();
   }
 
   async restore(): Promise<BillingSnapshot> {
     const unavailable = this.unavailableSnapshot();
     if (unavailable !== null) throw new BillingUnavailableError();
+    let customerInfo: RevenueCatCustomerInfo;
     try {
       const purchases = await this.getConfiguredModule();
-      const customerInfo = await purchases.restorePurchases();
-      return this.readySnapshot(customerInfo);
+      customerInfo = await purchases.restorePurchases();
     } catch {
+      throw new BillingUnavailableError();
+    }
+    this.sdkShowsPro = sdkEntitlementActive(customerInfo, this.options.entitlementId);
+    return this.refreshVerifiedPlan();
+  }
+
+  async logIn(appUserId: string): Promise<BillingSnapshot> {
+    if (!/^rai_account_[A-Za-z0-9_-]{43}$/.test(appUserId)) {
+      throw new BillingUnavailableError();
+    }
+    try {
+      const purchases = await this.getConfiguredModule();
+      const result = await purchases.logIn(appUserId);
+      if (await purchases.getAppUserID() !== appUserId) throw new Error('RevenueCat identity mismatch');
+      this.sdkShowsPro = sdkEntitlementActive(result.customerInfo, this.options.entitlementId);
+      return this.refreshVerifiedPlan();
+    } catch {
+      this.requireVerification();
+      throw new BillingUnavailableError();
+    }
+  }
+
+  async linkAccount(
+    appUserId: string,
+    verify: () => Promise<VerifiedPlanSnapshot>,
+  ): Promise<BillingSnapshot> {
+    if (!/^rai_account_[A-Za-z0-9_-]{43}$/.test(appUserId)) {
+      throw new BillingUnavailableError();
+    }
+    let customerInfo: RevenueCatCustomerInfo;
+    try {
+      const purchases = await this.getConfiguredModule();
+      const login = await purchases.logIn(appUserId);
+      if (await purchases.getAppUserID() !== appUserId) throw new Error('RevenueCat identity mismatch');
+      customerInfo = await purchases.restorePurchases();
+      this.sdkShowsPro =
+        sdkEntitlementActive(login.customerInfo, this.options.entitlementId) ||
+        sdkEntitlementActive(customerInfo, this.options.entitlementId);
+    } catch {
+      this.requireVerification();
+      throw new BillingUnavailableError();
+    }
+    try {
+      this.applyVerifiedPlan(await verify());
+      return this.snapshot('ready');
+    } catch {
+      this.requireVerification();
+      return this.snapshot('error');
+    }
+  }
+
+  async logOut(): Promise<BillingSnapshot> {
+    try {
+      const purchases = await this.getConfiguredModule();
+      const customerInfo = await purchases.logOut();
+      this.sdkShowsPro = sdkEntitlementActive(customerInfo, this.options.entitlementId);
+      return this.refreshVerifiedPlan();
+    } catch {
+      this.requireVerification();
       throw new BillingUnavailableError();
     }
   }
@@ -160,14 +239,18 @@ export class RevenueCatBillingService {
     if (this.options.executionEnvironment === 'storeClient') {
       return {
         availability: 'preview',
+        planStatus: 'free',
         entitlementActive: false,
+        allowance: null,
         products: EMPTY_PRODUCTS,
       };
     }
     if (!this.options.apiKey?.trim()) {
       return {
         availability: 'configuration',
+        planStatus: 'free',
         entitlementActive: false,
+        allowance: null,
         products: EMPTY_PRODUCTS,
       };
     }
@@ -175,12 +258,41 @@ export class RevenueCatBillingService {
   }
 
   private async getConfiguredModule(): Promise<RevenueCatModule> {
+    if (this.configuration !== null) return this.configuration;
+    this.configuration = this.configureModule();
+    try {
+      return await this.configuration;
+    } catch (error) {
+      this.configuration = null;
+      throw error;
+    }
+  }
+
+  private async configureModule(): Promise<RevenueCatModule> {
     this.module ??= await (this.options.moduleLoader ?? defaultModuleLoader)();
-    if (!this.configured) {
-      this.module.configure({ apiKey: this.options.apiKey as string });
-      this.configured = true;
+    const identity = await this.options.installationTokens.getOrIssueIdentity(
+      new AbortController().signal,
+    );
+    this.module.configure({
+      apiKey: this.options.apiKey as string,
+      appUserID: identity.revenueCatAppUserId,
+    });
+    if (await this.module.getAppUserID() !== identity.revenueCatAppUserId) {
+      throw new Error('RevenueCat identity mismatch');
     }
     return this.module;
+  }
+
+  private rememberProducts(offerings: Awaited<ReturnType<RevenueCatModule['getOfferings']>>): void {
+    this.packageByProductId.clear();
+    const allowed = new Set(this.options.productIds);
+    for (const item of offerings.current?.availablePackages ?? []) {
+      if (allowed.has(item.product.identifier)) this.packageByProductId.set(item.product.identifier, item);
+    }
+    this.products = this.options.productIds.flatMap(productId => {
+      const item = this.packageByProductId.get(productId);
+      return item ? [this.mapProduct(item)] : [];
+    });
   }
 
   private mapProduct(item: RevenueCatPackage): BillingProduct {
@@ -193,20 +305,48 @@ export class RevenueCatBillingService {
     };
   }
 
-  private readySnapshot(customerInfo: RevenueCatCustomerInfo): BillingSnapshot {
-    this.entitlementActive =
-      customerInfo.entitlements.active[this.options.entitlementId]?.isActive === true;
-    return {
-      availability: 'ready',
-      entitlementActive: this.entitlementActive,
-      products: this.products,
-    };
+  private applyVerifiedPlan(plan: VerifiedPlanSnapshot): void {
+    const verifiedUntil = Date.parse(plan.verifiedUntil);
+    const entitlementExpiresAt = plan.entitlementExpiresAt === null
+      ? null
+      : Date.parse(plan.entitlementExpiresAt);
+    const current = this.now();
+    const currentVerification = Number.isFinite(verifiedUntil) && verifiedUntil > current;
+    const currentEntitlement =
+      plan.kind === 'pro' &&
+      entitlementExpiresAt !== null &&
+      Number.isFinite(entitlementExpiresAt) &&
+      entitlementExpiresAt > current;
+    this.allowance = Object.freeze(plan.allowance);
+    this.entitlementActive = currentVerification && currentEntitlement;
+    this.planStatus = this.entitlementActive
+      ? 'pro_verified'
+      : currentVerification && plan.kind === 'free'
+        ? 'free'
+        : 'pro_verification_needed';
   }
 
-  private errorSnapshot(): BillingSnapshot {
+  private requireVerification(): void {
+    this.entitlementActive = false;
+    this.planStatus = this.sdkShowsPro ? 'pro_verification_needed' : 'free';
+  }
+
+  private async refreshVerifiedPlan(): Promise<BillingSnapshot> {
+    try {
+      this.applyVerifiedPlan(await this.options.planApi.sync(new AbortController().signal));
+      return this.snapshot('ready');
+    } catch {
+      this.requireVerification();
+      return this.snapshot('error');
+    }
+  }
+
+  private snapshot(availability: BillingAvailability): BillingSnapshot {
     return {
-      availability: 'error',
+      availability,
+      planStatus: this.planStatus,
       entitlementActive: this.entitlementActive,
+      allowance: this.allowance,
       products: this.products,
     };
   }

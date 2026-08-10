@@ -1,7 +1,11 @@
 import * as SecureStore from 'expo-secure-store';
 
 import { validateApiBaseUrl } from '../api/apiBaseUrl';
-import { InstallationResponseSchema, PublicErrorSchema } from '../domain/contracts';
+import {
+  InstallationResponseSchema,
+  InstallationResponseV2Schema,
+  PublicErrorSchema,
+} from '../domain/contracts';
 import { ResumeApiError } from '../domain/errors';
 import {
   SQLiteTokenAuthorityStore,
@@ -13,6 +17,7 @@ import {
 // A namespace, not a token-bearing SQLite key. Every SecureStore value under
 // it is a signed anonymous token, isolated by its durable generation.
 export const INSTALLATION_TOKEN_KEY = 'resume-ai.installation-token.v1';
+export const INSTALLATION_REVENUECAT_KEY = 'resume-ai.installation-revenuecat.v1';
 
 type FetchImplementation = (input: string, init: RequestInit) => Promise<Response>;
 
@@ -45,10 +50,19 @@ const MAX_ACTIVE_READ_ATTEMPTS = 3;
 
 type ActiveToken = Readonly<{ generation: number; token: string }>;
 
+export type InstallationIdentity = Readonly<{
+  installationToken: string;
+  revenueCatAppUserId: string;
+}>;
+
 class AbortSignalFailure extends Error {}
 
 export function installationTokenSlot(generation: number): string {
   return `${INSTALLATION_TOKEN_KEY}.g${generation}`;
+}
+
+export function installationRevenueCatSlot(generation: number): string {
+  return `${INSTALLATION_REVENUECAT_KEY}.g${generation}`;
 }
 
 function decodeBase64UrlAscii(value: string): string | null {
@@ -169,7 +183,7 @@ export class InstallationTokenStore {
     } catch (error) {
       throw this.storageError(error);
     }
-    await Promise.all(generations.map((generation) => this.deleteToken(generation, signal)));
+    await Promise.all(generations.map((generation) => this.deleteGeneration(generation, signal)));
   }
 
   async invalidate(expectedToken: string): Promise<void> {
@@ -207,6 +221,66 @@ export class InstallationTokenStore {
     if (active !== null) return active;
     const inFlight = this.inFlight ?? this.startIssue();
     return this.joinIssue(inFlight, signal, observer);
+  }
+
+  async getOrIssueIdentity(signal: AbortSignal): Promise<InstallationIdentity> {
+    if (signal.aborted) throw new ResumeApiError('cancelled');
+    for (let attempt = 0; attempt < MAX_ACTIVE_READ_ATTEMPTS; attempt += 1) {
+      const installationToken = await this.getOrIssue(signal);
+      let state: TokenAuthorityState;
+      try {
+        state = await this.readAuthority(signal);
+      } catch (error) {
+        throw this.storageError(error);
+      }
+      const generation = state.activeGeneration;
+      if (generation === null) continue;
+
+      let storedToken: string | null;
+      let revenueCatAppUserId: string | null;
+      try {
+        [storedToken, revenueCatAppUserId] = await Promise.all([
+          awaitAbortable(
+            asPromise(() => SecureStore.getItemAsync(installationTokenSlot(generation))),
+            signal,
+          ),
+          awaitAbortable(
+            asPromise(() => SecureStore.getItemAsync(installationRevenueCatSlot(generation))),
+            signal,
+          ),
+        ]);
+      } catch (error) {
+        throw this.storageError(error);
+      }
+      const confirmed = await this.readAuthority(signal);
+      if (confirmed.activeGeneration !== generation) continue;
+
+      const parsed = InstallationResponseV2Schema.safeParse({
+        schemaVersion: 2,
+        installationToken: storedToken,
+        revenueCatAppUserId,
+      });
+      if (
+        parsed.success &&
+        parsed.data.installationToken === installationToken &&
+        !isExpiredToken(parsed.data.installationToken, this.now())
+      ) {
+        this.currentToken = { generation, token: parsed.data.installationToken };
+        return Object.freeze({
+          installationToken: parsed.data.installationToken,
+          revenueCatAppUserId: parsed.data.revenueCatAppUserId,
+        });
+      }
+
+      try {
+        const retired = await this.awaitAuthority(() => this.authorityStore.retire(generation), signal);
+        if (retired && this.currentToken?.generation === generation) this.currentToken = null;
+        if (retired) await this.deleteGeneration(generation, signal);
+      } catch (error) {
+        throw this.storageError(error);
+      }
+    }
+    throw new ResumeApiError('network');
   }
 
   private async readActive(signal?: AbortSignal): Promise<string | null> {
@@ -425,7 +499,7 @@ export class InstallationTokenStore {
       let response: Response;
       try {
         response = await awaitAbortable(
-          asPromise(() => this.fetchImpl(`${this.apiBaseUrl}/v1/installations`, {
+          asPromise(() => this.fetchImpl(`${this.apiBaseUrl}/v2/installations`, {
             method: 'POST',
             signal: inFlight.controller.signal,
           })),
@@ -454,10 +528,15 @@ export class InstallationTokenStore {
         if (!publicError.success) throw new ResumeApiError('invalid_response');
         throw new ResumeApiError('service', publicError.data);
       }
-      const installation = InstallationResponseSchema.safeParse(data);
+      const installation = InstallationResponseV2Schema.safeParse(data);
       if (!installation.success) throw new ResumeApiError('invalid_response');
 
       await this.writeToken(inFlight.generation, installation.data.installationToken, inFlight.controller.signal);
+      await this.writeRevenueCatIdentity(
+        inFlight.generation,
+        installation.data.revenueCatAppUserId,
+        inFlight.controller.signal,
+      );
       if (!this.isCurrent(inFlight)) throw new ResumeApiError('cancelled');
       // This assignment and the following finalize call are the explicit commit
       // phase. From here, cancellation waits for a known durable outcome and a
@@ -500,10 +579,47 @@ export class InstallationTokenStore {
     }
   }
 
+  private async writeRevenueCatIdentity(
+    generation: number,
+    revenueCatAppUserId: string,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    try {
+      await awaitAbortable(
+        asPromise(() => SecureStore.setItemAsync(
+          installationRevenueCatSlot(generation),
+          revenueCatAppUserId,
+          { keychainAccessible: SecureStore.WHEN_UNLOCKED_THIS_DEVICE_ONLY },
+        )),
+        signal,
+      );
+    } catch (error) {
+      throw this.storageError(error);
+    }
+  }
+
   private async deleteToken(generation: number, signal?: AbortSignal): Promise<void> {
     try {
       await awaitAbortable(
         asPromise(() => SecureStore.deleteItemAsync(installationTokenSlot(generation))),
+        signal,
+      );
+    } catch (error) {
+      throw this.storageError(error);
+    }
+  }
+
+  private async deleteGeneration(generation: number, signal?: AbortSignal): Promise<void> {
+    await Promise.all([
+      this.deleteToken(generation, signal),
+      this.deleteRevenueCatIdentity(generation, signal),
+    ]);
+  }
+
+  private async deleteRevenueCatIdentity(generation: number, signal?: AbortSignal): Promise<void> {
+    try {
+      await awaitAbortable(
+        asPromise(() => SecureStore.deleteItemAsync(installationRevenueCatSlot(generation))),
         signal,
       );
     } catch (error) {
