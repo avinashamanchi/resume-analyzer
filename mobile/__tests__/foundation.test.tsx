@@ -8,6 +8,9 @@ import { tokens } from '../src/theme/tokens';
 const easConfig = require('../eas.json');
 const appManifest = require('../app.json').expo;
 const packageManifest = require('../package.json');
+const { stripDevelopmentNetworkKeys } = require('../plugins/withReleaseNetworkPolicy.cjs') as {
+  stripDevelopmentNetworkKeys: (value: Record<string, unknown>) => Record<string, unknown>;
+};
 
 jest.mock('expo-router', () => {
   const React = require('react');
@@ -57,6 +60,21 @@ describe('native foundation', () => {
     expect(packageManifest.devDependencies['react-test-renderer']).toBe(
       packageManifest.dependencies.react,
     );
+  });
+
+  it('ships an HTTPS-only transport policy without development discovery declarations', () => {
+    expect(appManifest.plugins).toContain('./plugins/withReleaseNetworkPolicy.cjs');
+    expect(stripDevelopmentNetworkKeys({
+      NSBonjourServices: ['_expo._tcp'],
+      NSLocalNetworkUsageDescription: 'Development server discovery',
+      NSAppTransportSecurity: {
+        NSAllowsArbitraryLoads: true,
+        NSAllowsArbitraryLoadsForMedia: true,
+        NSAllowsArbitraryLoadsInWebContent: true,
+        NSAllowsLocalNetworking: true,
+        NSExceptionDomains: { localhost: { NSExceptionAllowsInsecureHTTPLoads: true } },
+      },
+    })).toEqual({ NSAppTransportSecurity: { NSAllowsArbitraryLoads: false } });
   });
 
   it('uses remote App Store build-number auto-increment without submission credentials', () => {

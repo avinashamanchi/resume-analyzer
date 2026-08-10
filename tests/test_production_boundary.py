@@ -1343,7 +1343,7 @@ def test_release_docs_and_ci_cover_required_unverified_boundaries():
         "Raw/original PDF bytes, filenames, resume-input fields, job-description-input fields, installation tokens, and request identifiers are not stored in local reports",
         "Generated feedback and bullet drafts may quote, transform, or restate names, contact information, resume content, or job-description content",
         "Review generated feedback before saving, sharing, or allowing it to enter device backups",
-        "Interactive support is not yet available",
+        "public project issue tracker",
         "Release-candidate",
         "anonymous live reachability",
         "blocks submission",

@@ -121,8 +121,9 @@ describe('native Settings, privacy, and support flows', () => {
     await act(async () => { privacy.unmount(); });
     const support = await render(<AppControllerProvider value={context}><SupportScreen /></AppControllerProvider>);
     expect(support.getByText('Self-help')).toBeTruthy();
-    expect(support.getByText(/Interactive support is not yet available/i)).toBeTruthy();
-    expect(support.queryByText(/Public support|Open public support|Helpful details|Include the app version|Open a repository issue|public issue tracker/i)).toBeNull();
+    expect(support.getByText(/first-party page links to the public project issue tracker/i)).toBeTruthy();
+    expect(support.getByText(/Keep reports free of resume or job-description content/i)).toBeTruthy();
+    expect(support.queryByText(/Interactive support is not yet available|There is no intake channel/i)).toBeNull();
     expect(support.getByText(/not an exact ATS or employment prediction/i)).toBeTruthy();
     expect(support.getByText(/no hiring guarantee/i)).toBeTruthy();
     expect(support.getByText(/not professional, legal, or employment advice/i)).toBeTruthy();

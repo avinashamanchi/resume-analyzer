@@ -2,7 +2,7 @@
 
 Release-candidate first-party support page: https://resume-analyzer-al3g.onrender.com/static/support.html.
 
-Interactive support is not yet available. Use the page for content-free self-help only. Its anonymous live reachability is **UNVERIFIED** until an authorized production deployment; failure to verify it blocks submission. Never send or publish resumes, job descriptions, tokens, request identifiers, filenames, contact information, or other private identifiers.
+The page provides content-free self-help and links to the public project issue tracker at https://github.com/avinashamanchi/resume-analyzer/issues. Its anonymous live reachability is **UNVERIFIED** until an authorized production deployment; failure to verify it blocks submission. Never send or publish resumes, job descriptions, tokens, request identifiers, filenames, contact information, or other private identifiers. Public issues must contain only app/iOS versions, reproduction actions, and the stable error category.
 
 ## Documents and analysis
 

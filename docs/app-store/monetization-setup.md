@@ -28,4 +28,6 @@ The first App Store release has no account login or Sign in with Apple capabilit
 7. Repeat the complete flow in the exact TestFlight candidate and provide the subscription screenshot and reviewer path in App Review notes.
 8. Verify that client entitlement state cannot unlock Pro storage or comparison behavior until the backend returns a current signed plan snapshot.
 
+The paywall links directly to Apple subscription management and `https://reportaproblem.apple.com/` for purchase/refund help; Apple determines refund eligibility. Keep offer codes, win-back offers, promoted purchases, Family Sharing, and alternative digital payments disabled for v1. Enabling any of them requires a separate product decision, updated disclosures, App Store configuration, and signed Sandbox/TestFlight evidence.
+
 Do not submit while the paywall says configuration is unavailable, products do not load, Restore Purchases is unverified, or the Apple and RevenueCat product identifiers differ.

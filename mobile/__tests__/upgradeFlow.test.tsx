@@ -4,7 +4,7 @@ import * as Linking from 'expo-linking';
 import UpgradeScreen from '../app/upgrade';
 import { BillingProvider, type BillingService } from '../src/billing/BillingProvider';
 import type { BillingSnapshot } from '../src/billing/revenueCatService';
-import { MANAGE_SUBSCRIPTIONS_URL, PRIVACY_URL, TERMS_URL } from '../src/legal/links';
+import { APPLE_PURCHASE_SUPPORT_URL, MANAGE_SUBSCRIPTIONS_URL, PRIVACY_URL, TERMS_URL } from '../src/legal/links';
 
 const mockBack = jest.fn();
 jest.mock('expo-router', () => ({ useRouter: () => ({ back: mockBack }) }));
@@ -62,6 +62,8 @@ it('shows a clear free escape, StoreKit price, restore, and legal links', async 
   expect(Linking.openURL).toHaveBeenCalledWith(TERMS_URL);
   await act(async () => { fireEvent.press(view.getByRole('button', { name: 'Manage Apple subscription' })); });
   expect(Linking.openURL).toHaveBeenCalledWith(MANAGE_SUBSCRIPTIONS_URL);
+  await act(async () => { fireEvent.press(view.getByRole('link', { name: 'Apple purchase and refund help' })); });
+  expect(Linking.openURL).toHaveBeenCalledWith(APPLE_PURCHASE_SUPPORT_URL);
 });
 
 it('does not create an Apple-linked Resume.AI account even after Pro is verified', async () => {

@@ -21,12 +21,12 @@ export default function SupportScreen() {
       <Title>Troubleshoot without sharing private data.</Title>
       <Card>
         <Text style={uiStyles.sectionTitle}>First-party support page</Text>
-        <Text style={uiStyles.body}>Interactive support is not yet available. Open the first-party page for content-free troubleshooting. Never send or publish a resume, job description, token, request identifier, filename, contact detail, or other private data.</Text>
+        <Text style={uiStyles.body}>Open the first-party page for content-free troubleshooting. The first-party page links to the public project issue tracker for bug reports. Never send or publish a resume, job description, token, request identifier, filename, contact detail, or other private data.</Text>
         <AppButton label="Open troubleshooting page" onPress={() => { void openSupport(); }} />
       </Card>
       <Card>
         <Text style={uiStyles.sectionTitle}>Local diagnostic checklist</Text>
-        <Text style={uiStyles.muted}>Keep a local note of the app version, iOS version, what you tapped, and the stable error category shown on screen. There is no intake channel to send it to. Never record resume content.</Text>
+        <Text style={uiStyles.muted}>Before opening a public issue, note only the app version, iOS version, what you tapped, and the stable error category shown on screen. Keep reports free of resume or job-description content, names, contact details, tokens, filenames, and request identifiers.</Text>
       </Card>
       <Card>
         <Text style={uiStyles.sectionTitle}>Feedback limits</Text>

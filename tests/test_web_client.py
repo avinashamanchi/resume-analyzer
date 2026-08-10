@@ -99,9 +99,13 @@ def test_flask_serves_documented_first_party_web_assets(web_client, path, conten
     assert "default-src 'self'" in response.headers["Content-Security-Policy"]
     body = response.get_data(as_text=True)
     if path == "/static/support.html":
-        assert body.count("https://") == 1
+        assert body.count("https://") == 4
         assert "https://resume-analyzer-al3g.onrender.com/static/support.html" in body
-        assert "Interactive support is not yet available" in body
+        assert "https://github.com/avinashamanchi/resume-analyzer/issues" in body
+        assert "https://apps.apple.com/account/subscriptions" in body
+        assert "https://reportaproblem.apple.com/" in body
+        assert "public project issue tracker" in body
+        assert "Interactive support is not yet available" not in body
         assert "Never send or publish a resume" in body
     else:
         assert "https://" not in body
@@ -136,5 +140,5 @@ def test_public_pages_distinguish_signed_ios_from_compatibility_web(web_client):
 
     assert 'href="https://resume-analyzer-al3g.onrender.com/static/support.html"' in support
     assert 'rel="noreferrer"' in support
-    for intake_phrase in ("Request help", "Share only", "Contact support"):
-        assert intake_phrase not in support
+    assert 'href="https://github.com/avinashamanchi/resume-analyzer/issues"' in support
+    assert "Never post resume or job-description content" in support

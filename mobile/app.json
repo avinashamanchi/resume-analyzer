@@ -37,7 +37,8 @@
           "resizeMode": "contain"
         }
       ],
-      "expo-asset"
+      "expo-asset",
+      "./plugins/withReleaseNetworkPolicy.cjs"
     ],
     "experiments": {
       "typedRoutes": true

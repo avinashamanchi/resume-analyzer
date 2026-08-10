@@ -4,7 +4,7 @@ import { Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { useBilling } from '../src/billing/BillingProvider';
 import { AppButton, Card, Eyebrow, Screen, Title, uiStyles } from '../src/components/primitives';
-import { MANAGE_SUBSCRIPTIONS_URL, PRIVACY_URL, TERMS_URL } from '../src/legal/links';
+import { APPLE_PURCHASE_SUPPORT_URL, MANAGE_SUBSCRIPTIONS_URL, PRIVACY_URL, TERMS_URL } from '../src/legal/links';
 import { tokens } from '../src/theme/tokens';
 
 const periodLabel = (period: string | null): string => {
@@ -108,6 +108,9 @@ export default function UpgradeScreen() {
         </Pressable>
         <Pressable accessibilityLabel="Terms of Use" accessibilityRole="link" onPress={() => { void Linking.openURL(TERMS_URL); }} style={styles.legalLink}>
           <Text style={styles.legalText}>Terms of Use</Text>
+        </Pressable>
+        <Pressable accessibilityLabel="Apple purchase and refund help" accessibilityRole="link" onPress={() => { void Linking.openURL(APPLE_PURCHASE_SUPPORT_URL); }} style={styles.legalLink}>
+          <Text style={styles.legalText}>Apple purchase and refund help</Text>
         </Pressable>
       </View>
     </Screen>
