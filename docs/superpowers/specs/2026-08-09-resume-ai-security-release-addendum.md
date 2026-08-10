@@ -14,6 +14,7 @@ Keep the Flask/Render service and Expo app, finish wiring the approved v2 degrad
 ## Trust boundaries and required controls
 
 - Installation credentials are server-signed, expiring, rotation-safe, and rate-limited. Header parsing and admission happen before reading a resume body.
+- A canonical `X-Resume-Request-ID` is reserved before body reads and must match the multipart request identifier exactly, preserving quota idempotency across retries.
 - PDF upload size, compressed structure, page count, extraction time, text size, and child-process lifetime are bounded under one deadline. Timeout/error paths must prove no process, file, descriptor, or memory leak.
 - Resume bytes and extracted text never appear in logs, error messages, traces, metrics, crash reports, or provider identifiers. Temporary files are unlinked on every path.
 - Deterministic scoring and AI enrichment have separate breakers. AI allowance, concurrency, and entitlement consumption are atomic and idempotent; optional AI failure cannot erase a completed deterministic result.

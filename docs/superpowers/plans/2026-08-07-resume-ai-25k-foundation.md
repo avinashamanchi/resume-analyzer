@@ -409,6 +409,7 @@ path entered the index before committing with
 - Produces: `AdmissionRequest(installation_id, account_id, request_id, source, ai_requested, content_length)`; `AdmissionDecision(ai_status, allowance, lease)`; `AdmissionController.admit(request) -> AdmissionDecision`.
 - `AdmissionLease.release()` compare-deletes provider/PDF reservations and releases local PDF counters exactly once.
 - Flask stores the decision at `g.resume_ai_admission` before form parsing.
+- `X-Resume-Request-ID` is a required canonical UUID. The later multipart `request_id` must match it exactly so pre-body allowance reservation stays idempotent.
 
 - [ ] **Step 1: Add failing pre-body and concurrency tests**
 
@@ -797,6 +798,7 @@ headers: {
   Authorization: `Installation ${token}`,
   'X-Resume-Source': 'reviewed_text',
   'X-Resume-AI': input.aiRequested ? 'requested' : 'not_requested',
+  'X-Resume-Request-ID': input.requestId,
   ...(accountToken === null ? {} : { 'X-Resume-Account': accountToken }),
 }
 ```

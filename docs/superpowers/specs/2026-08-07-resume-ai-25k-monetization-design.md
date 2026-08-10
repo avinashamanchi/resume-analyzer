@@ -149,9 +149,11 @@ headers are:
 - `Authorization: Installation <signed token>`
 - `X-Resume-Source: reviewed_text` or `pdf`
 - `X-Resume-AI: requested` or `not_requested`
+- `X-Resume-Request-ID: <canonical lowercase UUID>`
 - optional `X-Resume-Account: <short-lived account token>`
 
-The multipart form retains `request_id`, `consent_version`, optional
+The multipart form retains `request_id`, which must exactly match the admission
+header, plus `consent_version`, optional
 `job_description`, and exactly one of `resume_text` or `resume_pdf`. Signed iOS
 builds use `reviewed_text`; `pdf` exists for the web compatibility path. The
 strict response is:
