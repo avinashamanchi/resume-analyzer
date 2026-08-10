@@ -128,3 +128,9 @@ def test_app_store_metadata_candidate_is_valid_and_truthful():
 
     assert metadata["submissionStatus"] == "BLOCKED"
     assert metadata["sellerName"] == "ACCOUNT HOLDER TO CONFIRM"
+    purchase_history = metadata["appPrivacyDraft"]["purchaseHistory"]
+    assert "Analytics" in purchase_history
+    assert "App Functionality" in purchase_history
+    assert "not linked" in purchase_history
+    assert "not used for tracking" in purchase_history
+    assert "userId" not in metadata["appPrivacyDraft"]

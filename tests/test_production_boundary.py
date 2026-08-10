@@ -1355,7 +1355,7 @@ def test_release_docs_and_ci_cover_required_unverified_boundaries():
         "expo export --platform ios",
         "expo prebuild --platform ios --no-install --clean",
         "git diff --exit-code -- package.json package-lock.json",
-        "npm audit --audit-level=high",
+        "node scripts/check-mobile-audit.mjs",
         "python scripts/check_committed_whitespace.py",
     ):
         assert command in workflow
@@ -1367,6 +1367,12 @@ def test_release_docs_and_ci_cover_required_unverified_boundaries():
     assert "enable-cache: false" in workflow
     assert "cache: npm" not in workflow
     assert "eas submit" not in workflow
+    audit_gate = (ROOT / "scripts" / "check-mobile-audit.mjs").read_text()
+    assert "1138808" in audit_gate
+    assert "1138809" in audit_gate
+    assert "--audit-level=high" in audit_gate
+    assert "unproven-chain" in audit_gate
+    assert "report.error" in audit_gate
     parsed_workflow = yaml.safe_load(workflow)
     checkout = parsed_workflow["jobs"]["verify"]["steps"][0]
     assert checkout["with"]["fetch-depth"] == 0

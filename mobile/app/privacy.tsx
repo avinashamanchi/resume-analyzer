@@ -33,7 +33,7 @@ export default function PrivacyScreen() {
       </Card>
       <Card>
         <Text style={uiStyles.sectionTitle}>Subscriptions</Text>
-        <Text style={uiStyles.body}>Apple processes App Store payments. RevenueCat uses a pseudonymous app user identifier and purchase history such as product, entitlement status, and expiration to offer, restore, and verify Resume.AI Pro.</Text>
+        <Text style={uiStyles.body}>Apple processes App Store payments. RevenueCat generates an anonymous app-user identifier and uses purchase history such as product, entitlement status, and expiration for subscription analytics and app functionality, including offering, restoring, and verifying Resume.AI Pro. Resume.AI has no account, supplies no custom account identifier to RevenueCat, does not link this purchase history to you, and does not use it for tracking.</Text>
         <Text style={uiStyles.body}>Resume.AI does not receive or store your full payment-card details. Deleting local reports or the app does not cancel an Apple subscription; manage or cancel it separately in your Apple subscription settings.</Text>
       </Card>
       <Card>

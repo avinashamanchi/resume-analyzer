@@ -113,7 +113,7 @@ def test_every_public_web_page_has_exact_privacy_boundaries(web_client):
         "Raw PDF bytes are never sent to Groq.",
         "Reviewed, pasted, or extracted resume text and any optional job description are sent to Groq only after consent.",
         "The app server keeps no report or content history, and this browser keeps no report history.",
-        "No tracking or analytics are used.",
+        "No advertising, cross-app tracking, or behavioral/product-interaction analytics are used. RevenueCat processes purchase history for subscription analytics.",
         "An installation security identifier and coarse pseudonymous rate-limit key are used without ads or tracking.",
         "Groq always retains usage metadata and may retain inference content for up to 30 days for reliability and abuse prevention unless Zero Data Retention is enabled; Resume.AI has not verified that setting.",
         "Render may retain provider-side connection and HTTP request metadata under its policy; Resume.AI controls only its content-free application logs.",

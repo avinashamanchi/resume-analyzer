@@ -61,7 +61,8 @@ npx --yes expo-doctor@latest
 npx expo export --platform ios
 npx expo prebuild --platform ios --no-install --clean
 git diff --exit-code -- package.json package-lock.json
-npm audit --audit-level=high
+cd ..
+node scripts/check-mobile-audit.mjs
 ```
 
 ## Release status

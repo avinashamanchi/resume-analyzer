@@ -36,7 +36,9 @@ const customerInfo = (active: boolean): CustomerInfo => ({
   },
 });
 
-function fakeModule(): RevenueCatModule & {
+function fakeModule(
+  overrides: Partial<Pick<RevenueCatModule, 'getCustomerInfo' | 'getOfferings'>> = {},
+): RevenueCatModule & {
   configure: jest.Mock;
   purchasePackage: jest.Mock;
   restorePurchases: jest.Mock;
@@ -49,6 +51,7 @@ function fakeModule(): RevenueCatModule & {
     getCustomerInfo: jest.fn(async () => customerInfo(false)),
     purchasePackage: jest.fn(async () => ({ customerInfo: customerInfo(true) })),
     restorePurchases: jest.fn(async () => customerInfo(true)),
+    ...overrides,
   };
 }
 
@@ -131,4 +134,41 @@ it('reports a cancelled native purchase without granting access', async () => {
 
   await expect(service.purchase('com.avinashamanchi.resumeai.pro.monthly'))
     .rejects.toBeInstanceOf(PurchaseCancelledError);
+});
+
+it('retains verified Pro access when the offerings catalog fails transiently', async () => {
+  const purchases = fakeModule({
+    getCustomerInfo: jest.fn(async () => customerInfo(true)),
+    getOfferings: jest.fn(async () => { throw new Error('catalog unavailable'); }),
+  });
+  const service = new RevenueCatBillingService({
+    apiKey: 'appl_public_key',
+    entitlementId: 'resume_pro',
+    executionEnvironment: 'standalone',
+    moduleLoader: () => purchases,
+    productIds: ['com.avinashamanchi.resumeai.pro.monthly'],
+  });
+
+  await expect(service.load()).resolves.toEqual({
+    availability: 'error',
+    entitlementActive: true,
+    products: [],
+  });
+});
+
+it('can purchase a mapped product when entitlement refresh fails during catalog loading', async () => {
+  const purchases = fakeModule({
+    getCustomerInfo: jest.fn(async () => { throw new Error('entitlement refresh unavailable'); }),
+  });
+  const service = new RevenueCatBillingService({
+    apiKey: 'appl_public_key',
+    entitlementId: 'resume_pro',
+    executionEnvironment: 'standalone',
+    moduleLoader: () => purchases,
+    productIds: ['com.avinashamanchi.resumeai.pro.monthly'],
+  });
+
+  await expect(service.purchase('com.avinashamanchi.resumeai.pro.monthly')).resolves
+    .toMatchObject({ availability: 'ready', entitlementActive: true });
+  expect(purchases.purchasePackage).toHaveBeenCalledWith(monthly);
 });

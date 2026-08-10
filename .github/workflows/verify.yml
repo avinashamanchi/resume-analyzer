@@ -116,8 +116,7 @@ jobs:
         run: git diff --exit-code -- package.json package-lock.json
 
       - name: Audit mobile dependencies
-        working-directory: mobile
-        run: npm audit --audit-level=high
+        run: node scripts/check-mobile-audit.mjs
 
       - name: Check committed patch whitespace
         run: >-

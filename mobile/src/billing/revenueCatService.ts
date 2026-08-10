@@ -78,6 +78,7 @@ export class RevenueCatBillingService {
   private configured = false;
   private readonly packageByProductId = new Map<string, RevenueCatPackage>();
   private products: readonly BillingProduct[] = EMPTY_PRODUCTS;
+  private entitlementActive = false;
 
   constructor(private readonly options: RevenueCatBillingOptions) {}
 
@@ -87,29 +88,34 @@ export class RevenueCatBillingService {
 
     try {
       const purchases = await this.getConfiguredModule();
-      const [offerings, customerInfo] = await Promise.all([
+      const [offeringsResult, customerInfoResult] = await Promise.allSettled([
         purchases.getOfferings(),
         purchases.getCustomerInfo(),
       ]);
-      this.packageByProductId.clear();
-      const allowed = new Set(this.options.productIds);
-      const packages = offerings.current?.availablePackages ?? [];
-      for (const item of packages) {
-        if (allowed.has(item.product.identifier)) {
-          this.packageByProductId.set(item.product.identifier, item);
+      if (offeringsResult.status === 'fulfilled') {
+        const offerings = offeringsResult.value;
+        this.packageByProductId.clear();
+        const allowed = new Set(this.options.productIds);
+        const packages = offerings.current?.availablePackages ?? [];
+        for (const item of packages) {
+          if (allowed.has(item.product.identifier)) {
+            this.packageByProductId.set(item.product.identifier, item);
+          }
         }
+        this.products = this.options.productIds.flatMap((productId) => {
+          const item = this.packageByProductId.get(productId);
+          return item ? [this.mapProduct(item)] : [];
+        });
       }
-      this.products = this.options.productIds.flatMap((productId) => {
-        const item = this.packageByProductId.get(productId);
-        return item ? [this.mapProduct(item)] : [];
-      });
-      return this.readySnapshot(customerInfo);
+      if (customerInfoResult.status === 'fulfilled') {
+        const verified = this.readySnapshot(customerInfoResult.value);
+        return offeringsResult.status === 'fulfilled'
+          ? verified
+          : { ...verified, availability: 'error' };
+      }
+      return this.errorSnapshot();
     } catch {
-      return {
-        availability: 'error',
-        entitlementActive: false,
-        products: EMPTY_PRODUCTS,
-      };
+      return this.errorSnapshot();
     }
   }
 
@@ -118,8 +124,7 @@ export class RevenueCatBillingService {
     if (unavailable !== null) throw new BillingUnavailableError();
     const purchases = await this.getConfiguredModule();
     if (this.packageByProductId.size === 0) {
-      const loaded = await this.load();
-      if (loaded.availability !== 'ready') throw new BillingUnavailableError();
+      await this.load();
     }
     const item = this.packageByProductId.get(productId);
     if (!item) throw new BillingUnavailableError();
@@ -189,10 +194,19 @@ export class RevenueCatBillingService {
   }
 
   private readySnapshot(customerInfo: RevenueCatCustomerInfo): BillingSnapshot {
+    this.entitlementActive =
+      customerInfo.entitlements.active[this.options.entitlementId]?.isActive === true;
     return {
       availability: 'ready',
-      entitlementActive:
-        customerInfo.entitlements.active[this.options.entitlementId]?.isActive === true,
+      entitlementActive: this.entitlementActive,
+      products: this.products,
+    };
+  }
+
+  private errorSnapshot(): BillingSnapshot {
+    return {
+      availability: 'error',
+      entitlementActive: this.entitlementActive,
       products: this.products,
     };
   }
