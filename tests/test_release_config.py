@@ -37,6 +37,7 @@ def test_ios_release_identity_assets_and_update_policy_are_explicit():
         "bundleIdentifier": "com.avinashamanchi.resumeai",
         "buildNumber": "1",
         "icon": "./assets/icon.png",
+        "usesAppleSignIn": False,
         "infoPlist": {"ITSAppUsesNonExemptEncryption": False},
     }
 
@@ -46,7 +47,7 @@ def test_ios_release_identity_assets_and_update_policy_are_explicit():
 
 def test_eas_profiles_are_commit_gated_and_use_the_candidate_origin():
     eas = _read_json(MOBILE / "eas.json")
-    assert eas["cli"]["appVersionSource"] == "local"
+    assert eas["cli"]["appVersionSource"] == "remote"
     assert eas["cli"]["requireCommit"] is True
     assert "submit" not in eas
 
@@ -58,7 +59,8 @@ def test_eas_profiles_are_commit_gated_and_use_the_candidate_origin():
     assert profiles["development"]["developmentClient"] is True
     assert profiles["development"]["ios"] == {"simulator": False}
     assert profiles["production"]["distribution"] == "store"
-    assert profiles["production"]["autoIncrement"] is False
+    assert profiles["production"]["autoIncrement"] is True
+    assert profiles["production"]["ios"] == {"image": "auto"}
 
 
 def test_release_checklists_keep_external_gates_unverified_or_blocked():

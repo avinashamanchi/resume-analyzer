@@ -32,6 +32,11 @@ export default function PrivacyScreen() {
         <Text style={uiStyles.body}>Resume.AI uses an anonymous installation token and a coarse pseudonymous rate-limit key to protect the service from abuse. They are not used for advertising, analytics, or cross-app tracking.</Text>
       </Card>
       <Card>
+        <Text style={uiStyles.sectionTitle}>Subscriptions</Text>
+        <Text style={uiStyles.body}>Apple processes App Store payments. RevenueCat uses a pseudonymous app user identifier and purchase history such as product, entitlement status, and expiration to offer, restore, and verify Resume.AI Pro.</Text>
+        <Text style={uiStyles.body}>Resume.AI does not receive or store your full payment-card details. Deleting local reports or the app does not cancel an Apple subscription; manage or cancel it separately in your Apple subscription settings.</Text>
+      </Card>
+      <Card>
         <Text style={uiStyles.sectionTitle}>Provider retention</Text>
         <Text style={uiStyles.body}>Groq always retains usage metadata and may retain inference content for reliability and abuse prevention for up to 30 days unless Zero Data Retention is enabled. Resume.AI has not verified Zero Data Retention for this project.</Text>
         <Text style={uiStyles.body}>Render keeps application logs for 7, 14, or 30 days by plan. Resume.AI application logs are content-free. Render may separately retain provider-side connection and HTTP request metadata and may process Device/IP Data and IP-based geolocation under its policy.</Text>

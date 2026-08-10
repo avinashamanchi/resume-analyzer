@@ -13,7 +13,8 @@ The first three frames carry the clearest product story because they are the mos
 | 3 | Turn feedback into stronger bullets | Real generated-feedback section, visibly labeled as AI and reviewed for private text. |
 | 4 | Scan, review, then consent | On-device Vision OCR review screen from a synthetic scanned PDF. |
 | 5 | Save only when you choose | Results/history UI showing the explicit local-save state. |
-| 6 | Share a clean report | Real share action or report preview without exposing the system share recipients. |
+| 6 | Go Pro for deeper workflow | Real Pro screen with Apple's localized monthly and annual prices, Free escape, and Restore visible. |
+| 7 | Share a clean report | Real share action or report preview without exposing the system share recipients. |
 
 Capture rules:
 
@@ -21,5 +22,6 @@ Capture rules:
 - Do not claim exact ATS matching, hiring prediction, guaranteed interviews, professional advice, or provider retention settings that have not been observed.
 - Keep captions outside critical app controls and readable at App Store display size.
 - Show the app in use in every frame; do not submit a splash-only image.
+- Keep every overlay line to one clear benefit in plain customer language. Do not bake a hard-coded price into the artwork; the live StoreKit price and storefront can change.
 - Recheck Dynamic Type, VoiceOver labels, dark appearance, safe areas, and icon/launch visuals on the exact binary before capture.
 - Store only final redacted images under `docs/release/evidence/` with the TestFlight build number and capture date after they exist.

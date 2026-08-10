@@ -4,7 +4,7 @@ export const REPORT_DATABASE_NAME = 'resume-ai-reports.db';
 export const REPORT_SCHEMA_VERSION = 1;
 const MIGRATION_LOCK_TABLE = '__resume_ai_report_migration_lock';
 
-export type ReportSqlValue = string | number | null | boolean | Uint8Array | ArrayBuffer;
+export type ReportSqlValue = string | number | null | boolean | Uint8Array;
 
 export interface ReportSqlExecutor {
   execAsync(source: string): Promise<void>;

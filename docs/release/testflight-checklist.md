@@ -11,9 +11,10 @@ Status vocabulary: `PASS`, `FAIL`, `BLOCKED`, `UNVERIFIED`. A successful archive
 | Marketing version | `1.0.0` | CONFIGURED |
 | Build number | `1` | CONFIGURED; availability unverified |
 | EAS project ID/owner | Not configured | BLOCKED — requires authorized EAS account setup |
-| Production API origin | `https://resume-analyzer-al3g.onrender.com` | BLOCKED — root returned HTTP 200 on 2026-08-06, but the accepted candidate health route returned HTTP 404 |
-| Privacy URL | `https://resume-analyzer-al3g.onrender.com/static/privacy.html` | BLOCKED — returned HTTP 404 on 2026-08-06 |
-| Support URL | `https://resume-analyzer-al3g.onrender.com/static/support.html` | BLOCKED — returned HTTP 404 on 2026-08-06 |
+| Production API origin | `https://resume-analyzer-al3g.onrender.com` | BLOCKED — the exact production health and full analysis flow require a fresh anonymous verification from the accepted candidate |
+| Privacy URL | `https://resume-analyzer-al3g.onrender.com/static/privacy.html` | BLOCKED — timed out during the 2026-08-09 anonymous check |
+| Terms URL | `https://resume-analyzer-al3g.onrender.com/static/terms.html` | BLOCKED — returned HTTP 404 during the 2026-08-09 anonymous check |
+| Support URL | `https://resume-analyzer-al3g.onrender.com/static/support.html` | BLOCKED — returned HTTP 404 during the 2026-08-09 anonymous check |
 
 ## Build and beta gates
 
@@ -26,6 +27,6 @@ Status vocabulary: `PASS`, `FAIL`, `BLOCKED`, `UNVERIFIED`. A successful archive
 - [ ] Privacy and self-help links open anonymously from the TestFlight build.
 - [ ] Full physical-device checklist passes on the TestFlight binary, including Vision OCR and backup/restore observations.
 - [ ] Crash/diagnostic output contains no source content, generated feedback, filenames, contact values, tokens, direct IPs, or request bodies.
-- [ ] Twelve moderate transitive Expo/xcode/uuid advisories are rechecked; no breaking `--force` downgrade is applied silently.
+- [ ] Twelve high-severity transitive Expo/Metro `image-size` advisories are rechecked; no breaking `--force` downgrade is applied silently while no safe published in-range resolution is available.
 
 Store the EAS/App Store build identifiers, dates, and redacted screenshots under `docs/release/evidence/` only after they exist. Do not store credentials, signing material, personal resumes, device identifiers, or provider secrets.

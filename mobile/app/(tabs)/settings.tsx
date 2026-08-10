@@ -5,10 +5,12 @@ import { StyleSheet, Text, TextInput, View } from 'react-native';
 import { useAppController } from '../../src/controllers/AppController';
 import { AppButton, Card, Eyebrow, Screen, Title, uiStyles } from '../../src/components/primitives';
 import { tokens } from '../../src/theme/tokens';
+import { useBilling } from '../../src/billing/BillingProvider';
 
 export default function SettingsScreen() {
   const router = useRouter();
   const { actions, history } = useAppController();
+  const billing = useBilling();
   const [receipt, setReceipt] = useState<string | null>(null);
   const [deleteText, setDeleteText] = useState('');
   const [confirmingDeleteAll, setConfirmingDeleteAll] = useState(false);
@@ -62,6 +64,13 @@ export default function SettingsScreen() {
         <Title>Settings & privacy.</Title>
       </View>
       <Card>
+        <Text style={uiStyles.sectionTitle}>{billing.entitlementActive ? 'Resume.AI Pro' : 'Resume.AI Free'}</Text>
+        <Text style={uiStyles.muted}>{billing.entitlementActive
+          ? 'Unlimited local report history and PDF exports are active.'
+          : 'Analysis remains available. Pro adds unlimited local report history and PDF exports.'}</Text>
+        <AppButton label="View Free and Pro plans" onPress={() => router.push('/upgrade')} tone="secondary" />
+      </Card>
+      <Card>
         <Text style={uiStyles.sectionTitle}>How data moves</Text>
         <Text style={uiStyles.body}>Reports are optional and use Resume.AI’s app-local report store. Resume and job input is transient.</Text>
         <Text style={uiStyles.muted}>Raw/original PDF bytes, filenames, resume-input fields, job-description-input fields, installation tokens, and request identifiers are not stored in local reports.</Text>
@@ -80,6 +89,7 @@ export default function SettingsScreen() {
         <Text style={uiStyles.sectionTitle}>Read before relying</Text>
         <Text style={uiStyles.muted}>Resume.AI cannot reproduce every applicant tracking system, promise interviews, or determine whether an employer will select you. Verify every AI suggestion.</Text>
         <AppButton label="Read privacy details" onPress={() => router.push('/privacy')} tone="quiet" />
+        <AppButton label="Read Terms of Use" onPress={() => router.push('/terms')} tone="quiet" />
         <AppButton label="Open troubleshooting" onPress={() => router.push('/support')} tone="quiet" />
       </Card>
       <Card style={styles.dangerCard}>

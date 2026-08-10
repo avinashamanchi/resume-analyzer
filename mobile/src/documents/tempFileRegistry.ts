@@ -1,4 +1,4 @@
-import { Directory, File, FileMode, Paths } from 'expo-file-system';
+import { Directory, File, Paths } from 'expo-file-system';
 
 export const TEMP_CACHE_NAMESPACE = 'resume-ai-v1';
 
@@ -208,7 +208,7 @@ class ExpoTempFileSystem implements TempFileSystem {
     if (!file.exists) return { exists: false, size: 0, header: new Uint8Array() };
 
     const size = file.size;
-    const handle = file.open(FileMode.ReadOnly);
+    const handle = file.open();
     try {
       return { exists: true, size, header: handle.readBytes(5) };
     } finally {
@@ -228,17 +228,26 @@ export type TempFileRegistryOptions = Readonly<{
 
 export class TempFileRegistry {
   private readonly fileSystem: TempFileSystem;
-  private readonly namespace: LocalFileLocation;
-  private readonly coordination: CacheCoordination;
+  private readonly coordinationScope: object;
+  private cachedNamespace: LocalFileLocation | null = null;
+  private cachedCoordination: CacheCoordination | null = null;
 
   constructor(options: TempFileRegistryOptions = {}) {
     this.fileSystem = options.fileSystem ?? new ExpoTempFileSystem();
+    this.coordinationScope = options.fileSystem ?? DEFAULT_FILE_SYSTEM_SCOPE;
+  }
+
+  private get namespace(): LocalFileLocation {
+    if (this.cachedNamespace !== null) return this.cachedNamespace;
     const cache = canonicalizeLocalFileUri(this.fileSystem.cacheDirectoryUri);
-    this.namespace = appendLocation(cache, TEMP_CACHE_NAMESPACE);
-    this.coordination = coordinationFor(
-      options.fileSystem ?? DEFAULT_FILE_SYSTEM_SCOPE,
-      this.namespace.uri,
-    );
+    this.cachedNamespace = appendLocation(cache, TEMP_CACHE_NAMESPACE);
+    return this.cachedNamespace;
+  }
+
+  private get coordination(): CacheCoordination {
+    if (this.cachedCoordination !== null) return this.cachedCoordination;
+    this.cachedCoordination = coordinationFor(this.coordinationScope, this.namespace.uri);
+    return this.cachedCoordination;
   }
 
   private requestLocation(requestId: string): LocalFileLocation {

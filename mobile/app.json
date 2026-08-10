@@ -15,6 +15,7 @@
       "bundleIdentifier": "com.avinashamanchi.resumeai",
       "buildNumber": "1",
       "icon": "./assets/icon.png",
+      "usesAppleSignIn": false,
       "infoPlist": {
         "ITSAppUsesNonExemptEncryption": false
       }
@@ -28,7 +29,6 @@
           "faceIDPermission": false
         }
       ],
-      "expo-sharing",
       [
         "expo-splash-screen",
         {
@@ -37,7 +37,8 @@
           "imageWidth": 220,
           "resizeMode": "contain"
         }
-      ]
+      ],
+      "expo-asset"
     ],
     "experiments": {
       "typedRoutes": true

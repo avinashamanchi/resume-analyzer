@@ -22,8 +22,19 @@ def test_web_has_privacy_support_and_consent_copy():
 
     assert (STATIC / "privacy.html").exists()
     assert (STATIC / "support.html").exists()
+    assert (STATIC / "terms.html").exists()
     assert "Groq" in html
     assert "2026-08-04.v1" in html
+
+
+def test_public_legal_pages_disclose_subscription_processing_and_cancellation():
+    privacy = (STATIC / "privacy.html").read_text()
+    terms = (STATIC / "terms.html").read_text()
+
+    assert "RevenueCat" in privacy
+    assert "purchase history" in privacy
+    assert "payment-card details" in privacy
+    assert "Deleting the app or local reports does not cancel" in terms
 
 
 def test_web_client_uses_first_party_versioned_contract_and_safe_dom_apis():
@@ -77,6 +88,7 @@ def web_client():
         ("/static/lifecycle.js", "text/javascript"),
         ("/static/privacy.html", "text/html"),
         ("/static/support.html", "text/html"),
+        ("/static/terms.html", "text/html"),
     ],
 )
 def test_flask_serves_documented_first_party_web_assets(web_client, path, content_type):

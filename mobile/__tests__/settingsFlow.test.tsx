@@ -6,7 +6,8 @@ import PrivacyScreen from '../app/privacy';
 import SupportScreen from '../app/support';
 import { AppControllerProvider } from '../src/controllers/AppController';
 
-jest.mock('expo-router', () => ({ useRouter: () => ({ push: jest.fn() }) }));
+const mockPush = jest.fn();
+jest.mock('expo-router', () => ({ useRouter: () => ({ push: mockPush }) }));
 
 function values() {
   return {
@@ -22,6 +23,16 @@ function values() {
 }
 
 describe('native Settings, privacy, and support flows', () => {
+  it('keeps plan choices and Terms of Use reachable from Settings', async () => {
+    const context = values();
+    const view = render(<AppControllerProvider value={context}><SettingsScreen /></AppControllerProvider>);
+
+    await act(async () => { fireEvent.press(view.getByRole('button', { name: 'View Free and Pro plans' })); });
+    expect(mockPush).toHaveBeenCalledWith('/upgrade');
+    await act(async () => { fireEvent.press(view.getByRole('button', { name: 'Read Terms of Use' })); });
+    expect(mockPush).toHaveBeenCalledWith('/terms');
+  });
+
   it('requires exact DELETE plus a second confirmation before delete all', async () => {
     const context = values();
     const view = await render(<AppControllerProvider value={context}><SettingsScreen /></AppControllerProvider>);
@@ -82,6 +93,8 @@ describe('native Settings, privacy, and support flows', () => {
     expect(privacy.getByText(/provider-side connection and HTTP request metadata/i)).toBeTruthy();
     expect(privacy.getByText(/Device\/IP Data and IP-based geolocation/i)).toBeTruthy();
     expect(privacy.getByText(/coarse pseudonymous rate-limit key/i)).toBeTruthy();
+    expect(privacy.getByText(/RevenueCat.*purchase history/i)).toBeTruthy();
+    expect(privacy.getByText(/payment-card details/i)).toBeTruthy();
     await act(async () => { privacy.unmount(); });
     const support = await render(<AppControllerProvider value={context}><SupportScreen /></AppControllerProvider>);
     expect(support.getByText('Self-help')).toBeTruthy();

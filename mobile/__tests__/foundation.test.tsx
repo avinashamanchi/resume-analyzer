@@ -2,9 +2,11 @@ import { render } from '@testing-library/react-native';
 import type { ReactNode } from 'react';
 
 import { TabsLayout } from '../app/(tabs)/_layout';
+import appConfig from '../app.config';
 import { tokens } from '../src/theme/tokens';
 
 const easConfig = require('../eas.json');
+const appManifest = require('../app.json').expo;
 const packageManifest = require('../package.json');
 
 jest.mock('expo-router', () => {
@@ -54,5 +56,45 @@ describe('native foundation', () => {
     expect(packageManifest.devDependencies['react-test-renderer']).toBe(
       packageManifest.dependencies.react,
     );
+  });
+
+  it('uses remote App Store build-number auto-increment without submission credentials', () => {
+    expect(easConfig.cli).toMatchObject({ appVersionSource: 'remote', requireCommit: true });
+    expect(easConfig.build.production).toEqual({
+      distribution: 'store',
+      autoIncrement: true,
+      env: {
+        EXPO_PUBLIC_RESUME_API_URL: 'https://resume-analyzer-al3g.onrender.com',
+      },
+      ios: { image: 'auto' },
+    });
+    expect(easConfig).not.toHaveProperty('submit');
+    expect(JSON.stringify(easConfig)).not.toMatch(/appleId|ascApiKey|password/i);
+  });
+
+  it('fails a production build without the exact API origin and a public RevenueCat Apple key', () => {
+    const originalProfile = process.env.EAS_BUILD_PROFILE;
+    const originalApiUrl = process.env.EXPO_PUBLIC_RESUME_API_URL;
+    const originalRevenueCatKey = process.env.EXPO_PUBLIC_REVENUECAT_IOS_API_KEY;
+    try {
+      process.env.EAS_BUILD_PROFILE = 'production';
+      process.env.EXPO_PUBLIC_RESUME_API_URL = 'https://resume-analyzer-al3g.onrender.com';
+      delete process.env.EXPO_PUBLIC_REVENUECAT_IOS_API_KEY;
+      expect(() => appConfig({ config: appManifest } as never)).toThrow('EXPO_PUBLIC_REVENUECAT_IOS_API_KEY');
+      process.env.EXPO_PUBLIC_REVENUECAT_IOS_API_KEY = 'appl_replace_with_revenuecat_public_sdk_key';
+      expect(() => appConfig({ config: appManifest } as never)).toThrow('EXPO_PUBLIC_REVENUECAT_IOS_API_KEY');
+      process.env.EXPO_PUBLIC_REVENUECAT_IOS_API_KEY = 'appl_AbCdEfGhIjKlMnOp';
+      process.env.EXPO_PUBLIC_RESUME_API_URL = 'http://localhost:5000';
+      expect(() => appConfig({ config: appManifest } as never)).toThrow('EXPO_PUBLIC_RESUME_API_URL');
+      process.env.EXPO_PUBLIC_RESUME_API_URL = 'https://resume-analyzer-al3g.onrender.com';
+      expect(appConfig({ config: appManifest } as never).ios?.usesAppleSignIn).toBe(false);
+    } finally {
+      if (originalProfile === undefined) delete process.env.EAS_BUILD_PROFILE;
+      else process.env.EAS_BUILD_PROFILE = originalProfile;
+      if (originalApiUrl === undefined) delete process.env.EXPO_PUBLIC_RESUME_API_URL;
+      else process.env.EXPO_PUBLIC_RESUME_API_URL = originalApiUrl;
+      if (originalRevenueCatKey === undefined) delete process.env.EXPO_PUBLIC_REVENUECAT_IOS_API_KEY;
+      else process.env.EXPO_PUBLIC_REVENUECAT_IOS_API_KEY = originalRevenueCatKey;
+    }
   });
 });

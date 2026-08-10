@@ -8,7 +8,7 @@ Do not use a real resume. Use synthetic content with no real contact, account, e
 
 | Gate | Status | Observation/evidence |
 | --- | --- | --- |
-| Full Xcode toolchain and CocoaPods | BLOCKED | This Mac currently has Command Line Tools only and no `pod`. |
+| Full Xcode toolchain and CocoaPods | BLOCKED | CocoaPods 1.17.0 is installed, but this Mac currently has Command Line Tools only and no full Xcode. |
 | Authorized EAS/Apple credentials | BLOCKED | No credential or signing action has been authorized or observed. |
 | Development build compiles, signs, installs, and launches | UNVERIFIED | Record EAS build URL/ID only after authorization; never record credentials. |
 | Icon and dark launch screen on real device | UNVERIFIED | Confirm no transparency, clipping, stale Expo branding, or unintended text. |

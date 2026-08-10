@@ -9,6 +9,7 @@ import {
   View,
 } from 'react-native';
 
+import { useBilling } from '../../src/billing/BillingProvider';
 import { FeedbackSections } from '../../src/components/FeedbackSections';
 import { AppButton, Card, Eyebrow, Screen, Title, uiStyles } from '../../src/components/primitives';
 import { ScoreCard } from '../../src/components/ScoreCard';
@@ -94,16 +95,37 @@ function focusNode(value: View | Text | null): void {
 
 export function ResultsScreen({
   exporter = reportExporter,
-}: Readonly<{ exporter?: ReportExporterPort }>) {
+  entitlementActive = true,
+  onUpgrade = () => {},
+}: Readonly<{
+  exporter?: ReportExporterPort;
+  entitlementActive?: boolean;
+  onUpgrade?: () => void;
+}>) {
   const params = useLocalSearchParams<{ analysisId?: string | string[] }>();
   const id = Array.isArray(params.analysisId) ? params.analysisId[0] : params.analysisId;
-  return <ResultsScreenContent key={id ?? 'missing'} id={id} exporter={exporter} />;
+  return (
+    <ResultsScreenContent
+      entitlementActive={entitlementActive}
+      exporter={exporter}
+      id={id}
+      key={id ?? 'missing'}
+      onUpgrade={onUpgrade}
+    />
+  );
 }
 
 function ResultsScreenContent({
   id,
   exporter,
-}: Readonly<{ id: string | undefined; exporter: ReportExporterPort }>) {
+  entitlementActive,
+  onUpgrade,
+}: Readonly<{
+  id: string | undefined;
+  exporter: ReportExporterPort;
+  entitlementActive: boolean;
+  onUpgrade: () => void;
+}>) {
   const router = useRouter();
   const { actions, analysis, history } = useAppController();
   const [loadedReport, setLoadedReport] = useState<LoadedReport | null>(null);
@@ -297,6 +319,11 @@ function ResultsScreenContent({
   const { result, exportRecord } = currentReport;
 
   const save = async () => {
+    if (!entitlementActive && !saved && history.reports.length >= 3) {
+      publishReceipt('Free includes up to 3 saved reports. Resume.AI Pro unlocks unlimited local history.');
+      onUpgrade();
+      return;
+    }
     const savedReport = await history.saveCurrent();
     if (mounted.current) {
       publishReceipt(savedReport === null
@@ -319,6 +346,11 @@ function ResultsScreenContent({
   };
 
   const sharePdf = async () => {
+    if (!entitlementActive) {
+      publishReceipt('PDF report export is included with Resume.AI Pro.');
+      onUpgrade();
+      return;
+    }
     const authority = beginShare('pdf', id, routeEpoch, currentReport);
     if (authority === null) return;
     publishReceipt('Preparing a PDF report…');
@@ -406,9 +438,13 @@ function ResultsScreenContent({
           tone="secondary"
         />
         <AppButton
-          label={preparingPdf ? 'Preparing PDF report…' : 'Share PDF report'}
-          accessibilityLabel="Share report"
-          accessibilityHint="Creates a PDF report, opens the system share sheet, then removes the temporary file."
+          label={entitlementActive
+            ? (preparingPdf ? 'Preparing PDF report…' : 'Share PDF report')
+            : 'Unlock PDF report'}
+          accessibilityLabel={entitlementActive ? 'Share report' : 'Unlock PDF report'}
+          accessibilityHint={entitlementActive
+            ? 'Creates a PDF report, opens the system share sheet, then removes the temporary file.'
+            : 'Opens Resume.AI plan options. PDF exports are included with Pro.'}
           onPress={() => { void sharePdf(); }}
           disabled={sharing || deleting}
           tone="secondary"
@@ -479,7 +515,18 @@ function ResultsScreenContent({
   );
 }
 
-export default ResultsScreen;
+function ResultsRoute() {
+  const billing = useBilling();
+  const router = useRouter();
+  return (
+    <ResultsScreen
+      entitlementActive={billing.entitlementActive}
+      onUpgrade={() => router.push('/upgrade')}
+    />
+  );
+}
+
+export default ResultsRoute;
 
 const styles = StyleSheet.create({
   heading: { rowGap: 10 },

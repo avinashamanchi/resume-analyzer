@@ -8,8 +8,8 @@ Expo Go can verify JavaScript/native-client behavior for pasted text and text-ba
 
 | Gate | Status | Observation/evidence |
 | --- | --- | --- |
-| Node 22 frozen install and Expo Doctor | PASS | `npm ci`; Expo Doctor 20/20 on 2026-08-06. |
-| iOS static export | PASS | 1,276 modules; Hermes bundle approximately 3.5 MB. |
+| Node 22 frozen install and Expo Doctor | PASS | Frozen lockfile under Node 22; Expo Doctor 18/18 on 2026-08-09. |
+| iOS static export | PASS | 1,147 modules; Hermes bundle approximately 4.83 MB on 2026-08-09. |
 | Expo Go opens from LAN QR | UNVERIFIED | Requires the user's iPhone and Expo Go on the same network. |
 | Service-unavailable state without a verified backend | UNVERIFIED | Confirm the app blocks analysis clearly and retains no staged PDF. |
 | Paste synthetic resume text | UNVERIFIED | Confirm limits, remaining count, keyboard behavior, and no hidden save. |

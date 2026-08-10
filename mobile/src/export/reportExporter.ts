@@ -93,14 +93,19 @@ export interface OwnedReportFiles {
 
 export class ReportFileStore implements OwnedReportFiles {
   private readonly fileSystem: ReportFileSystem;
-  private readonly printDirectoryUri: string;
+  private cachedPrintDirectoryUri: string | null = null;
 
   constructor(options: Readonly<{ fileSystem?: ReportFileSystem }> = {}) {
     this.fileSystem = options.fileSystem ?? new ExpoReportFileSystem();
+  }
+
+  private get printDirectoryUri(): string {
+    if (this.cachedPrintDirectoryUri !== null) return this.cachedPrintDirectoryUri;
     const cache = canonicalizeLocalFileUri(this.fileSystem.cacheDirectoryUri).uri;
-    this.printDirectoryUri = canonicalizeLocalFileUri(
+    this.cachedPrintDirectoryUri = canonicalizeLocalFileUri(
       `${cache.replace(/\/$/, '')}/Print`,
     ).uri;
+    return this.cachedPrintDirectoryUri;
   }
 
   owns(uri: string): boolean {
