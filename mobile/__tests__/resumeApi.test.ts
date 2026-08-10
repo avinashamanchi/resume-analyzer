@@ -24,6 +24,38 @@ function response(status: number, data: unknown) {
   } as unknown as Response;
 }
 
+function completeV2Response(
+  fixture: Readonly<{ analysisId: string; score: unknown; feedback: unknown }> = validFixture,
+  sourceType: 'reviewed_text' | 'pdf' = 'reviewed_text',
+) {
+  return {
+    schemaVersion: 2,
+    analysisId: fixture.analysisId,
+    sourceType,
+    score: fixture.score,
+    ai: {
+      status: 'complete',
+      feedback: fixture.feedback,
+      allowance: { used: 1, limit: 3, resetsAt: '2099-09-01T00:00:00Z' },
+    },
+  } as const;
+}
+
+function normalizedCompleteV2(
+  fixture: Readonly<{ analysisId: string; score: unknown; feedback: unknown }> = validFixture,
+  sourceType: 'reviewed_text' | 'pdf' = 'reviewed_text',
+) {
+  return {
+    schemaVersion: 2,
+    analysisId: fixture.analysisId,
+    sourceType,
+    score: fixture.score,
+    aiStatus: 'complete',
+    feedback: fixture.feedback,
+    allowance: { used: 1, limit: 3, resetsAt: '2099-09-01T00:00:00Z' },
+  } as const;
+}
+
 function deferred<T>() {
   let resolve: (value: T) => void = () => undefined;
   let reject: (reason?: unknown) => void = () => undefined;
@@ -81,7 +113,7 @@ function createApi(overrides: Partial<ConstructorParameters<typeof ResumeApi>[0]
     clear: jest.fn().mockResolvedValue(undefined),
     invalidate: jest.fn().mockResolvedValue(undefined),
   };
-  const fetchImpl: FetchMock = jest.fn().mockResolvedValue(response(200, validFixture));
+  const fetchImpl: FetchMock = jest.fn().mockResolvedValue(response(200, completeV2Response()));
   const activeFetch = (overrides.fetchImpl ?? fetchImpl) as FetchMock;
   const activeTokens = (overrides.installationTokens ?? installationTokens) as typeof installationTokens;
   const options = {
@@ -109,6 +141,90 @@ describe('ResumeApi multipart boundary', () => {
     (globalThis as unknown as { FormData: typeof originalFormData }).FormData = originalFormData;
   });
 
+  it('submits reviewed text to v2 with exact admission headers and preserves deterministic score degradation', async () => {
+    const v2Response = {
+      schemaVersion: 2,
+      analysisId: validFixture.analysisId,
+      sourceType: 'reviewed_text',
+      score: validFixture.score,
+      ai: {
+        status: 'temporarily_unavailable',
+        feedback: null,
+        allowance: { used: 1, limit: 3, resetsAt: '2099-09-01T00:00:00Z' },
+      },
+    };
+    const { api, fetchImpl } = createApi({
+      fetchImpl: jest.fn().mockResolvedValue(response(200, v2Response)),
+    });
+
+    await expect(api.analyze({
+      source: { kind: 'reviewed_text', text: 'Reviewed resume text' },
+      jobDescription: 'Backend engineer',
+      consentVersion: '2026-08-04.v1',
+      aiRequested: true,
+    }, new AbortController().signal)).resolves.toEqual({
+      schemaVersion: 2,
+      analysisId: validFixture.analysisId,
+      sourceType: 'reviewed_text',
+      score: validFixture.score,
+      aiStatus: 'temporarily_unavailable',
+      feedback: null,
+      allowance: { used: 1, limit: 3, resetsAt: '2099-09-01T00:00:00Z' },
+    });
+    expect(fetchImpl).toHaveBeenCalledWith(
+      'https://api.example.test/v2/analyses',
+      expect.objectContaining({
+        headers: {
+          Authorization: 'Installation signed-token',
+          'X-Resume-AI': 'requested',
+          'X-Resume-Request-ID': validFixture.analysisId,
+          'X-Resume-Source': 'reviewed_text',
+        },
+      }),
+    );
+    const body = fetchImpl.mock.calls[0][1].body as unknown as TestFormData;
+    expect(body.entries).toContainEqual(['resume_text', 'Reviewed resume text']);
+    expect(body.entries.some(([name]) => name === 'resume_pdf')).toBe(false);
+  });
+
+  it('rejects malformed stored account identity before multipart allocation or network access', async () => {
+    const { api, fetchImpl } = createApi({
+      accountIdentity: {
+        get: jest.fn(async () => ({
+          accountToken: 'signed\r\nX-Injected: true',
+          expiresAt: '2099-08-10T03:00:00Z',
+          revenueCatAppUserId: `rai_account_${'a'.repeat(43)}`,
+        } as never)),
+      },
+    });
+
+    await expect(api.analyze({
+      source: { kind: 'reviewed_text', text: 'Reviewed resume text' },
+      consentVersion: '2026-08-04.v1',
+    }, new AbortController().signal)).rejects.toMatchObject({
+      category: 'invalid_response',
+    });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('rejects a malformed installation credential before multipart allocation or network access', async () => {
+    const { api, fetchImpl } = createApi({
+      installationTokens: {
+        getOrIssue: jest.fn(async () => 'signed\r\nX-Injected: true'),
+        clear: jest.fn(async () => undefined),
+        invalidate: jest.fn(async () => undefined),
+      },
+    });
+
+    await expect(api.analyze({
+      source: { kind: 'reviewed_text', text: 'Reviewed resume text' },
+      consentVersion: '2026-08-04.v1',
+    }, new AbortController().signal)).rejects.toMatchObject({
+      category: 'invalid_response',
+    });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
   it('builds exactly one bounded text source with consent and a canonical request UUID', async () => {
     const { api, fetchImpl } = createApi();
 
@@ -121,32 +237,35 @@ describe('ResumeApi multipart boundary', () => {
         },
         new AbortController().signal,
       ),
-    ).resolves.toEqual(validFixture);
+    ).resolves.toEqual(normalizedCompleteV2());
 
     const [, request] = fetchImpl.mock.calls[0] as [string, RequestInit];
-    expect(request.headers).toEqual({ Authorization: 'Installation signed-token' });
+    expect(request.headers).toEqual({
+      Authorization: 'Installation signed-token',
+      'X-Resume-AI': 'requested',
+      'X-Resume-Request-ID': validFixture.analysisId,
+      'X-Resume-Source': 'reviewed_text',
+    });
     expect(request.headers).not.toHaveProperty('Content-Type');
     expect((request.body as unknown as TestFormData).entries).toEqual([
       ['consent_version', '2026-08-04.v1'],
       ['request_id', validFixture.analysisId],
       ['job_description', 'Backend engineer'],
       ['resume_text', 'Resume content'],
-      ['source_type', 'text'],
     ]);
   });
 
   it('uses only the PDF multipart source and rejects client-side source limits without truncation', async () => {
     const { api, fetchImpl } = createApi({
-      fetchImpl: jest.fn().mockResolvedValue(response(200, {
+      fetchImpl: jest.fn().mockResolvedValue(response(200, completeV2Response({
         ...validFixture,
-        sourceType: 'pdf',
         score: {
           ...validFixture.score,
           readinessScore: 70,
           label: 'Good',
           components: { structure: 25, impact: 25, readability: 20, keywords: null },
         },
-      })),
+      }, 'pdf'))),
     });
     await api.analyze(
       {
@@ -338,7 +457,7 @@ describe('ResumeApi multipart boundary', () => {
       }),
     };
     const fetchImpl: FetchMock = jest.fn()
-      .mockResolvedValueOnce(response(200, validFixture))
+      .mockResolvedValueOnce(response(200, completeV2Response()))
       .mockImplementationOnce(() => delayed401.promise);
     const { api } = createApi({ fetchImpl, installationTokens });
 
@@ -358,7 +477,7 @@ describe('ResumeApi multipart boundary', () => {
       },
       new AbortController().signal,
     );
-    await expect(first).resolves.toEqual(validFixture);
+    await expect(first).resolves.toEqual(normalizedCompleteV2());
 
     activeToken = 'token-B';
     delayed401.resolve(response(401, {
@@ -445,6 +564,38 @@ describe('ResumeApi multipart boundary', () => {
     )).rejects.toMatchObject({ category: 'invalid_response' });
   });
 
+  it('rejects declared or streamed oversized responses before parsing private content', async () => {
+    const declaredJson = jest.fn(async () => completeV2Response());
+    const declared = {
+      status: 200,
+      headers: { get: (name: string) => name.toLowerCase() === 'content-length' ? '65537' : null },
+      json: declaredJson,
+    } as unknown as Response;
+    const declaredApi = createApi({
+      fetchImpl: jest.fn(async () => declared),
+    }).api;
+    await expect(declaredApi.analyze(
+      { source: { kind: 'reviewed_text', text: 'Resume' }, consentVersion: '2026-08-04.v1' },
+      new AbortController().signal,
+    )).rejects.toMatchObject({ category: 'invalid_response' });
+    expect(declaredJson).not.toHaveBeenCalled();
+
+    const streamed = {
+      status: 200,
+      headers: { get: () => null },
+      text: jest.fn(async () => 'x'.repeat(65_537)),
+      json: jest.fn(),
+    } as unknown as Response;
+    const streamedApi = createApi({
+      fetchImpl: jest.fn(async () => streamed),
+    }).api;
+    await expect(streamedApi.analyze(
+      { source: { kind: 'reviewed_text', text: 'Resume' }, consentVersion: '2026-08-04.v1' },
+      new AbortController().signal,
+    )).rejects.toMatchObject({ category: 'invalid_response' });
+    expect(streamed.json).not.toHaveBeenCalled();
+  });
+
   it('links cancellation and timeout signals, then removes the timeout on every exit', async () => {
     jest.useFakeTimers();
     const fetchImpl: FetchMock = jest.fn((_url, _init) => new Promise<Response>(() => undefined));
@@ -454,8 +605,10 @@ describe('ResumeApi multipart boundary', () => {
       { source: { kind: 'text', text: 'Resume' }, consentVersion: '2026-08-04.v1' },
       caller.signal,
     );
-    await Promise.resolve();
-    await Promise.resolve();
+    for (let turn = 0; turn < 12 && fetchImpl.mock.calls.length === 0; turn += 1) {
+      await Promise.resolve();
+    }
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
     jest.advanceTimersByTime(10);
     await expect(pending).rejects.toMatchObject({ category: 'timeout' });
     expect((fetchImpl.mock.calls[0][1] as RequestInit).signal?.aborted).toBe(true);

@@ -5,9 +5,14 @@ import { ResumeApiError } from '../domain/errors';
 
 export const ACCOUNT_IDENTITY_KEY = 'resume-ai.account-identity.v1';
 
-const AccountIdentitySchema = z
+export const AccountTokenSchema = z
+  .string()
+  .max(2_048)
+  .regex(/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/);
+
+export const AccountIdentitySchema = z
   .object({
-    accountToken: z.string().min(1).max(2_048),
+    accountToken: AccountTokenSchema,
     expiresAt: z.string().datetime({ offset: false, precision: 0 }),
     revenueCatAppUserId: z.string().regex(/^rai_account_[A-Za-z0-9_-]{43}$/),
   })

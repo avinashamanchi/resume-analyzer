@@ -1,8 +1,10 @@
 import React from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 
-import type { AnalysisResponse } from '../domain/contracts';
+import type { AnalysisResult } from '../domain/contracts';
+import type { ReportAiStatus } from '../storage/reportRepository';
 import { tokens } from '../theme/tokens';
+import { AiStatusCard } from './AiStatusCard';
 import { Card, uiStyles } from './primitives';
 
 function ListSection({ title, items, empty }: Readonly<{ title: string; items: readonly string[]; empty: string }>) {
@@ -16,7 +18,19 @@ function ListSection({ title, items, empty }: Readonly<{ title: string; items: r
   );
 }
 
-export function FeedbackSections({ result }: Readonly<{ result: AnalysisResponse }>) {
+type FeedbackPresentation = Readonly<{
+  score: AnalysisResult['score'];
+  feedback: AnalysisResult['feedback'];
+  aiStatus: ReportAiStatus;
+}>;
+
+export function FeedbackSections({ result }: Readonly<{ result: FeedbackPresentation }>) {
+  if (result.feedback === null) {
+    const status = result.aiStatus === 'complete' || result.aiStatus === 'legacy_feedback_present'
+      ? 'temporarily_unavailable'
+      : result.aiStatus;
+    return <AiStatusCard status={status} />;
+  }
   const hasKeywordScore = result.score.components.keywords !== null;
   return (
     <View testID="feedback-stack" style={styles.stack}>

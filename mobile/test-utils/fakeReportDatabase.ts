@@ -20,7 +20,7 @@ export type FakeSchemaObject = Readonly<{
   sql: string;
 }>;
 
-const REPORT_DDL = `CREATE TABLE reports (
+const VERSION_ONE_REPORT_DDL = `CREATE TABLE reports (
   id TEXT PRIMARY KEY,
   schema_version INTEGER NOT NULL,
   title TEXT NOT NULL,
@@ -29,6 +29,22 @@ const REPORT_DDL = `CREATE TABLE reports (
   score_json TEXT NOT NULL,
   feedback_json TEXT NOT NULL
 )`;
+
+const REPORT_DDL = `CREATE TABLE reports (
+  id TEXT PRIMARY KEY,
+  schema_version INTEGER NOT NULL,
+  title TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  source_type TEXT NOT NULL,
+  score_json TEXT NOT NULL,
+  feedback_json TEXT NOT NULL,
+  ai_status TEXT NOT NULL DEFAULT 'legacy_feedback_present'
+)`;
+
+const MIGRATED_REPORT_DDL = `${VERSION_ONE_REPORT_DDL.slice(0, -1)}, ai_status TEXT NOT NULL DEFAULT 'legacy_feedback_present')`;
+
+const REPORT_INDEX_DDL =
+  'CREATE INDEX reports_created_id_desc ON reports(created_at DESC, id DESC)';
 
 const METADATA_DDL = `CREATE TABLE metadata (
   key TEXT PRIMARY KEY,
@@ -45,6 +61,18 @@ const REPORT_COLUMNS: readonly FakeColumn[] = Object.freeze([
   { cid: 4, name: 'source_type', type: 'TEXT', notnull: 1, dflt_value: null, pk: 0 },
   { cid: 5, name: 'score_json', type: 'TEXT', notnull: 1, dflt_value: null, pk: 0 },
   { cid: 6, name: 'feedback_json', type: 'TEXT', notnull: 1, dflt_value: null, pk: 0 },
+]);
+
+const VERSION_TWO_REPORT_COLUMNS: readonly FakeColumn[] = Object.freeze([
+  ...REPORT_COLUMNS,
+  {
+    cid: 7,
+    name: 'ai_status',
+    type: 'TEXT',
+    notnull: 1,
+    dflt_value: "'legacy_feedback_present'",
+    pk: 0,
+  },
 ]);
 
 const METADATA_COLUMNS: readonly FakeColumn[] = Object.freeze([
@@ -78,6 +106,7 @@ export class FakeReportDatabase {
   failCommit = false;
   failClose = false;
   failNext: RegExp | null = null;
+  reportCountOverride: number | null = null;
   beforeInsert: (() => Promise<void>) | null = null;
   beforeList: (() => Promise<void>) | null = null;
 
@@ -88,6 +117,12 @@ export class FakeReportDatabase {
   static versionOne(identity?: string): FakeReportDatabase {
     const database = new FakeReportDatabase(identity);
     database.installVersionOne();
+    return database;
+  }
+
+  static versionTwo(identity?: string): FakeReportDatabase {
+    const database = new FakeReportDatabase(identity);
+    database.installVersionTwo();
     return database;
   }
 
@@ -104,9 +139,28 @@ export class FakeReportDatabase {
     };
     this.schemaObjects = [
       { type: 'table', name: 'metadata', tbl_name: 'metadata', sql: METADATA_DDL },
-      { type: 'table', name: 'reports', tbl_name: 'reports', sql: REPORT_DDL },
+      { type: 'table', name: 'reports', tbl_name: 'reports', sql: VERSION_ONE_REPORT_DDL },
     ];
     this.metadata = [{ key: 'schema_version', value: '1' }];
+  }
+
+  installVersionTwo(): void {
+    this.userVersion = 2;
+    this.tables = ['metadata', 'reports'];
+    this.columns = {
+      metadata: clone(METADATA_COLUMNS),
+      reports: clone(VERSION_TWO_REPORT_COLUMNS),
+    };
+    this.xcolumns = {
+      metadata: clone(xinfo(METADATA_COLUMNS)),
+      reports: clone(xinfo(VERSION_TWO_REPORT_COLUMNS)),
+    };
+    this.schemaObjects = [
+      { type: 'index', name: 'reports_created_id_desc', tbl_name: 'reports', sql: REPORT_INDEX_DDL },
+      { type: 'table', name: 'metadata', tbl_name: 'metadata', sql: METADATA_DDL },
+      { type: 'table', name: 'reports', tbl_name: 'reports', sql: REPORT_DDL },
+    ];
+    this.metadata = [{ key: 'schema_version', value: '2' }];
   }
 
   private assertOpen(): void {
@@ -151,21 +205,57 @@ export class FakeReportDatabase {
         throw new Error('schema objects already exist');
       }
       this.tables = [...this.tables, 'metadata', 'reports'].sort();
+      const reportColumns = compact.includes('ai_status TEXT NOT NULL')
+        ? VERSION_TWO_REPORT_COLUMNS
+        : REPORT_COLUMNS;
+      const reportDdl = compact.includes('ai_status TEXT NOT NULL')
+        ? REPORT_DDL
+        : VERSION_ONE_REPORT_DDL;
       this.columns = {
         ...this.columns,
         metadata: clone(METADATA_COLUMNS),
-        reports: clone(REPORT_COLUMNS),
+        reports: clone(reportColumns),
       };
       this.xcolumns = {
         ...this.xcolumns,
         metadata: clone(xinfo(METADATA_COLUMNS)),
-        reports: clone(xinfo(REPORT_COLUMNS)),
+        reports: clone(xinfo(reportColumns)),
       };
       this.schemaObjects = [
         ...this.schemaObjects,
         { type: 'table', name: 'metadata', tbl_name: 'metadata', sql: METADATA_DDL },
-        { type: 'table', name: 'reports', tbl_name: 'reports', sql: REPORT_DDL },
+        { type: 'table', name: 'reports', tbl_name: 'reports', sql: reportDdl },
       ];
+      if (compact.includes(REPORT_INDEX_DDL)) {
+        this.schemaObjects.push({
+          type: 'index',
+          name: 'reports_created_id_desc',
+          tbl_name: 'reports',
+          sql: REPORT_INDEX_DDL,
+        });
+      }
+    }
+    if (/^ALTER TABLE reports ADD COLUMN ai_status/i.test(compact)) {
+      this.columns.reports = clone(VERSION_TWO_REPORT_COLUMNS);
+      this.xcolumns.reports = clone(xinfo(VERSION_TWO_REPORT_COLUMNS));
+      this.schemaObjects = this.schemaObjects.map(object => object.name === 'reports'
+        ? { ...object, sql: MIGRATED_REPORT_DDL }
+        : object);
+      this.rows = this.rows.map(row => ({
+        ...row,
+        ai_status: 'legacy_feedback_present',
+      }));
+    }
+    if (compact === REPORT_INDEX_DDL) {
+      if (this.schemaObjects.some(object => object.name === 'reports_created_id_desc')) {
+        throw new Error('duplicate report index');
+      }
+      this.schemaObjects.push({
+        type: 'index',
+        name: 'reports_created_id_desc',
+        tbl_name: 'reports',
+        sql: REPORT_INDEX_DDL,
+      });
     }
     const pragma = /PRAGMA user_version\s*=\s*(\d+)/i.exec(compact);
     if (pragma !== null) this.userVersion = Number(pragma[1]);
@@ -179,9 +269,25 @@ export class FakeReportDatabase {
       this.metadata.push({ key, value });
       return { lastInsertRowId: 1, changes: 1 };
     }
+    if (/^UPDATE metadata SET value = \? WHERE key = \?/i.test(compact)) {
+      const [value, key] = params;
+      const row = this.metadata.find(candidate => candidate.key === key);
+      if (row === undefined) return { lastInsertRowId: 0, changes: 0 };
+      row.value = value;
+      return { lastInsertRowId: 0, changes: 1 };
+    }
+    if (/^UPDATE reports SET schema_version = \? WHERE schema_version = \?/i.test(compact)) {
+      let changes = 0;
+      for (const row of this.rows) {
+        if (row.schema_version !== params[1]) continue;
+        row.schema_version = params[0];
+        changes += 1;
+      }
+      return { lastInsertRowId: 0, changes };
+    }
     if (/^INSERT INTO reports/i.test(compact)) {
       if (this.beforeInsert !== null) await this.beforeInsert();
-      const [id, schemaVersion, title, createdAt, sourceType, scoreJson, feedbackJson] = params;
+      const [id, schemaVersion, title, createdAt, sourceType, scoreJson, feedbackJson, aiStatus] = params;
       if (this.rows.some(row => row.id === id)) throw new Error('duplicate private title');
       this.rows.push({
         id,
@@ -191,6 +297,7 @@ export class FakeReportDatabase {
         source_type: sourceType,
         score_json: scoreJson,
         feedback_json: feedbackJson,
+        ai_status: aiStatus,
       });
       return { lastInsertRowId: this.rows.length, changes: 1 };
     }
@@ -213,7 +320,7 @@ export class FakeReportDatabase {
       return { user_version: this.userVersion } as T;
     }
     if (/^SELECT COUNT\(\*\) AS count FROM reports$/i.test(compact)) {
-      return { count: this.rows.length } as T;
+      return { count: this.reportCountOverride ?? this.rows.length } as T;
     }
     if (/FROM reports WHERE id = \?/i.test(compact)) {
       return (clone(this.rows.find(row => row.id === params[0]) ?? null) as T | null);
@@ -228,7 +335,8 @@ export class FakeReportDatabase {
       return this.tables.filter(name => name !== excluded).slice().sort().map(name => ({ name })) as T[];
     }
     if (/SELECT type, name, tbl_name, sql FROM sqlite_schema/i.test(compact)) {
-      return clone(this.schemaObjects.slice().sort((left, right) =>
+      const excluded = typeof params[0] === 'string' ? params[0] : null;
+      return clone(this.schemaObjects.filter(object => object.name !== excluded).slice().sort((left, right) =>
         left.type.localeCompare(right.type) || left.name.localeCompare(right.name)
       )) as T[];
     }
@@ -247,12 +355,27 @@ export class FakeReportDatabase {
     if (/FROM metadata ORDER BY key/i.test(compact)) {
       return clone(this.metadata.slice().sort((left, right) => String(left.key).localeCompare(String(right.key)))) as T[];
     }
-    if (/FROM reports ORDER BY created_at DESC, id DESC/i.test(compact)) {
+    if (
+      compact.includes('FROM reports') &&
+      compact.includes('ORDER BY created_at DESC, id DESC')
+    ) {
       if (this.beforeList !== null) await this.beforeList();
-      return clone(this.rows.slice().sort((left, right) => {
+      let rows = this.rows.slice().sort((left, right) => {
         const byDate = String(right.created_at).localeCompare(String(left.created_at));
         return byDate || String(right.id).localeCompare(String(left.id));
-      })) as T[];
+      });
+      if (compact.includes('WHERE (created_at < ? OR (created_at = ? AND id < ?))')) {
+        const [createdBefore, createdEqual, idBefore] = params;
+        rows = rows.filter(row =>
+          String(row.created_at) < String(createdBefore) ||
+          (String(row.created_at) === String(createdEqual) && String(row.id) < String(idBefore))
+        );
+      }
+      if (compact.endsWith('LIMIT ?')) {
+        const limit = Number(params.at(-1));
+        rows = rows.slice(0, limit);
+      }
+      return clone(rows) as T[];
     }
     throw new Error(`unsupported fake all: ${compact}`);
   }
@@ -293,6 +416,7 @@ export class FakeReportDatabase {
 }
 
 export const versionOneReportColumns = REPORT_COLUMNS;
+export const versionTwoReportColumns = VERSION_TWO_REPORT_COLUMNS;
 
 type SharedSnapshot = Readonly<{
   userVersion: number;

@@ -1,5 +1,13 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { AccessibilityInfo, Modal, Pressable, StyleSheet, Text, View } from 'react-native';
+import {
+  AccessibilityInfo,
+  FlatList,
+  Modal,
+  Pressable,
+  StyleSheet,
+  Text,
+  View,
+} from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import type { ReportRecord } from '../storage/reportRepository';
@@ -18,10 +26,20 @@ export function ReportList({
   reports,
   onOpen,
   onDelete,
+  hasMore = false,
+  hasNewer = false,
+  loadingMore = false,
+  onLoadMore = async () => {},
+  onReturnToNewest = async () => {},
 }: Readonly<{
   reports: readonly ReportRecord[];
   onOpen(id: string): void;
   onDelete(id: string): Promise<boolean>;
+  hasMore?: boolean;
+  hasNewer?: boolean;
+  loadingMore?: boolean;
+  onLoadMore?(): Promise<void>;
+  onReturnToNewest?(): Promise<void>;
 }>) {
   const [confirming, setConfirming] = useState<ReportRecord | null>(null);
   const [deleting, setDeleting] = useState(false);
@@ -71,28 +89,67 @@ export function ReportList({
 
   return (
     <View style={styles.list}>
-      {reports.map(report => (
-        <Card key={report.id}>
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel={`Open ${report.title}`}
-            onPress={() => onOpen(report.id)}
-            style={styles.openTarget}>
-            <Text style={styles.title}>{report.title}</Text>
-            <Text style={uiStyles.caption}>{reportDate(report.createdAt)} · {report.sourceType === 'pdf' ? 'PDF' : 'Text'}</Text>
-            <View style={styles.scoreLine}>
-              <Text style={styles.score}>{report.score.readinessScore}/100</Text>
-              <Text style={styles.scoreLabel}>{report.score.label}</Text>
-            </View>
-          </Pressable>
-          <AppButton
-            label="Delete"
-            accessibilityLabel={`Delete ${report.title}`}
-            onPress={() => openConfirmation(report)}
-            tone="danger"
-          />
-        </Card>
-      ))}
+      <FlatList
+        testID="report-list"
+        data={reports}
+        keyExtractor={report => report.id}
+        renderItem={({ item: report }) => (
+          <Card>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={`Open ${report.title}`}
+              onPress={() => onOpen(report.id)}
+              style={styles.openTarget}>
+              <Text style={styles.title}>{report.title}</Text>
+              <Text style={uiStyles.caption}>{reportDate(report.createdAt)} · {report.sourceType === 'pdf' ? 'PDF' : 'Text'}</Text>
+              <View style={styles.scoreLine}>
+                <Text style={styles.score}>{report.score.readinessScore}/100</Text>
+                <Text style={styles.scoreLabel}>{report.score.label}</Text>
+              </View>
+            </Pressable>
+            <AppButton
+              label="Delete"
+              accessibilityLabel={`Delete ${report.title}`}
+              onPress={() => openConfirmation(report)}
+              tone="danger"
+            />
+          </Card>
+        )}
+        contentContainerStyle={styles.listContent}
+        initialNumToRender={10}
+        maxToRenderPerBatch={10}
+        windowSize={7}
+        removeClippedSubviews
+        onEndReached={() => {
+          if (hasMore && !loadingMore) void onLoadMore();
+        }}
+        onEndReachedThreshold={0.35}
+        ListFooterComponent={(
+          <View style={styles.footer}>
+            {loadingMore ? (
+              <Text accessibilityRole="alert" accessibilityLiveRegion="polite" style={uiStyles.muted}>
+                Loading older reports…
+              </Text>
+            ) : null}
+            {hasMore ? (
+              <AppButton
+                label="Load older reports"
+                onPress={() => { void onLoadMore(); }}
+                disabled={loadingMore}
+                tone="secondary"
+              />
+            ) : null}
+            {hasNewer ? (
+              <AppButton
+                label="Return to newest reports"
+                onPress={() => { void onReturnToNewest(); }}
+                disabled={loadingMore}
+                tone="quiet"
+              />
+            ) : null}
+          </View>
+        )}
+      />
       {confirming !== null ? (
         <Modal
           visible
@@ -131,7 +188,9 @@ export function ReportList({
 }
 
 const styles = StyleSheet.create({
-  list: { rowGap: tokens.space.md },
+  list: { flex: 1 },
+  listContent: { rowGap: tokens.space.md, paddingBottom: tokens.space.lg },
+  footer: { rowGap: tokens.space.sm },
   openTarget: { minHeight: tokens.target.minimum, rowGap: 7 },
   title: { color: tokens.color.text, fontSize: 18, lineHeight: 24, fontWeight: '700' },
   scoreLine: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'baseline', columnGap: 10 },

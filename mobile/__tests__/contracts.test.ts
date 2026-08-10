@@ -5,6 +5,7 @@ import deterministicOnlyV2Fixture from '../../contracts/fixtures/analysis-v2-det
 import {
   AnalysisResponseSchema,
   AnalysisResponseV2Schema,
+  InstallationResponseSchema,
   PublicErrorSchema,
   type AnalysisResponseV2,
   normalizeKeywordForService,
@@ -175,6 +176,13 @@ describe('mobile service contracts', () => {
     };
 
     expect(PublicErrorSchema.parse(error)).toEqual(error);
+  });
+
+  it('rejects control characters in an installation token before it can become a header', () => {
+    expect(() => InstallationResponseSchema.parse({
+      schemaVersion: 1,
+      installationToken: 'signed\r\nX-Injected: true',
+    })).toThrow();
   });
 
   it('accepts complete and deterministic-only v2 fixtures with the same score', () => {

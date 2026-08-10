@@ -17,23 +17,33 @@ const ZERO_INSETS = Object.freeze({ top: 0, right: 0, bottom: 0, left: 0 });
 export function Screen({
   children,
   bottomInset = 'safe-area',
+  scroll = true,
 }: Readonly<{
   children: ReactNode;
   bottomInset?: 'safe-area' | 'tab-bar';
+  scroll?: boolean;
 }>) {
   const insets = useContext(SafeAreaInsetsContext) ?? ZERO_INSETS;
+  const contentStyle = [
+    styles.scrollContent,
+    {
+      paddingLeft: 20 + insets.left,
+      paddingRight: 20 + insets.right,
+      paddingBottom: 56 + (bottomInset === 'safe-area' ? insets.bottom : 0),
+    },
+  ];
+  if (!scroll) {
+    return (
+      <SafeAreaView style={styles.safeArea} edges={['top']}>
+        <View testID="screen-static-view" style={contentStyle}>{children}</View>
+      </SafeAreaView>
+    );
+  }
   return (
     <SafeAreaView style={styles.safeArea} edges={['top']}>
       <ScrollView
         testID="screen-scroll-view"
-        contentContainerStyle={[
-          styles.scrollContent,
-          {
-            paddingLeft: 20 + insets.left,
-            paddingRight: 20 + insets.right,
-            paddingBottom: 56 + (bottomInset === 'safe-area' ? insets.bottom : 0),
-          },
-        ]}
+        contentContainerStyle={contentStyle}
         keyboardDismissMode="interactive"
         keyboardShouldPersistTaps="handled"
         automaticallyAdjustKeyboardInsets>

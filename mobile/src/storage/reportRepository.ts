@@ -6,7 +6,7 @@ import {
 import { z } from 'zod';
 
 import {
-  AnalysisResponseSchema,
+  AnalysisResultSchema,
   FeedbackSchema,
   ScoreSchema,
 } from '../domain/contracts';
@@ -27,6 +27,7 @@ const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{
 const SCORE_JSON_LIMIT = 16_384;
 const FEEDBACK_JSON_LIMIT = 131_072;
 const DEFAULT_CLEANUP_TIMEOUT_MS = 10_000;
+const MAX_REPORTS = 10_000;
 
 function defaultReportDatabaseIdentity(): string {
   if (typeof defaultDatabaseDirectory !== 'string' || defaultDatabaseDirectory.length === 0) {
@@ -38,7 +39,18 @@ function defaultReportDatabaseIdentity(): string {
 export const REPORT_DATABASE_IDENTITY = defaultReportDatabaseIdentity();
 
 const IdentifierSchema = z.string().regex(UUID_PATTERN);
-const SourceTypeSchema = z.enum(['pdf', 'text', 'vision_text']);
+const SourceTypeSchema = z.enum(['pdf', 'text', 'vision_text', 'reviewed_text']);
+const PersistedAiStatusSchema = z.enum([
+  'complete',
+  'not_requested',
+  'quota_exhausted',
+  'plan_verification_unavailable',
+  'temporarily_unavailable',
+  'timeout',
+  'invalid_provider_response',
+  'legacy_feedback_present',
+]);
+export type ReportAiStatus = z.infer<typeof PersistedAiStatusSchema>;
 
 const TitleSchema = z.string().superRefine((value, context) => {
   const length = codePointLength(value);
@@ -66,9 +78,17 @@ export const ReportRecordSchema = z
     createdAt: CanonicalTimestampSchema,
     sourceType: SourceTypeSchema,
     score: ScoreSchema,
-    feedback: FeedbackSchema,
+    aiStatus: PersistedAiStatusSchema,
+    feedback: FeedbackSchema.nullable(),
   })
-  .strict();
+  .strict()
+  .superRefine((record, context) => {
+    const feedbackRequired =
+      record.aiStatus === 'complete' || record.aiStatus === 'legacy_feedback_present';
+    if (feedbackRequired !== (record.feedback !== null)) {
+      context.addIssue({ code: 'custom', message: 'Stored AI status and feedback disagree.' });
+    }
+  });
 
 const ReportRowSchema = z
   .object({
@@ -79,6 +99,7 @@ const ReportRowSchema = z
     source_type: SourceTypeSchema,
     score_json: z.string().max(SCORE_JSON_LIMIT),
     feedback_json: z.string().max(FEEDBACK_JSON_LIMIT),
+    ai_status: PersistedAiStatusSchema,
   })
   .strict();
 
@@ -119,6 +140,7 @@ type PreparedReportWrite = Readonly<{
   record: ReportRecord;
   scoreJson: string;
   feedbackJson: string;
+  maximumReports: 3 | 10_000;
 }>;
 
 export class LocalStorageError extends Error {
@@ -167,6 +189,7 @@ function recordFromRow(value: unknown): ReportRecord {
     sourceType: row.data.source_type,
     score: parseJson(row.data.score_json),
     feedback: parseJson(row.data.feedback_json),
+    aiStatus: row.data.ai_status,
   });
   if (!record.success) throw storageError();
   return record.data;
@@ -175,9 +198,12 @@ function recordFromRow(value: unknown): ReportRecord {
 function projectionFromInput(input: unknown, now: Date): ReportRecord {
   if (input === null || typeof input !== 'object' || Array.isArray(input)) throw storageError();
   const fields = input as Record<string, unknown>;
-  const result = AnalysisResponseSchema.safeParse(fields.result);
+  const result = AnalysisResultSchema.safeParse(fields.result);
   if (!result.success) throw storageError();
   const title = fields.title === undefined ? defaultTitle(now) : fields.title;
+  const aiStatus = result.data.schemaVersion === 1
+    ? 'legacy_feedback_present'
+    : result.data.aiStatus;
   const record = ReportRecordSchema.safeParse({
     id: result.data.analysisId,
     title,
@@ -185,6 +211,7 @@ function projectionFromInput(input: unknown, now: Date): ReportRecord {
     sourceType: result.data.sourceType,
     score: result.data.score,
     feedback: result.data.feedback,
+    aiStatus,
   });
   if (!record.success) throw storageError();
   return record.data;
@@ -258,10 +285,41 @@ export type ReportRepositoryOptions = Readonly<{
   cleanupTimeoutMs?: number;
 }>;
 
+const ReportCursorSchema = z
+  .object({
+    schemaVersion: z.literal(1),
+    createdAt: CanonicalTimestampSchema,
+    id: IdentifierSchema,
+  })
+  .strict();
+
+const ReportPageRequestSchema = z
+  .object({
+    before: ReportCursorSchema.nullable(),
+    limit: z.number().int().min(1).max(50),
+  })
+  .strict();
+
+const SaveReportPolicySchema = z
+  .object({ maximumReports: z.union([z.literal(3), z.literal(10_000)]) })
+  .strict();
+
+export type SaveReportPolicy = Readonly<z.infer<typeof SaveReportPolicySchema>>;
+
+export type ReportCursor = Readonly<z.infer<typeof ReportCursorSchema>>;
+export type ReportPageRequest = Readonly<z.infer<typeof ReportPageRequestSchema>>;
+export type ReportPage = Readonly<{
+  items: readonly ReportRecord[];
+  nextCursor: ReportCursor | null;
+}>;
+
 export interface ReportRepositoryPort {
   readonly databaseIdentity: string;
   initialize(): Promise<void>;
-  save(input: SaveReportInput): Promise<ReportRecord>;
+  save(input: SaveReportInput, policy?: SaveReportPolicy): Promise<ReportRecord>;
+  count(): Promise<number>;
+  listPage(request: ReportPageRequest): Promise<ReportPage>;
+  /** Bounded compatibility read. New callers must use listPage. */
   list(): Promise<ReportRecord[]>;
   get(id: string): Promise<ReportRecord | null>;
   delete(id: string): Promise<number>;
@@ -301,12 +359,20 @@ export class ReportRepository implements ReportRepositoryPort {
     });
   }
 
-  save(input: SaveReportInput): Promise<ReportRecord> {
+  save(
+    input: SaveReportInput,
+    policy: SaveReportPolicy = { maximumReports: MAX_REPORTS },
+  ): Promise<ReportRecord> {
     if (this.closeRequested) return Promise.reject(storageError());
     let prepared: PreparedReportWrite;
     try {
       const record = projectionFromInput(input, assertDate(this.now()));
-      prepared = { record, ...serializeRecord(record) };
+      const parsedPolicy = SaveReportPolicySchema.parse(policy);
+      prepared = {
+        record,
+        ...serializeRecord(record),
+        maximumReports: parsedPolicy.maximumReports,
+      };
     } catch {
       return Promise.reject(storageError());
     }
@@ -316,33 +382,79 @@ export class ReportRepository implements ReportRepositoryPort {
   private enqueuePreparedSave(prepared: PreparedReportWrite): Promise<ReportRecord> {
     return this.enqueue(async () => {
       const database = this.readyDatabase();
-      const { record, scoreJson, feedbackJson } = prepared;
-      const write = await database.runAsync(
-        `INSERT INTO reports
-          (id, schema_version, title, created_at, source_type, score_json, feedback_json)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`,
-        record.id,
-        REPORT_SCHEMA_VERSION,
-        record.title,
-        record.createdAt,
-        record.sourceType,
-        scoreJson,
-        feedbackJson,
-      );
-      if (assertRunResult(write) !== 1) throw storageError();
+      const { record, scoreJson, feedbackJson, maximumReports } = prepared;
+      await database.withExclusiveTransactionAsync(async transaction => {
+        const count = CountRowSchema.safeParse(
+          await transaction.getFirstAsync<unknown>('SELECT COUNT(*) AS count FROM reports'),
+        );
+        if (!count.success || count.data.count >= maximumReports) throw storageError();
+        const write = await transaction.runAsync(
+          `INSERT INTO reports
+            (id, schema_version, title, created_at, source_type, score_json, feedback_json, ai_status)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+          record.id,
+          REPORT_SCHEMA_VERSION,
+          record.title,
+          record.createdAt,
+          record.sourceType,
+          scoreJson,
+          feedbackJson,
+          record.aiStatus,
+        );
+        if (assertRunResult(write) !== 1) throw storageError();
+      });
       return record;
     });
   }
 
-  list(): Promise<ReportRecord[]> {
+  count(): Promise<number> {
     return this.enqueue(async () => {
-      const rows = await this.readyDatabase().getAllAsync<unknown>(
-        `SELECT id, schema_version, title, created_at, source_type, score_json, feedback_json
-         FROM reports ORDER BY created_at DESC, id DESC`,
+      const count = CountRowSchema.safeParse(
+        await this.readyDatabase().getFirstAsync<unknown>(
+          'SELECT COUNT(*) AS count FROM reports',
+        ),
       );
-      if (!Array.isArray(rows)) throw storageError();
-      return rows.map(recordFromRow);
+      if (!count.success || count.data.count > MAX_REPORTS) throw storageError();
+      return count.data.count;
     });
+  }
+
+  listPage(request: ReportPageRequest): Promise<ReportPage> {
+    const parsed = ReportPageRequestSchema.safeParse(request);
+    if (!parsed.success) return Promise.reject(storageError());
+    return this.enqueue(async () => {
+      const projection =
+        'SELECT id, schema_version, title, created_at, source_type, score_json, feedback_json, ai_status';
+      const pageSize = parsed.data.limit + 1;
+      const rows = parsed.data.before === null
+        ? await this.readyDatabase().getAllAsync<unknown>(
+          `${projection} FROM reports ORDER BY created_at DESC, id DESC LIMIT ?`,
+          pageSize,
+        )
+        : await this.readyDatabase().getAllAsync<unknown>(
+          `${projection} FROM reports
+           WHERE (created_at < ? OR (created_at = ? AND id < ?))
+           ORDER BY created_at DESC, id DESC LIMIT ?`,
+          parsed.data.before.createdAt,
+          parsed.data.before.createdAt,
+          parsed.data.before.id,
+          pageSize,
+        );
+      if (!Array.isArray(rows)) throw storageError();
+      const parsedRows = rows.map(recordFromRow);
+      const items = parsedRows.slice(0, parsed.data.limit);
+      const final = items.at(-1);
+      return {
+        items,
+        nextCursor: parsedRows.length > parsed.data.limit && final !== undefined
+          ? { schemaVersion: 1, createdAt: final.createdAt, id: final.id }
+          : null,
+      };
+    });
+  }
+
+  list(): Promise<ReportRecord[]> {
+    return this.listPage({ before: null, limit: 50 }).then(page => [...page.items]);
   }
 
   get(id: string): Promise<ReportRecord | null> {
@@ -350,7 +462,7 @@ export class ReportRepository implements ReportRepositoryPort {
       const parsedId = IdentifierSchema.safeParse(id);
       if (!parsedId.success) throw storageError();
       const row = await this.readyDatabase().getFirstAsync<unknown>(
-        `SELECT id, schema_version, title, created_at, source_type, score_json, feedback_json
+        `SELECT id, schema_version, title, created_at, source_type, score_json, feedback_json, ai_status
          FROM reports WHERE id = ?`,
         parsedId.data,
       );

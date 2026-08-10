@@ -24,7 +24,7 @@ it('keeps the fourth saved report and PDF export behind Resume.AI Pro', async ()
     },
     analysis: { state: { result: validFixture }, commands: { reset: jest.fn() } } as any,
     history: {
-      status: 'ready', reports, error: null, load: jest.fn(),
+      status: 'ready', reports, reportCount: 3, error: null, load: jest.fn(),
       get: jest.fn(async () => validFixture), saveCurrent: jest.fn(),
       delete: jest.fn(), deleteAll: jest.fn(),
     } as any,

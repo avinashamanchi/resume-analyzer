@@ -10,6 +10,20 @@ private func orderedIndices(
   ResumeVisionReadingOrder.ordered(observations).map(\.originalIndex)
 }
 
+require(
+  ResumeVisionEmbeddedText.usable("Experience\nBuilt private software") ==
+    "Experience\nBuilt private software",
+  "Selectable PDF text must bypass image rendering without being rewritten."
+)
+require(
+  ResumeVisionEmbeddedText.usable(" \n\t ") == nil,
+  "Whitespace-only PDF text must fall back to Vision."
+)
+require(
+  ResumeVisionEmbeddedText.usable("private\0text") == nil,
+  "NUL-bearing PDF text must never cross the native boundary."
+)
+
 let adjacentLines = [
   ResumeVisionObservationGeometry(
     originalIndex: 0,

@@ -45,13 +45,13 @@ export function ConsentSheet({
               showsVerticalScrollIndicator>
               <Text accessibilityRole="header" style={styles.title}>Before Resume.AI analyzes</Text>
               <Text style={uiStyles.body}>
-                Resume.AI sends your selected resume content and optional job description to its server. Extracted or pasted text is then sent to Groq to create feedback.
+                Only text you review or paste, plus an optional job description, is sent to Resume.AI’s server. The server creates the structured score and, when requested, sends that text to Groq for optional feedback.
               </Text>
               <Text style={uiStyles.muted}>
-                The selected PDF is uploaded and processed before temporary cleanup runs. After the request ends, Resume.AI verifies removal of its app-owned temporary PDF.
+                The selected PDF stays on this device and is never uploaded. PDFKit reads selectable text first; Apple Vision handles scanned pages. You must review the extracted text before analysis.
               </Text>
               <Text style={uiStyles.muted}>
-                If cleanup cannot be verified, Resume.AI does not show the analysis as successful and blocks future analysis until cleanup succeeds. Cleanup cannot undo processing already completed by the Resume.AI server or Groq.
+                If local PDF cleanup cannot be verified, Resume.AI does not expose the extracted draft and blocks future analysis until cleanup succeeds. The deterministic score may still appear when optional AI feedback is unavailable.
               </Text>
               <Text style={uiStyles.muted}>
                 Reports use Resume.AI’s local SQLite store only when you choose Save locally. Saved reports may be included in iPhone or iPad backups stored in iCloud or on a Mac or PC. iCloud backups are always encrypted, but iCloud Backup is end-to-end encrypted only when Advanced Data Protection is enabled. Computer backups are not encrypted by default; encryption depends on the user enabling Encrypt local backup. Restoring an existing backup may restore reports deleted from the active app.

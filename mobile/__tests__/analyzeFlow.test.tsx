@@ -128,9 +128,10 @@ describe('native Analyze and Results flows', () => {
     const dialog = view.getByTestId('consent-dialog');
     expect(dialog.props.accessibilityRole).toBe('dialog');
     expect(dialog.props.accessibilityViewIsModal).toBe(true);
-    expect(view.getByText(/The selected PDF is uploaded and processed before temporary cleanup runs/i)).toBeTruthy();
-    expect(view.getByText(/does not show the analysis as successful and blocks future analysis/i)).toBeTruthy();
-    expect(view.getByText(/Cleanup cannot undo processing already completed by the Resume\.AI server or Groq/i)).toBeTruthy();
+    expect(view.getByText(/The selected PDF stays on this device and is never uploaded/i)).toBeTruthy();
+    expect(view.getByText(/Only text you review or paste/i)).toBeTruthy();
+    expect(view.getByText(/If local PDF cleanup cannot be verified.*does not expose the extracted draft/i)).toBeTruthy();
+    expect(view.queryByText(/selected PDF is uploaded/i)).toBeNull();
     expect(view.getByText(/Computer backups are not encrypted by default.*Encrypt local backup/i)).toBeTruthy();
     expect(view.getByText(/Restoring an existing backup may restore reports deleted from the active app/i)).toBeTruthy();
     expect(view.queryByText(/cleanup.*blocks processing if it cannot complete/i)).toBeNull();
@@ -197,6 +198,28 @@ describe('native Analyze and Results flows', () => {
     expect(values.analysis.commands.analyze).not.toHaveBeenCalled();
     expect(view.getByLabelText('Paste resume text')).toBeTruthy();
     await view.unmount();
+  });
+
+  it('requires local PDF extraction and review before exposing Analyze', async () => {
+    const values = harness({
+      analysis: {
+        ...harness().analysis,
+        state: {
+          ...readyState,
+          source: pdfSource(Symbol('selected-pdf')),
+        },
+      },
+    });
+    values.analysis.commands.isVisionAvailable.mockReturnValue(true);
+
+    const view = await render(
+      <AppControllerProvider value={values}><AnalyzeScreen /></AppControllerProvider>,
+    );
+
+    expect(view.getByRole('button', { name: 'Extract on this iPhone' })).toBeTruthy();
+    expect(view.queryByRole('button', { name: 'Analyze resume' })).toBeNull();
+    expect(view.getByText(/Only the reviewed text will be sent/i)).toBeTruthy();
+    expect(values.analysis.commands.analyze).not.toHaveBeenCalled();
   });
 
   it('requires editable explicit OCR review and never submits from extraction or Review complete', async () => {
@@ -892,5 +915,32 @@ describe('native Analyze and Results flows', () => {
     expect(values.history.saveCurrent).not.toHaveBeenCalled();
     await act(async () => { fireEvent.press(view.getByRole('button', { name: 'Save locally' })); });
     await waitFor(() => expect(values.history.saveCurrent).toHaveBeenCalledTimes(1));
+  });
+
+  it('keeps the deterministic score visible when optional AI feedback degrades', async () => {
+    const degraded = {
+      schemaVersion: 2 as const,
+      analysisId: validFixture.analysisId,
+      sourceType: 'reviewed_text' as const,
+      score: validFixture.score,
+      aiStatus: 'temporarily_unavailable' as const,
+      feedback: null,
+      allowance: { used: 1, limit: 3 as const, resetsAt: '2099-09-01T00:00:00Z' },
+    };
+    const values = harness();
+    values.history.get.mockResolvedValueOnce(degraded);
+
+    const view = await render(
+      <AppControllerProvider value={values}><ResultsScreen /></AppControllerProvider>,
+    );
+
+    await waitFor(() => expect(view.getByLabelText('Resume readiness score')).toBeTruthy());
+    expect(view.getByText('AI feedback is temporarily unavailable.')).toBeTruthy();
+    expect(view.queryByText('Report not found.')).toBeNull();
+    expect(view.getByRole('button', { name: 'Save locally' })).toBeTruthy();
+    await act(async () => {
+      fireEvent.press(view.getByRole('button', { name: 'Save locally' }));
+    });
+    expect(values.history.saveCurrent).toHaveBeenCalledTimes(1);
   });
 });

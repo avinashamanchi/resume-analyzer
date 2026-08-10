@@ -65,7 +65,7 @@ describe('native History flow', () => {
     } as any;
     const view = await render(<AppControllerProvider value={{ actions, analysis, history }}><HistoryScreen /></AppControllerProvider>);
 
-    await act(async () => { fireEvent.press(view.getByRole('button', { name: 'Delete Resume analysis 20' })); });
+    await act(async () => { fireEvent.press(view.getByRole('button', { name: 'Delete Resume analysis 10' })); });
     const modal = view.getByTestId('delete-report-modal');
     expect(modal.props.accessibilityViewIsModal).toBe(true);
     expect(view.getByRole('button', { name: 'Keep report' })).toBeTruthy();
@@ -76,13 +76,53 @@ describe('native History flow', () => {
     expect(announce).toHaveBeenCalledTimes(1);
     expect(announce).toHaveBeenCalledWith('The local report was not deleted. Try again.');
     expect(view.getByTestId('delete-report-modal')).toBeTruthy();
-    expect(view.getByText('Resume analysis 20')).toBeTruthy();
+    expect(view.getByText('Resume analysis 10')).toBeTruthy();
 
     await act(async () => { fireEvent.press(view.getByRole('button', { name: 'Delete report' })); });
     await waitFor(() => expect(view.queryByTestId('delete-report-modal')).toBeNull());
-    expect(history.delete).toHaveBeenNthCalledWith(1, reports[19].id);
-    expect(history.delete).toHaveBeenNthCalledWith(2, reports[19].id);
+    expect(history.delete).toHaveBeenNthCalledWith(1, reports[9].id);
+    expect(history.delete).toHaveBeenNthCalledWith(2, reports[9].id);
     expect(announce).toHaveBeenCalledTimes(1);
+  });
+
+  it('uses a virtualized page and exposes bounded older/newest navigation', async () => {
+    const report = {
+      ...validFixture,
+      id: validFixture.analysisId,
+      title: 'Resume analysis',
+      createdAt: '2026-08-05T19:20:30.000Z',
+    };
+    const history = {
+      status: 'ready',
+      reports: [report],
+      reportCount: 100,
+      hasMore: true,
+      hasNewer: true,
+      loadingMore: false,
+      error: null,
+      load: jest.fn(),
+      loadMore: jest.fn(async () => undefined),
+      returnToNewest: jest.fn(async () => undefined),
+      get: jest.fn(),
+      saveCurrent: jest.fn(),
+      delete: jest.fn(),
+      deleteAll: jest.fn(),
+    } as any;
+    const view = render(
+      <AppControllerProvider value={{ actions, analysis, history }}>
+        <HistoryScreen />
+      </AppControllerProvider>,
+    );
+
+    const list = view.getByTestId('report-list');
+    expect(list.props.data).toHaveLength(1);
+    expect(list.props.windowSize).toBe(7);
+    await act(async () => { fireEvent(list, 'endReached'); });
+    expect(history.loadMore).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      fireEvent.press(view.getByRole('button', { name: 'Return to newest reports' }));
+    });
+    expect(history.returnToNewest).toHaveBeenCalledTimes(1);
   });
 
   it('announces one safe failure when deletion rejects and keeps the modal recoverable', async () => {

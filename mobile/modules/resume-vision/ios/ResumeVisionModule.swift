@@ -328,6 +328,12 @@ public final class ResumeVisionModule: Module {
     deadline: ResumeVisionSoftDeadline
   ) throws -> String {
     try check(operation, deadline)
+    let embeddedText = page.string
+    try check(operation, deadline)
+    if let embeddedText = ResumeVisionEmbeddedText.usable(embeddedText) {
+      return embeddedText
+    }
+
     let bounds = page.bounds(for: .mediaBox)
     try check(operation, deadline)
     guard bounds.width.isFinite,

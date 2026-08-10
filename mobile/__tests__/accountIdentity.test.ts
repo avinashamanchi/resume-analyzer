@@ -15,7 +15,7 @@ import {
 
 
 const identity: AccountIdentity = {
-  accountToken: 'signed-account-token',
+  accountToken: 'eyJ2ZXJzaW9uIjoxfQ.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
   expiresAt: '2026-08-10T03:00:00Z',
   revenueCatAppUserId: `rai_account_${'a'.repeat(43)}`,
 };
@@ -54,6 +54,7 @@ it('rejects extra, invalid, or already-expired session fields before writing', a
 
   await expect(store.set({ ...identity, expiresAt: '2026-08-10T01:00:00Z' })).rejects.toThrow();
   await expect(store.set({ ...identity, revenueCatAppUserId: 'attacker-chosen-id' })).rejects.toThrow();
+  await expect(store.set({ ...identity, accountToken: 'signed\r\nX-Injected: true' })).rejects.toThrow();
   await expect(store.set({ ...identity, email: 'private@example.test' } as AccountIdentity)).rejects.toThrow();
   expect(SecureStore.setItemAsync).not.toHaveBeenCalled();
 });

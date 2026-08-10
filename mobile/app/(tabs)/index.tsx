@@ -190,7 +190,12 @@ export default function AnalyzeScreen() {
   };
 
   const extractOnDevice = async () => {
-    if (busy || state.mutation !== 'none' || state.status !== 'failed') return;
+    if (
+      busy ||
+      state.mutation !== 'none' ||
+      state.source?.kind !== 'pdf' ||
+      (state.status !== 'ready' && state.status !== 'failed')
+    ) return;
     const epoch = beginOperation();
     setBusy(true);
     setVisionPending(true);
@@ -301,7 +306,14 @@ export default function AnalyzeScreen() {
   const working = (busy && !pickerPending) || state.mutation !== 'none';
   const scanRequired = state.status === 'failed' &&
     state.error?.code === 'scan_required';
-  const visionAvailable = scanRequired &&
+  const localReviewRequired = state.source?.kind === 'pdf' &&
+    (
+      state.status === 'ready' ||
+      (state.status === 'failed' && state.error?.code === 'local_review_required') ||
+      scanRequired
+    );
+  const reviewBlocked = scanRequired || localReviewRequired;
+  const visionAvailable = localReviewRequired &&
     state.source?.kind === 'pdf' &&
     commands.isVisionAvailable();
   const reviewedVision = reviewedVisionReady || state.source?.kind === 'vision_text';
@@ -369,13 +381,13 @@ export default function AnalyzeScreen() {
           </Card>
         )}
 
-        {scanRequired && visionDraft === null && !reviewedVision && !visionPending ? (
+        {reviewBlocked && visionDraft === null && !reviewedVision && !visionPending ? (
           <Card style={styles.scanCard}>
-            <Text style={uiStyles.sectionTitle}>This PDF appears to be scanned</Text>
+            <Text style={uiStyles.sectionTitle}>Review this PDF on this iPhone</Text>
             {visionAvailable ? (
               <>
                 <Text style={uiStyles.body}>
-                  A Resume.AI development build can use Apple Vision on this iPhone. You must review the extracted text before analysis.
+                  PDFKit reads selectable text first and Apple Vision handles scanned pages. Only the reviewed text will be sent for analysis.
                 </Text>
                 <AppButton
                   label="Extract on this iPhone"
@@ -386,7 +398,7 @@ export default function AnalyzeScreen() {
               </>
             ) : (
               <Text style={uiStyles.body}>
-                On-device Apple Vision extraction requires a Resume.AI development build and {"isn't"} available in Expo Go. Paste the resume text instead.
+                On-device PDFKit and Apple Vision extraction requires a Resume.AI development build and {"isn't"} available in Expo Go. Paste the resume text instead; only reviewed text is sent.
               </Text>
             )}
             <AppButton
@@ -462,7 +474,7 @@ export default function AnalyzeScreen() {
         </Card>
 
         {localError !== null ? <Text accessibilityRole="alert" style={styles.error}>{localError}</Text> : null}
-        {!scanRequired ? (
+        {!reviewBlocked ? (
           <AnalysisStatus
             state={state}
             onCancel={() => { void commands.cancel(); }}
@@ -470,7 +482,7 @@ export default function AnalyzeScreen() {
             onRecoverPrivacy={() => { void commands.recoverPrivacyCleanup(); }}
           />
         ) : null}
-        {state.status !== 'analyzing' && (!scanRequired || reviewedVision) && visionDraft === null ? (
+        {state.status !== 'analyzing' && !reviewBlocked && visionDraft === null ? (
           <AppButton
             label="Analyze resume"
             onPress={() => { void analyze(); }}

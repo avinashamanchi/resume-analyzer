@@ -13,8 +13,12 @@ import { useBilling } from '../../src/billing/BillingProvider';
 import { FeedbackSections } from '../../src/components/FeedbackSections';
 import { AppButton, Card, Eyebrow, Screen, Title, uiStyles } from '../../src/components/primitives';
 import { ScoreCard } from '../../src/components/ScoreCard';
-import { useAppController, type DisplayReport } from '../../src/controllers/AppController';
-import { AnalysisResponseSchema, type AnalysisResponse } from '../../src/domain/contracts';
+import {
+  useAppController,
+  type AnalysisPresentation,
+  type DisplayReport,
+} from '../../src/controllers/AppController';
+import { AnalysisResultSchema } from '../../src/domain/contracts';
 import {
   ReportExportError,
   reportExporter,
@@ -27,8 +31,8 @@ import {
 import { tokens } from '../../src/theme/tokens';
 
 type LoadedReport = Readonly<{
-  result: AnalysisResponse;
-  exportRecord: ReportRecord;
+  result: AnalysisPresentation;
+  exportRecord: ReportRecord | null;
 }>;
 
 type ReceiptNotice = Readonly<{ sequence: number; routeEpoch: number; message: string }>;
@@ -50,27 +54,32 @@ type DeleteAuthority = Readonly<{
   lifecycle: AbortController;
 }>;
 
-function analysisFromDisplay(value: DisplayReport): AnalysisResponse | null {
-  const direct = AnalysisResponseSchema.safeParse(value);
-  if (direct.success) return direct.data;
-  if ('id' in value) {
-    const stored = AnalysisResponseSchema.safeParse({
-      schemaVersion: 1,
-      analysisId: value.id,
-      sourceType: value.sourceType,
-      score: value.score,
-      feedback: value.feedback,
-    });
-    return stored.success ? stored.data : null;
-  }
-  return null;
-}
-
 function loadedFromDisplay(value: DisplayReport): LoadedReport | null {
-  const result = analysisFromDisplay(value);
-  if (result === null) return null;
   const stored = ReportRecordSchema.safeParse(value);
-  if (stored.success) return { result, exportRecord: stored.data };
+  if (stored.success) {
+    const result: AnalysisPresentation = {
+      analysisId: stored.data.id,
+      sourceType: stored.data.sourceType,
+      score: stored.data.score,
+      feedback: stored.data.feedback,
+      aiStatus: stored.data.aiStatus,
+    };
+    return {
+      result,
+      exportRecord: stored.data.feedback === null ? null : stored.data,
+    };
+  }
+  const direct = AnalysisResultSchema.safeParse(value);
+  if (!direct.success) return null;
+  const result: AnalysisPresentation = {
+    analysisId: direct.data.analysisId,
+    sourceType: direct.data.sourceType,
+    score: direct.data.score,
+    feedback: direct.data.feedback,
+    aiStatus: direct.data.schemaVersion === 1
+      ? 'legacy_feedback_present'
+      : direct.data.aiStatus,
+  };
   const exportRecord = ReportRecordSchema.safeParse({
     id: result.analysisId,
     title: 'Resume analysis',
@@ -78,9 +87,14 @@ function loadedFromDisplay(value: DisplayReport): LoadedReport | null {
     sourceType: result.sourceType,
     score: result.score,
     feedback: result.feedback,
+    aiStatus: result.aiStatus,
   });
-  if (!exportRecord.success) return null;
-  return { result, exportRecord: exportRecord.data };
+  return {
+    result,
+    exportRecord: exportRecord.success && exportRecord.data.feedback !== null
+      ? exportRecord.data
+      : null,
+  };
 }
 
 function focusNode(value: View | Text | null): void {
@@ -178,7 +192,7 @@ function ResultsScreenContent({
       routeEpoch !== epoch ||
       currentReportRef.current !== report ||
       report.result.analysisId !== analysisId ||
-      report.exportRecord.id !== analysisId ||
+      (kind === 'pdf' && report.exportRecord?.id !== analysisId) ||
       shareAuthority.current !== null ||
       deleteAuthority.current !== null
     ) return null;
@@ -226,7 +240,6 @@ function ResultsScreenContent({
       routeEpoch !== epoch ||
       currentReportRef.current !== report ||
       report.result.analysisId !== analysisId ||
-      report.exportRecord.id !== analysisId ||
       shareAuthority.current !== null ||
       deleteAuthority.current !== null
     ) return null;
@@ -319,12 +332,12 @@ function ResultsScreenContent({
   const { result, exportRecord } = currentReport;
 
   const save = async () => {
-    if (!entitlementActive && !saved && history.reports.length >= 3) {
+    if (!entitlementActive && !saved && history.reportCount !== null && history.reportCount >= 3) {
       publishReceipt('Free includes up to 3 saved reports. Resume.AI Pro unlocks unlimited local history.');
       onUpgrade();
       return;
     }
-    const savedReport = await history.saveCurrent();
+    const savedReport = await history.saveCurrent(entitlementActive ? 10_000 : 3);
     if (mounted.current) {
       publishReceipt(savedReport === null
         ? 'The report could not be saved locally.'
@@ -346,6 +359,10 @@ function ResultsScreenContent({
   };
 
   const sharePdf = async () => {
+    if (exportRecord === null) {
+      publishReceipt('A verified feedback report is required before PDF export.');
+      return;
+    }
     if (!entitlementActive) {
       publishReceipt('PDF report export is included with Resume.AI Pro.');
       onUpgrade();
@@ -424,12 +441,14 @@ function ResultsScreenContent({
       <Card>
         <Text style={uiStyles.sectionTitle}>Keep or share</Text>
         <Text style={uiStyles.muted}>Nothing saves automatically. Raw/original PDF bytes, filenames, resume-input fields, job-description-input fields, installation tokens, and request identifiers are not stored in local reports. Generated feedback and bullet drafts may quote, transform, or restate names, contact information, resume content, or job-description content. Review generated feedback before saving, sharing, or allowing it to enter device backups. A temporary PDF is removed when the share sheet closes or fails.</Text>
-        <AppButton
-          label={saved ? 'Saved locally' : 'Save locally'}
-          accessibilityHint={saved ? 'This report is already in the local report store.' : 'Saves this bounded report in the local report store.'}
-          onPress={() => { void save(); }}
-          disabled={saved || sharing || deleting}
-        />
+        {!saved ? (
+          <AppButton
+            label="Save locally"
+            accessibilityHint="Saves this bounded report in the local report store."
+            onPress={() => { void save(); }}
+            disabled={sharing || deleting}
+          />
+        ) : null}
         <AppButton
           label="Share text summary"
           accessibilityHint="Opens the system share sheet with a bounded text summary."
@@ -437,18 +456,20 @@ function ResultsScreenContent({
           disabled={sharing || deleting}
           tone="secondary"
         />
-        <AppButton
-          label={entitlementActive
-            ? (preparingPdf ? 'Preparing PDF report…' : 'Share PDF report')
-            : 'Unlock PDF report'}
-          accessibilityLabel={entitlementActive ? 'Share report' : 'Unlock PDF report'}
-          accessibilityHint={entitlementActive
-            ? 'Creates a PDF report, opens the system share sheet, then removes the temporary file.'
-            : 'Opens Resume.AI plan options. PDF exports are included with Pro.'}
-          onPress={() => { void sharePdf(); }}
-          disabled={sharing || deleting}
-          tone="secondary"
-        />
+        {exportRecord !== null ? (
+          <AppButton
+            label={entitlementActive
+              ? (preparingPdf ? 'Preparing PDF report…' : 'Share PDF report')
+              : 'Unlock PDF report'}
+            accessibilityLabel={entitlementActive ? 'Share report' : 'Unlock PDF report'}
+            accessibilityHint={entitlementActive
+              ? 'Creates a PDF report, opens the system share sheet, then removes the temporary file.'
+              : 'Opens Resume.AI plan options. PDF exports are included with Pro.'}
+            onPress={() => { void sharePdf(); }}
+            disabled={sharing || deleting}
+            tone="secondary"
+          />
+        ) : null}
         <AppButton
           label="New analysis"
           accessibilityHint="Clears the current analysis and returns to Analyze."

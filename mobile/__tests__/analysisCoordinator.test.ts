@@ -227,6 +227,7 @@ function harness(overrides: Partial<AnalysisCoordinatorOptions> = {}) {
     tempFiles,
     pdfOwnership: ownership,
     cleanupTimeoutMs: 50,
+    requireLocalPdfReview: false,
     ...overrides,
   });
   return {
@@ -2610,9 +2611,10 @@ describe('analysis generations and cancellation', () => {
 
     expect(api.analyze).toHaveBeenCalledTimes(2);
     expect(api.analyze.mock.calls[1][0]).toEqual({
-      source: { kind: 'vision_text', text: 'Corrected reviewed resume text' },
+      source: { kind: 'reviewed_text', text: 'Corrected reviewed resume text' },
       jobDescription: undefined,
       consentVersion: CONSENT_VERSION,
+      aiRequested: true,
     });
     const apiSource = (api.analyze.mock.calls[1][0] as {
       source: Record<string, unknown>;
@@ -2714,7 +2716,7 @@ describe('analysis generations and cancellation', () => {
     await coordinator.commands.analyze();
 
     expect(api.analyze.mock.calls[0][0]).toMatchObject({
-      source: { kind: 'text', text: 'original private draft' },
+      source: { kind: 'reviewed_text', text: 'original private draft' },
     });
     expect(coordinator.getState().source).toMatchObject({ text: 'original private draft' });
   });
@@ -2889,6 +2891,24 @@ describe('review fixes: registry lease epochs', () => {
 });
 
 describe('PDF terminal cleanup', () => {
+  it('blocks native PDF upload and allows local extraction before any network call', async () => {
+    const { api, coordinator } = harness({
+      requireLocalPdfReview: true,
+      vision: {
+        isAvailable: () => true,
+        extractReviewedText: jest.fn(async () => visionSource(false)),
+        cancelExtraction: jest.fn(async () => undefined),
+      },
+    } as never);
+    await coordinator.initialize();
+    await coordinator.commands.selectSource(pdfSource());
+
+    await expect(coordinator.commands.extractVisionDraft()).resolves.toMatchObject({
+      completed: true,
+    });
+    expect(api.analyze).not.toHaveBeenCalled();
+  });
+
   it('translates only the generated owned URI, actual size, fixed MIME, and generic filename', async () => {
     const { api, coordinator } = harness();
     await coordinator.initialize();

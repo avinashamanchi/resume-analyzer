@@ -10,7 +10,7 @@ export default function HistoryScreen() {
   const router = useRouter();
   const { history } = useAppController();
   return (
-    <Screen bottomInset="tab-bar">
+    <Screen bottomInset="tab-bar" scroll={false}>
       <View>
         <Eyebrow>On this device</Eyebrow>
         <Title>Saved reports.</Title>
@@ -40,6 +40,11 @@ export default function HistoryScreen() {
           reports={history.reports}
           onOpen={id => router.push(`/results/${id}`)}
           onDelete={id => history.delete(id)}
+          hasMore={history.hasMore}
+          hasNewer={history.hasNewer}
+          loadingMore={history.loadingMore}
+          onLoadMore={history.loadMore}
+          onReturnToNewest={history.returnToNewest}
         />
       )}
     </Screen>

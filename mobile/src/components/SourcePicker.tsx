@@ -40,7 +40,7 @@ export function SourcePicker({
       </View>
       {mode === 'pdf' ? (
         <>
-          <Text style={uiStyles.muted}>Choose a text-based PDF up to 10 MB. It is staged only for this request.</Text>
+          <Text style={uiStyles.muted}>Choose a PDF up to 10 MB. It stays on this device while you extract, edit, and approve its text.</Text>
           <AppButton
             label={displayName === null ? 'Choose resume PDF' : 'Choose another PDF'}
             accessibilityLabel="Choose resume PDF"

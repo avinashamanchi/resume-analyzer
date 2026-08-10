@@ -5,7 +5,7 @@ import type { AccountIdentity } from '../src/security/accountIdentity';
 const INSTALLATION_TOKEN = 'signed-installation-token';
 const INSTALLATION_APP_USER_ID = `rai_installation_${'i'.repeat(43)}`;
 const ACCOUNT_APP_USER_ID = `rai_account_${'a'.repeat(43)}`;
-const ACCOUNT_TOKEN = 'signed-account-token';
+const ACCOUNT_TOKEN = 'eyJ2ZXJzaW9uIjoxfQ.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA';
 
 const freePlan = {
   schemaVersion: 2,

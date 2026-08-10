@@ -1,4 +1,4 @@
-import type { AnalysisResponse } from '../domain/contracts';
+import type { AnalysisResult } from '../domain/contracts';
 import type { StableErrorCategory } from '../domain/errors';
 import type { ResumeSource } from '../documents/documentSource';
 
@@ -37,7 +37,7 @@ export type AnalysisState = Readonly<{
   privacyReadiness: 'checking' | 'ready' | 'blocked';
   source: ResumeSource | null;
   jobDescription: string;
-  result: AnalysisResponse | null;
+  result: AnalysisResult | null;
   error: PublicAnalysisError | null;
   generation: number;
   activation: number | null;
@@ -83,7 +83,7 @@ export type AnalysisEvent =
       type: 'analysisSucceeded';
       generation: number;
       activation: number;
-      result: AnalysisResponse;
+      result: AnalysisResult;
       consumeSource: boolean;
     }>
   | Readonly<{

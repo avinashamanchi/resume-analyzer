@@ -197,17 +197,56 @@ export const AnalysisResponseV2Schema = z
   })
   .strict();
 
+export const NormalizedAnalysisResponseV2Schema = z
+  .object({
+    schemaVersion: z.literal(2),
+    analysisId: z.string().regex(UUID),
+    sourceType: z.enum(['reviewed_text', 'pdf']),
+    score: ScoreSchema,
+    aiStatus: z.enum([
+      'complete',
+      'not_requested',
+      'quota_exhausted',
+      'plan_verification_unavailable',
+      'temporarily_unavailable',
+      'timeout',
+      'invalid_provider_response',
+    ]),
+    feedback: FeedbackSchema.nullable(),
+    allowance: AiAllowanceSchema.nullable(),
+  })
+  .strict()
+  .superRefine((value, context) => {
+    if (value.aiStatus === 'complete') {
+      if (value.feedback === null || value.allowance === null) {
+        context.addIssue({ code: 'custom', message: 'complete AI result is incomplete' });
+      }
+    } else if (value.feedback !== null) {
+      context.addIssue({ code: 'custom', message: 'degraded AI result contains feedback' });
+    }
+    if (value.aiStatus === 'not_requested' && value.allowance !== null) {
+      context.addIssue({ code: 'custom', message: 'unrequested AI result contains allowance' });
+    }
+  });
+
+export const AnalysisResultSchema = z.union([
+  AnalysisResponseSchema,
+  NormalizedAnalysisResponseV2Schema,
+]);
+
+export const InstallationTokenSchema = codePointText(1, 2_048).regex(/^[\u0021-\u007e]+$/);
+
 export const InstallationResponseSchema = z
   .object({
     schemaVersion: z.literal(1),
-    installationToken: codePointText(1, 2048),
+    installationToken: InstallationTokenSchema,
   })
   .strict();
 
 export const InstallationResponseV2Schema = z
   .object({
     schemaVersion: z.literal(2),
-    installationToken: codePointText(1, 2_048),
+    installationToken: InstallationTokenSchema,
     revenueCatAppUserId: z.string().regex(/^rai_installation_[A-Za-z0-9_-]{43}$/),
   })
   .strict();
@@ -226,6 +265,8 @@ const AnalysisRequestContextSchema = z.object({ hasJobDescription: z.boolean() }
 
 export type AnalysisResponse = z.infer<typeof AnalysisResponseSchema>;
 export type AnalysisResponseV2 = z.infer<typeof AnalysisResponseV2Schema>;
+export type NormalizedAnalysisResponseV2 = z.infer<typeof NormalizedAnalysisResponseV2Schema>;
+export type AnalysisResult = z.infer<typeof AnalysisResultSchema>;
 export type InstallationResponse = z.infer<typeof InstallationResponseSchema>;
 export type InstallationResponseV2 = z.infer<typeof InstallationResponseV2Schema>;
 export type PublicError = z.infer<typeof PublicErrorSchema>;
@@ -248,4 +289,31 @@ export function parseAnalysisResponse(
     ]);
   }
   return response;
+}
+
+export function parseAnalysisResponseV2(
+  value: unknown,
+  context: AnalysisRequestContext,
+): NormalizedAnalysisResponseV2 {
+  const parsedContext = AnalysisRequestContextSchema.parse(context);
+  const response = AnalysisResponseV2Schema.parse(value);
+  const keywordsAreNull = response.score.components.keywords === null;
+  if (keywordsAreNull === parsedContext.hasJobDescription) {
+    throw new z.ZodError([
+      {
+        code: 'custom',
+        message: 'job-description keyword component mismatch',
+        path: ['score', 'components', 'keywords'],
+      },
+    ]);
+  }
+  return NormalizedAnalysisResponseV2Schema.parse({
+    schemaVersion: 2,
+    analysisId: response.analysisId,
+    sourceType: response.sourceType,
+    score: response.score,
+    aiStatus: response.ai.status,
+    feedback: response.ai.feedback,
+    allowance: response.ai.allowance,
+  });
 }

@@ -20,6 +20,10 @@ function component(label: string, value: number, maximum: number): string {
 }
 
 export function buildReportHtml(report: ReportRecord): string {
+  if (report.feedback === null) {
+    throw new TypeError('A feedback report is required for PDF export.');
+  }
+  const feedback = report.feedback;
   const presentation = scorePresentation(report.score.components);
   const hasKeywords = presentation.hasJobDescription;
   const componentRows = presentation.components.map(value =>
@@ -73,13 +77,13 @@ export function buildReportHtml(report: ReportRecord): string {
       <h2 id="method-heading">Score methodology</h2>
       <p>${methodology} AI feedback cannot alter this score or its components.</p>
     </section>
-    <section aria-labelledby="summary-heading"><h2 id="summary-heading">Editorial summary</h2><p>${escapeReportHtml(report.feedback.summary)}</p></section>
-    <section aria-labelledby="matched-heading"><h2 id="matched-heading">Matched keywords</h2>${list(report.feedback.matchedKeywords, hasKeywords ? 'No matched terms were identified.' : 'Not scored because no job description was supplied.')}</section>
-    <section aria-labelledby="missing-heading"><h2 id="missing-heading">Missing keywords</h2>${list(report.feedback.missingKeywords, hasKeywords ? 'No missing terms were identified.' : 'Not scored because no job description was supplied.')}</section>
-    <section aria-labelledby="strengths-heading"><h2 id="strengths-heading">Strengths</h2>${list(report.feedback.strengths, 'No strengths were returned.')}</section>
-    <section aria-labelledby="improvements-heading"><h2 id="improvements-heading">Improvements</h2>${list(report.feedback.improvements, 'No improvements were returned.')}</section>
-    <section aria-labelledby="bullets-heading"><h2 id="bullets-heading">Power bullet drafts</h2>${list(report.feedback.powerBullets, 'No bullet drafts were returned.')}</section>
-    <section aria-labelledby="simulated-heading"><h2 id="simulated-heading">Simulated AI feedback</h2><p>${escapeReportHtml(report.feedback.simulatedRecruiterComment)}</p></section>
+    <section aria-labelledby="summary-heading"><h2 id="summary-heading">Editorial summary</h2><p>${escapeReportHtml(feedback.summary)}</p></section>
+    <section aria-labelledby="matched-heading"><h2 id="matched-heading">Matched keywords</h2>${list(feedback.matchedKeywords, hasKeywords ? 'No matched terms were identified.' : 'Not scored because no job description was supplied.')}</section>
+    <section aria-labelledby="missing-heading"><h2 id="missing-heading">Missing keywords</h2>${list(feedback.missingKeywords, hasKeywords ? 'No missing terms were identified.' : 'Not scored because no job description was supplied.')}</section>
+    <section aria-labelledby="strengths-heading"><h2 id="strengths-heading">Strengths</h2>${list(feedback.strengths, 'No strengths were returned.')}</section>
+    <section aria-labelledby="improvements-heading"><h2 id="improvements-heading">Improvements</h2>${list(feedback.improvements, 'No improvements were returned.')}</section>
+    <section aria-labelledby="bullets-heading"><h2 id="bullets-heading">Power bullet drafts</h2>${list(feedback.powerBullets, 'No bullet drafts were returned.')}</section>
+    <section aria-labelledby="simulated-heading"><h2 id="simulated-heading">Simulated AI feedback</h2><p>${escapeReportHtml(feedback.simulatedRecruiterComment)}</p></section>
     <section class="disclaimer" aria-labelledby="limits-heading">
       <h2 id="limits-heading">Important limitations</h2>
       <p>AI-generated guidance may be incorrect. This report is coaching guidance, not an ATS result, employer decision, hiring prediction, or guarantee of interviews or employment.</p>

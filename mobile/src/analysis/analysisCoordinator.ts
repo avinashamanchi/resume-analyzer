@@ -1,6 +1,6 @@
 import type { AnalyzeRequest } from '../api/resumeApi';
 import { CONSENT_VERSION } from '../domain/consent';
-import type { AnalysisResponse } from '../domain/contracts';
+import type { AnalysisResult } from '../domain/contracts';
 import { ResumeApiError } from '../domain/errors';
 import {
   codePointLength,
@@ -22,7 +22,7 @@ import {
 } from './analysisReducer';
 
 export type AnalysisApiPort = Readonly<{
-  analyze(request: AnalyzeRequest, signal: AbortSignal): Promise<AnalysisResponse>;
+  analyze(request: AnalyzeRequest, signal: AbortSignal): Promise<AnalysisResult>;
 }>;
 
 export type AnalysisConsentStorePort = Readonly<{
@@ -74,6 +74,7 @@ export type AnalysisCoordinatorOptions = Readonly<{
   pdfOwnership: PdfOwnershipPort;
   vision?: VisionExtractionPort;
   cleanupTimeoutMs?: number;
+  requireLocalPdfReview?: boolean;
 }>;
 
 export type AnalysisCommands = Readonly<{
@@ -334,6 +335,7 @@ export class AnalysisCoordinator {
   private readonly pdfOwnership: PdfOwnershipPort;
   private readonly vision: VisionExtractionPort;
   private readonly cleanupTimeoutMs: number;
+  private readonly requireLocalPdfReview: boolean;
   private generation = 0;
   private sourceRevision = 0;
   private lifecycleEpoch = 0;
@@ -426,6 +428,7 @@ export class AnalysisCoordinator {
     this.pdfOwnership = options.pdfOwnership;
     this.vision = options.vision ?? NO_VISION;
     this.cleanupTimeoutMs = options.cleanupTimeoutMs ?? 2_000;
+    this.requireLocalPdfReview = options.requireLocalPdfReview ?? true;
     if (
       !Number.isSafeInteger(this.cleanupTimeoutMs) ||
       this.cleanupTimeoutMs <= 0 ||
@@ -1205,12 +1208,17 @@ export class AnalysisCoordinator {
     this.revokeVisionDraftAuthorities();
     const source = this.state.source;
     const claim = this.committedPdfClaim;
+    const localReviewReady = this.requireLocalPdfReview && this.state.status === 'ready';
+    const localReviewFailure = this.state.status === 'failed' &&
+      (
+        this.state.error?.code === 'scan_required' ||
+        this.state.error?.code === 'local_review_required'
+      );
     if (
       !this.mounted ||
       !this.isVisionAvailable() ||
       this.state.privacyReadiness !== 'ready' ||
-      this.state.status !== 'failed' ||
-      this.state.error?.code !== 'scan_required' ||
+      (!localReviewReady && !localReviewFailure) ||
       this.state.mutation !== 'none' ||
       source?.kind !== 'pdf' ||
       claim === null ||
@@ -1379,6 +1387,15 @@ export class AnalysisCoordinator {
       });
       return Promise.resolve();
     }
+    if (this.requireLocalPdfReview && this.state.source.kind === 'pdf') {
+      this.dispatch({
+        type: 'analysisFailed',
+        generation: this.generation,
+        error: validationError('local_review_required'),
+        consumeSource: false,
+      });
+      return Promise.resolve();
+    }
     const activation = this.newActivation(this.state.source, 'consentRead');
     activation.promise = this.checkConsentAndAnalyze(activation);
     return activation.promise;
@@ -1521,9 +1538,10 @@ export class AnalysisCoordinator {
       };
     }
     return {
-      source: { kind: source.kind, text: source.text },
+      source: { kind: 'reviewed_text', text: source.text },
       jobDescription,
       consentVersion: CONSENT_VERSION,
+      aiRequested: true,
     };
   }
 
@@ -1533,7 +1551,7 @@ export class AnalysisCoordinator {
       generation: activation.generation,
       activation: activation.id,
     });
-    let response: AnalysisResponse | null = null;
+    let response: AnalysisResult | null = null;
     let failure: unknown = null;
     try {
       response = await raceWithAbort(

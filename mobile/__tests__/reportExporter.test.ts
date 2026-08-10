@@ -17,6 +17,7 @@ function fixtureReport(overrides: Partial<ReportRecord> = {}): ReportRecord {
     createdAt: '2026-08-05T19:20:30.000Z',
     sourceType: validFixture.sourceType,
     score: validFixture.score,
+    aiStatus: 'legacy_feedback_present',
     feedback: validFixture.feedback,
     ...overrides,
   } as ReportRecord;

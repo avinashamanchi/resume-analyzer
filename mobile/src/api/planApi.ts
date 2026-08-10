@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { validateApiBaseUrl } from './apiBaseUrl';
 import { AiAllowanceSchema, PublicErrorSchema } from '../domain/contracts';
 import { ResumeApiError } from '../domain/errors';
-import type { AccountIdentity } from '../security/accountIdentity';
+import { AccountTokenSchema, type AccountIdentity } from '../security/accountIdentity';
 
 const MAX_RESPONSE_BYTES = 65_536;
 
@@ -59,7 +59,7 @@ const PlanResponseSchema = z
 const AppleIdentityResponseSchema = z
   .object({
     schemaVersion: z.literal(2),
-    accountToken: z.string().min(1).max(2_048),
+    accountToken: AccountTokenSchema,
     expiresAt: z.string().datetime({ offset: false, precision: 0 }),
     revenueCatAppUserId: z.string().regex(/^rai_account_[A-Za-z0-9_-]{43}$/),
   })

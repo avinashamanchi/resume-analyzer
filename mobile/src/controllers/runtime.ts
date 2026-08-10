@@ -56,8 +56,12 @@ export function createRuntimeComposition(
   if (typeof injectedOrigin === 'string' && injectedOrigin.length > 0) {
     try {
       const installationTokens = new InstallationTokenStore({ apiBaseUrl: injectedOrigin });
-      api = new ResumeApi({ apiBaseUrl: injectedOrigin, installationTokens });
       const accountIdentity = new AccountIdentityStore();
+      api = new ResumeApi({
+        apiBaseUrl: injectedOrigin,
+        installationTokens,
+        accountIdentity,
+      });
       const planApi = new PlanApi({
         apiBaseUrl: injectedOrigin,
         installationTokens,

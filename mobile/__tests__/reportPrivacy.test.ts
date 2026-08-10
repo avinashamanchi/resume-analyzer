@@ -46,6 +46,8 @@ function lifecycleRepository(
     databaseIdentity,
     initialize,
     save: async () => { throw new Error('not used'); },
+    count: async () => 0,
+    listPage: async () => ({ items: [], nextCursor: null }),
     list: async () => [],
     get: async () => null,
     delete: async () => 0,
@@ -112,6 +114,7 @@ describe('local history privacy', () => {
       expect(serializedSql).not.toContain(secret);
     }
     expect(Object.keys(database.rows[0]).sort()).toEqual([
+      'ai_status',
       'created_at',
       'feedback_json',
       'id',

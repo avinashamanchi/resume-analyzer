@@ -18,7 +18,7 @@ import {
 import {
   FakeReportDatabase,
   ImmediateBusyReportStore,
-  versionOneReportColumns,
+  versionTwoReportColumns,
 } from '../test-utils/fakeReportDatabase';
 
 const FIRST_ID = '8ec8a3bc-7a15-4b75-9f94-a5353a2a2f9b';
@@ -87,6 +87,26 @@ function result(id = FIRST_ID): AnalysisResponse {
   return { ...copy(validFixture), analysisId: id } as AnalysisResponse;
 }
 
+function v2Result(
+  id: string,
+  aiStatus: 'complete' | 'temporarily_unavailable' = 'complete',
+) {
+  const complete = aiStatus === 'complete';
+  return {
+    schemaVersion: 2 as const,
+    analysisId: id,
+    sourceType: 'reviewed_text' as const,
+    score: copy(validFixture.score),
+    aiStatus,
+    feedback: complete ? copy(validFixture.feedback) : null,
+    allowance: {
+      used: 1,
+      limit: 3 as const,
+      resetsAt: '2099-09-01T00:00:00Z',
+    },
+  };
+}
+
 function deferred<T>() {
   let resolve!: (value: T) => void;
   let reject!: (reason: unknown) => void;
@@ -124,6 +144,37 @@ function expectLocalStorageError(error: unknown): void {
 }
 
 describe('report schema migration', () => {
+  it('migrates version-one feedback to an explicit legacy state without fabricating v2 AI completion', async () => {
+    const database = FakeReportDatabase.versionOne();
+    database.rows.push({
+      id: FIRST_ID,
+      schema_version: 1,
+      title: 'Legacy report',
+      created_at: '2026-08-05T19:20:30.000Z',
+      source_type: 'text',
+      score_json: JSON.stringify(validFixture.score),
+      feedback_json: JSON.stringify(validFixture.feedback),
+    });
+    const { repository } = harness({ database });
+
+    await repository.initialize();
+
+    expect(database.userVersion).toBe(2);
+    expect(database.metadata).toEqual([{ key: 'schema_version', value: '2' }]);
+    expect(database.rows[0]).toMatchObject({
+      schema_version: 2,
+      ai_status: 'legacy_feedback_present',
+    });
+    expect(database.schemaObjects).toContainEqual(expect.objectContaining({
+      type: 'index',
+      name: 'reports_created_id_desc',
+    }));
+    await expect((repository as any).get(FIRST_ID)).resolves.toMatchObject({
+      aiStatus: 'legacy_feedback_present',
+      feedback: validFixture.feedback,
+    });
+  });
+
   it('single-flights distinct handles for one physical database before an immediate busy write', async () => {
     const store = new ImmediateBusyReportStore(
       'file:///app/sqlite/reports.db',
@@ -150,7 +201,7 @@ describe('report schema migration', () => {
       undefined,
     ]);
     expect(store.writerAttempts).toBe(1);
-    expect(store.database.userVersion).toBe(1);
+    expect(store.database.userVersion).toBe(2);
     expect(store.database.tables).toEqual(['metadata', 'reports']);
 
     const afterSuccess = new ReportRepository({
@@ -196,7 +247,7 @@ describe('report schema migration', () => {
     });
     await expect(retry.initialize()).resolves.toBeUndefined();
     expect(store.writerAttempts).toBe(2);
-    expect(store.database.userVersion).toBe(1);
+    expect(store.database.userVersion).toBe(2);
   });
 
   it('does not serialize migrations for different physical database identities', async () => {
@@ -235,20 +286,24 @@ describe('report schema migration', () => {
     ]);
   });
 
-  it('creates exact version-one tables inside an exclusive transaction', async () => {
+  it('creates exact version-two tables and paging index inside an exclusive transaction', async () => {
     const { database, repository } = harness();
 
     await repository.initialize();
 
-    expect(database.userVersion).toBe(1);
+    expect(database.userVersion).toBe(2);
     expect(database.tables).toEqual(['metadata', 'reports']);
-    expect(database.columns.reports).toEqual(versionOneReportColumns);
-    expect(database.metadata).toEqual([{ key: 'schema_version', value: '1' }]);
+    expect(database.columns.reports).toEqual(versionTwoReportColumns);
+    expect(database.metadata).toEqual([{ key: 'schema_version', value: '2' }]);
+    expect(database.schemaObjects).toContainEqual(expect.objectContaining({
+      type: 'index',
+      name: 'reports_created_id_desc',
+    }));
     expect(database.calls[0]?.sql).toBe('BEGIN EXCLUSIVE');
     expect(database.calls.filter(call => call.sql === 'BEGIN EXCLUSIVE')).toHaveLength(1);
   });
 
-  it('initializes idempotently without reopening or rewriting version one', async () => {
+  it('migrates once and then initializes idempotently without reopening', async () => {
     const database = FakeReportDatabase.versionOne();
     const { openDatabase, repository } = harness({ database });
 
@@ -260,8 +315,8 @@ describe('report schema migration', () => {
   });
 
   it.each([
-    ['future user version', () => { const db = FakeReportDatabase.versionOne(); db.userVersion = 2; return db; }],
-    ['future metadata version', () => { const db = FakeReportDatabase.versionOne(); db.metadata[0] = { key: 'schema_version', value: '2' }; return db; }],
+    ['future user version', () => { const db = FakeReportDatabase.versionOne(); db.userVersion = 3; return db; }],
+    ['future metadata version', () => { const db = FakeReportDatabase.versionOne(); db.metadata[0] = { key: 'schema_version', value: '3' }; return db; }],
     ['unexpected table', () => { const db = FakeReportDatabase.versionOne(); db.tables.push('private_drafts'); return db; }],
     ['missing column', () => { const db = FakeReportDatabase.versionOne(); db.xcolumns.reports = db.xcolumns.reports.slice(0, -1); return db; }],
     ['extra column', () => { const db = FakeReportDatabase.versionOne(); db.xcolumns.reports = [...db.xcolumns.reports, { cid: 7, name: 'resume_text', type: 'TEXT', notnull: 0, dflt_value: null, pk: 0, hidden: 0 }]; return db; }],
@@ -337,6 +392,86 @@ describe('report schema migration', () => {
 });
 
 describe('report projection reads and writes', () => {
+  it('stores and reopens complete and degraded v2 reviewed-text results truthfully', async () => {
+    const { repository } = harness();
+    await repository.initialize();
+
+    await expect(repository.save({ result: v2Result(FIRST_ID) })).resolves.toMatchObject({
+      id: FIRST_ID,
+      sourceType: 'reviewed_text',
+      aiStatus: 'complete',
+      feedback: validFixture.feedback,
+    });
+    await expect(repository.save({
+      result: v2Result(SECOND_ID, 'temporarily_unavailable'),
+    })).resolves.toMatchObject({
+      id: SECOND_ID,
+      aiStatus: 'temporarily_unavailable',
+      feedback: null,
+    });
+
+    await expect(repository.get(FIRST_ID)).resolves.toMatchObject({
+      aiStatus: 'complete',
+      feedback: validFixture.feedback,
+    });
+    await expect(repository.get(SECOND_ID)).resolves.toMatchObject({
+      aiStatus: 'temporarily_unavailable',
+      feedback: null,
+    });
+  });
+
+  it('uses a stable strict keyset and never returns more than the requested page', async () => {
+    const database = FakeReportDatabase.versionOne();
+    for (let index = 0; index < 53; index += 1) {
+      const id = `00000000-0000-4000-8000-${String(index).padStart(12, '0')}`;
+      database.rows.push({
+        id,
+        schema_version: 1,
+        title: `Report ${index}`,
+        created_at: index < 27
+          ? '2026-08-06T19:20:30.000Z'
+          : '2026-08-05T19:20:30.000Z',
+        source_type: 'text',
+        score_json: JSON.stringify(validFixture.score),
+        feedback_json: JSON.stringify(validFixture.feedback),
+      });
+    }
+    const { repository } = harness({ database });
+    await repository.initialize();
+
+    const first = await (repository as any).listPage({ before: null, limit: 25 });
+    const second = await (repository as any).listPage({ before: first.nextCursor, limit: 25 });
+    const third = await (repository as any).listPage({ before: second.nextCursor, limit: 25 });
+    const ids = [...first.items, ...second.items, ...third.items].map(item => item.id);
+
+    expect(first.items).toHaveLength(25);
+    expect(second.items).toHaveLength(25);
+    expect(third.items).toHaveLength(3);
+    expect(third.nextCursor).toBeNull();
+    expect(new Set(ids).size).toBe(53);
+    expect(database.calls.some(call =>
+      call.sql.includes('(created_at < ? OR (created_at = ? AND id < ?))') &&
+      call.params.length === 4,
+    )).toBe(true);
+  });
+
+  it('rejects the 10001st report inside the same exclusive count-and-insert transaction', async () => {
+    const database = new FakeReportDatabase();
+    const { repository } = harness({ database });
+    await repository.initialize();
+    database.reportCountOverride = 10_000;
+    const callsBeforeSave = database.calls.length;
+
+    await expect(repository.save({ result: result() })).rejects.toBeInstanceOf(LocalStorageError);
+
+    const saveCalls = database.calls.slice(callsBeforeSave).map(call => call.sql);
+    expect(saveCalls[0]).toBe('BEGIN EXCLUSIVE');
+    expect(saveCalls).toContain('SELECT COUNT(*) AS count FROM reports');
+    expect(saveCalls.some(sql => /^INSERT INTO reports/.test(sql))).toBe(false);
+    expect(saveCalls.at(-1)).toBe('ROLLBACK');
+    expect(database.rows).toEqual([]);
+  });
+
   it('saves a strict report projection with a local-date default title', async () => {
     const { repository } = harness({ now: () => new Date(2026, 7, 5, 12, 34, 56, 789) });
     await repository.initialize();
@@ -349,6 +484,7 @@ describe('report projection reads and writes', () => {
       createdAt: new Date(2026, 7, 5, 12, 34, 56, 789).toISOString(),
       sourceType: 'text',
       score: result().score,
+      aiStatus: 'legacy_feedback_present',
       feedback: result().feedback,
     });
   });
@@ -439,7 +575,7 @@ describe('report projection reads and writes', () => {
   });
 
   it.each([
-    ['future row version', { schema_version: 2 }],
+    ['future row version', { schema_version: 3 }],
     ['invalid UUID', { id: 'PRIVATE-ID' }],
     ['invalid date', { created_at: 'August 5' }],
     ['invalid source', { source_type: 'camera' }],

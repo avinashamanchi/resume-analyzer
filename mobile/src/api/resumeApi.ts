@@ -1,7 +1,16 @@
 import { validateApiBaseUrl } from './apiBaseUrl';
 import { CONSENT_VERSION } from '../domain/consent';
-import { parseAnalysisResponse, PublicErrorSchema, type AnalysisResponse } from '../domain/contracts';
+import {
+  parseAnalysisResponseV2,
+  InstallationTokenSchema,
+  PublicErrorSchema,
+  type AnalysisResult,
+} from '../domain/contracts';
 import { ResumeApiError } from '../domain/errors';
+import {
+  AccountIdentitySchema,
+  type AccountIdentity,
+} from '../security/accountIdentity';
 import type { InstallationTokenAcquisitionObserver } from '../security/installationToken';
 import {
   codePointLength,
@@ -13,6 +22,7 @@ import {
 } from '../domain/limits';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+const MAX_RESPONSE_BYTES = 65_536;
 
 type FetchImplementation = (input: string, init: RequestInit) => Promise<Response>;
 
@@ -25,7 +35,7 @@ export type PdfAnalyzeSource = Readonly<{
 }>;
 
 export type TextAnalyzeSource = Readonly<{
-  kind: 'text' | 'vision_text';
+  kind: 'text' | 'vision_text' | 'reviewed_text';
   text: string;
 }>;
 
@@ -33,6 +43,7 @@ export type AnalyzeRequest = Readonly<{
   source: PdfAnalyzeSource | TextAnalyzeSource;
   jobDescription?: string | null;
   consentVersion: string;
+  aiRequested?: boolean;
 }>;
 
 export type InstallationTokenProvider = Readonly<{
@@ -47,6 +58,7 @@ export type ResumeApiOptions = Readonly<{
   fetchImpl?: FetchImplementation;
   timeoutMs?: number;
   requestId?: () => string;
+  accountIdentity?: Readonly<{ get(): Promise<AccountIdentity | null> }>;
 }>;
 
 type MultipartPayload = Readonly<{
@@ -83,7 +95,7 @@ function assertCanonicalRequestId(value: unknown): string {
 function validateTextSource(source: unknown): void {
   if (
     !assertExactKeys(source, ['kind', 'text']) ||
-    (source.kind !== 'text' && source.kind !== 'vision_text') ||
+    (source.kind !== 'text' && source.kind !== 'vision_text' && source.kind !== 'reviewed_text') ||
     typeof source.text !== 'string'
   ) {
     throw new ResumeApiError('validation');
@@ -97,7 +109,6 @@ function appendTextSource(formData: FormData, source: unknown): void {
   validateTextSource(source);
   const textSource = source as TextAnalyzeSource;
   formData.append('resume_text', textSource.text);
-  formData.append('source_type', textSource.kind);
 }
 
 function validatePdfSource(source: unknown): void {
@@ -133,28 +144,47 @@ function appendPdfSource(formData: FormData, source: unknown): void {
 // reconcile durably after its caller has timed out, so no multipart copy of
 // resume content exists until an authorized token is ready.
 function validateAnalyzeRequest(request: unknown, requestId: unknown): void {
-  if (!assertExactKeys(request, ['source', 'jobDescription', 'consentVersion']) &&
-      !assertExactKeys(request, ['source', 'consentVersion'])) {
+  if (
+    request === null ||
+    typeof request !== 'object' ||
+    Array.isArray(request) ||
+    !Object.prototype.hasOwnProperty.call(request, 'source') ||
+    !Object.prototype.hasOwnProperty.call(request, 'consentVersion') ||
+    !Object.keys(request).every(key =>
+      key === 'source' ||
+      key === 'jobDescription' ||
+      key === 'consentVersion' ||
+      key === 'aiRequested',
+    )
+  ) {
     throw new ResumeApiError('validation');
   }
-  if (typeof request.consentVersion !== 'string' || request.consentVersion !== CONSENT_VERSION) {
+  const candidate = request as Record<string, unknown>;
+  if (typeof candidate.consentVersion !== 'string' || candidate.consentVersion !== CONSENT_VERSION) {
     throw new ResumeApiError('validation');
   }
-  if (request.source === null || typeof request.source !== 'object' || Array.isArray(request.source)) {
+  if (candidate.source === null || typeof candidate.source !== 'object' || Array.isArray(candidate.source)) {
     throw new ResumeApiError('validation');
   }
   assertCanonicalRequestId(requestId);
-
-  if (request.jobDescription !== undefined && request.jobDescription !== null) {
-    if (typeof request.jobDescription !== 'string' || codePointLength(request.jobDescription) > MAX_JOB_DESCRIPTION_CODE_POINTS) {
-      throw new ResumeApiError('validation');
-    }
-    if (trimPythonWhitespace(request.jobDescription) === null) throw new ResumeApiError('validation');
+  if (candidate.aiRequested !== undefined && typeof candidate.aiRequested !== 'boolean') {
+    throw new ResumeApiError('validation');
   }
 
-  const source = request.source as Record<string, unknown>;
+  if (candidate.jobDescription !== undefined && candidate.jobDescription !== null) {
+    if (typeof candidate.jobDescription !== 'string' || codePointLength(candidate.jobDescription) > MAX_JOB_DESCRIPTION_CODE_POINTS) {
+      throw new ResumeApiError('validation');
+    }
+    if (trimPythonWhitespace(candidate.jobDescription) === null) throw new ResumeApiError('validation');
+  }
+
+  const source = candidate.source as Record<string, unknown>;
   if (source.kind === 'pdf') validatePdfSource(source);
-  else if (source.kind === 'text' || source.kind === 'vision_text') validateTextSource(source);
+  else if (
+    source.kind === 'text' ||
+    source.kind === 'vision_text' ||
+    source.kind === 'reviewed_text'
+  ) validateTextSource(source);
   else throw new ResumeApiError('validation');
 }
 
@@ -242,10 +272,29 @@ function observeTokenCommit(): TokenCommitObservation {
 }
 
 async function parseJsonOnce(response: Response, signal: AbortSignal): Promise<unknown> {
+  const declared = typeof response.headers?.get === 'function'
+    ? response.headers.get('content-length')
+    : null;
+  if (
+    declared !== null &&
+    (!/^(?:0|[1-9][0-9]*)$/.test(declared) || Number(declared) > MAX_RESPONSE_BYTES)
+  ) {
+    throw new ResumeApiError('invalid_response');
+  }
   try {
+    if (typeof response.text === 'function') {
+      const body = await awaitAbortable(response.text(), signal);
+      let byteLength = 0;
+      for (const character of body) {
+        const point = character.codePointAt(0)!;
+        byteLength += point <= 0x7f ? 1 : point <= 0x7ff ? 2 : point <= 0xffff ? 3 : 4;
+        if (byteLength > MAX_RESPONSE_BYTES) throw new ResumeApiError('invalid_response');
+      }
+      return JSON.parse(body) as unknown;
+    }
     return await awaitAbortable(response.json(), signal);
   } catch (error) {
-    if (error instanceof AbortSignalFailure) throw error;
+    if (error instanceof AbortSignalFailure || error instanceof ResumeApiError) throw error;
     throw new ResumeApiError('invalid_response');
   }
 }
@@ -256,6 +305,7 @@ export class ResumeApi {
   private readonly fetchImpl: FetchImplementation;
   private readonly timeoutMs: number;
   private readonly requestId: () => string;
+  private readonly accountIdentity: Readonly<{ get(): Promise<AccountIdentity | null> }>;
 
   constructor(options: ResumeApiOptions) {
     this.apiBaseUrl = validateApiBaseUrl(options.apiBaseUrl);
@@ -263,12 +313,15 @@ export class ResumeApi {
     this.fetchImpl = options.fetchImpl ?? fetch;
     this.timeoutMs = options.timeoutMs ?? 30_000;
     this.requestId = options.requestId ?? defaultRequestId;
+    this.accountIdentity = options.accountIdentity ?? Object.freeze({
+      get: async () => null,
+    });
     if (!Number.isInteger(this.timeoutMs) || this.timeoutMs <= 0 || this.timeoutMs > 120_000) {
       throw new TypeError('A bounded request timeout is required.');
     }
   }
 
-  async analyze(input: AnalyzeRequest, signal: AbortSignal): Promise<AnalysisResponse> {
+  async analyze(input: AnalyzeRequest, signal: AbortSignal): Promise<AnalysisResult> {
     if (signal.aborted) throw new ResumeApiError('cancelled');
     let requestId: string;
     try {
@@ -294,6 +347,16 @@ export class ResumeApi {
         controller.signal,
         tokenCommit.hasStarted,
       );
+      const parsedToken = InstallationTokenSchema.safeParse(token);
+      if (!parsedToken.success) throw new ResumeApiError('invalid_response');
+      const account = await awaitAbortable(
+        this.accountIdentity.get(),
+        controller.signal,
+      );
+      const parsedAccount = account === null ? null : AccountIdentitySchema.safeParse(account);
+      if (parsedAccount !== null && !parsedAccount.success) {
+        throw new ResumeApiError('invalid_response');
+      }
       // A provider may settle in the same turn as caller or timeout abort.
       // Never send sensitive analysis input with an already-aborted signal.
       if (controller.signal.aborted) throw new AbortSignalFailure();
@@ -305,9 +368,17 @@ export class ResumeApi {
         throw new ResumeApiError('validation');
       }
       const response = await awaitAbortable(
-        this.fetchImpl(`${this.apiBaseUrl}/v1/analyses`, {
+        this.fetchImpl(`${this.apiBaseUrl}/v2/analyses`, {
           method: 'POST',
-          headers: { Authorization: `Installation ${token}` },
+          headers: {
+            Authorization: `Installation ${parsedToken.data}`,
+            'X-Resume-Source': input.source.kind === 'pdf' ? 'pdf' : 'reviewed_text',
+            'X-Resume-AI': input.aiRequested === false ? 'not_requested' : 'requested',
+            'X-Resume-Request-ID': requestId,
+            ...(parsedAccount === null
+              ? {}
+              : { 'X-Resume-Account': parsedAccount.data.accountToken }),
+          },
           body: payload.body,
           signal: controller.signal,
         }),
@@ -316,7 +387,10 @@ export class ResumeApi {
       const data = await parseJsonOnce(response, controller.signal);
       if (response.status === 200) {
         try {
-          return parseAnalysisResponse(data, Object.freeze({ hasJobDescription: payload.hasJobDescription }));
+          return parseAnalysisResponseV2(
+            data,
+            Object.freeze({ hasJobDescription: payload.hasJobDescription }),
+          );
         } catch {
           throw new ResumeApiError('invalid_response');
         }

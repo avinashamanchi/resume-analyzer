@@ -1,3 +1,14 @@
+enum ResumeVisionEmbeddedText {
+  static func usable(_ value: String?) -> String? {
+    guard let value,
+          !value.unicodeScalars.contains(where: { $0.value == 0 }),
+          value.unicodeScalars.contains(where: { !$0.properties.isWhitespace }) else {
+      return nil
+    }
+    return value
+  }
+}
+
 struct ResumeVisionObservationGeometry: Equatable, Sendable {
   let originalIndex: Int
   let minX: Double
