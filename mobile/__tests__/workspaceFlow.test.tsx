@@ -156,7 +156,7 @@ const JOB_CURSOR: WorkspaceCursor = {
   id: JOB.id,
 };
 
-const originalFetch = global.fetch;
+const originalFetch = globalThis.fetch;
 
 function repository(overrides: Readonly<Record<string, unknown>> = {}) {
   return {
@@ -180,7 +180,7 @@ function repository(overrides: Readonly<Record<string, unknown>> = {}) {
 describe('private local career workspace flows', () => {
   beforeEach(() => {
     jest.clearAllMocks();
-    global.fetch = jest.fn() as typeof fetch;
+    globalThis.fetch = jest.fn() as typeof fetch;
     mockSearchParams = {};
     mockBilling = {
       verifiedPlan: VERIFIED_FREE,
@@ -197,7 +197,7 @@ describe('private local career workspace flows', () => {
     mockWorkspaceData = { status: 'ready', repository: repository() };
   });
 
-  afterAll(() => { global.fetch = originalFetch; });
+  afterAll(() => { globalThis.fetch = originalFetch; });
 
   it('does not persist a resume version until the explicit save and trims labels', async () => {
     const view = render(<VersionsScreen />);
@@ -217,7 +217,7 @@ describe('private local career workspace flows', () => {
       score: validFixture.score,
       keywords: validFixture.feedback.matchedKeywords,
     }, WORKSPACE_FREE);
-    expect(global.fetch).not.toHaveBeenCalled();
+    expect(globalThis.fetch).not.toHaveBeenCalled();
   });
 
   it('saves a manually entered job locally only after the explicit action', async () => {
@@ -248,7 +248,7 @@ describe('private local career workspace flows', () => {
       notes: 'Review the role.',
       linkedVersionId: VERSION_ONE.id,
     }, WORKSPACE_FREE);
-    expect(global.fetch).not.toHaveBeenCalled();
+    expect(globalThis.fetch).not.toHaveBeenCalled();
   });
 
   it('pages resume-version labels without loading resume bodies', async () => {
@@ -285,7 +285,7 @@ describe('private local career workspace flows', () => {
     await waitFor(() => expect(view.getByRole('button', { name: 'Open Backend Engineer at Older Co' })).toBeTruthy());
     expect(listJobs).toHaveBeenNthCalledWith(1, { before: null, limit: 25 });
     expect(listJobs).toHaveBeenNthCalledWith(2, { before: JOB_CURSOR, limit: 25 });
-    expect(global.fetch).not.toHaveBeenCalled();
+    expect(globalThis.fetch).not.toHaveBeenCalled();
   });
 
   it('updates an existing job status without network access', async () => {
@@ -306,7 +306,7 @@ describe('private local career workspace flows', () => {
       notes: JOB.notes,
       linkedVersionId: null,
     }, WORKSPACE_FREE);
-    expect(global.fetch).not.toHaveBeenCalled();
+    expect(globalThis.fetch).not.toHaveBeenCalled();
   });
 
   it('compares the latest two saved versions with bounded local data only', async () => {
@@ -326,7 +326,7 @@ describe('private local career workspace flows', () => {
     expect(view.getByText('Total score: +5')).toBeTruthy();
     expect(view.getByText('Added: Redis')).toBeTruthy();
     expect(view.getByText('+ Added measurable impact.')).toBeTruthy();
-    expect(global.fetch).not.toHaveBeenCalled();
+    expect(globalThis.fetch).not.toHaveBeenCalled();
   });
 
   it('lets Free compare its one saved version with the current unsaved analysis', async () => {
@@ -344,7 +344,7 @@ describe('private local career workspace flows', () => {
     expect(view.getByText('Added: Flask')).toBeTruthy();
     expect(view.getByText(/current reviewed analysis remains unsaved/i)).toBeTruthy();
     expect(mockWorkspaceData.repository.saveVersion).not.toHaveBeenCalled();
-    expect(global.fetch).not.toHaveBeenCalled();
+    expect(globalThis.fetch).not.toHaveBeenCalled();
   });
 
   it('lets verified Pro page through versions and choose any two saved candidates', async () => {
@@ -377,7 +377,7 @@ describe('private local career workspace flows', () => {
     await waitFor(() => expect(view.getByText('Backend version → Leadership version')).toBeTruthy());
     expect(listVersions).toHaveBeenNthCalledWith(1, { before: null, limit: 25 });
     expect(listVersions).toHaveBeenNthCalledWith(2, { before: OLDER_CURSOR, limit: 25 });
-    expect(global.fetch).not.toHaveBeenCalled();
+    expect(globalThis.fetch).not.toHaveBeenCalled();
   });
 
   it('does not unlock Pro workspace behavior from an unverified client entitlement', async () => {
@@ -396,7 +396,7 @@ describe('private local career workspace flows', () => {
 
     await waitFor(() => expect(view.getByText('Platform version → Current unsaved analysis')).toBeTruthy());
     expect(view.queryByText('Choose two saved versions')).toBeNull();
-    expect(global.fetch).not.toHaveBeenCalled();
+    expect(globalThis.fetch).not.toHaveBeenCalled();
   });
 
   it('uses the verified Free cap message when a stale client entitlement cannot save', async () => {
