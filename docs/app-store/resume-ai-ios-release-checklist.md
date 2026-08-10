@@ -44,7 +44,11 @@ Last updated: 2026-08-10. `PASS` means directly observed evidence. `BLOCKED` mea
 - [ ] Active Apple Developer membership, agreements, App Store Connect access, and matching bundle ID `com.avinashamanchi.resumeai`.
 - [ ] App Store Connect record has the correct primary language, SKU, availability, content rights, age rating, Digital Services Act trader status, seller name, and copyright.
 - [ ] EAS login/project initialization and a credentialed archive built with Xcode 26 and the iOS 26 SDK or later.
-- [ ] Archive privacy manifest/report, export compliance, age rating, App Privacy, content rights, category, seller, and copyright completed.
+- [ ] Archive privacy manifest/report, export compliance, Apple's updated age-rating questionnaire, App Privacy, content rights, category, seller, and copyright completed.
+- [ ] Accessibility Nutrition Label answers are based on the signed-device VoiceOver, Voice Control, Larger Text, contrast, and Reduce Motion results above; no unverified support is claimed.
+- [ ] Product page name, icon, subtitle, description, promotional text, keywords, and 1–10 screenshots are complete, accurate, localized where offered, and contain no placeholder or real resume data.
+- [ ] Required device capabilities and every generated Info.plist usage description match the exact archive and are exercised on a current iOS 26 device.
+- [ ] Mac with Apple silicon and Apple Vision Pro availability are explicitly disabled for v1 unless the exact signed iPhone build, document picker, PDFKit, and Vision behavior are separately tested and supported there.
 - [ ] Accepted 6.9-inch iPhone screenshots captured from the exact TestFlight candidate using synthetic resume content and the documented screenshot plan.
 - [ ] TestFlight processing and full regression pass on the exact build.
 - [ ] App Review receives the product screenshot, subscription path, reviewer notes, and working backend/legal URLs.
