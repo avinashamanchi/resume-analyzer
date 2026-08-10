@@ -22,6 +22,7 @@ import { ConsentStore } from '../security/consentStore';
 import { AccountIdentityStore } from '../security/accountIdentity';
 import { InstallationTokenStore } from '../security/installationToken';
 import { ReportRepository } from '../storage/reportRepository';
+import { WorkspaceRepository } from '../workspace/workspaceRepository';
 import type { AppServices } from './AppController';
 
 export const SUPPORT_URL = 'https://resume-analyzer-al3g.onrender.com/static/support.html';
@@ -40,6 +41,7 @@ export type RuntimeComposition = Readonly<{
   coordinator: AnalysisCoordinator;
   billingService?: BillingService;
   createRepository(): ReportRepository;
+  createWorkspaceRepository(): WorkspaceRepository;
 }>;
 
 export function createRuntimeComposition(
@@ -118,5 +120,6 @@ export function createRuntimeComposition(
     coordinator,
     billingService,
     createRepository: () => new ReportRepository({ tempFiles: registry }),
+    createWorkspaceRepository: () => new WorkspaceRepository(),
   };
 }

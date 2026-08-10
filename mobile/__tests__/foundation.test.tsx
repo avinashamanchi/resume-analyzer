@@ -32,12 +32,13 @@ jest.mock('expo-router', () => {
 });
 
 describe('native foundation', () => {
-  it('renders the three native tabs in exact order', async () => {
+  it('renders the four native tabs in exact order', async () => {
     const { getAllByRole } = await render(<TabsLayout />);
 
     expect(getAllByRole('tab').map((tab) => tab.props.accessibilityLabel)).toEqual([
       'Analyze',
       'History',
+      'Workspace',
       'Settings',
     ]);
   });
@@ -87,10 +88,9 @@ describe('native foundation', () => {
       process.env.EXPO_PUBLIC_RESUME_API_URL = 'http://localhost:5000';
       expect(() => appConfig({ config: appManifest } as never)).toThrow('EXPO_PUBLIC_RESUME_API_URL');
       process.env.EXPO_PUBLIC_RESUME_API_URL = 'https://resume-analyzer-al3g.onrender.com';
-      expect(appConfig({ config: appManifest } as never).ios?.usesAppleSignIn).toBe(true);
-      expect(appConfig({ config: appManifest } as never).plugins).toContain(
-        'expo-apple-authentication',
-      );
+      const releaseConfig = appConfig({ config: appManifest } as never);
+      expect(releaseConfig.ios?.usesAppleSignIn).toBeUndefined();
+      expect(releaseConfig.plugins).not.toContain('expo-apple-authentication');
     } finally {
       if (originalProfile === undefined) delete process.env.EAS_BUILD_PROFILE;
       else process.env.EAS_BUILD_PROFILE = originalProfile;

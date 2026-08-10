@@ -7,7 +7,16 @@ import SupportScreen from '../app/support';
 import { AppControllerProvider } from '../src/controllers/AppController';
 
 const mockPush = jest.fn();
+const mockEraseAll = jest.fn(async () => true);
 jest.mock('expo-router', () => ({ useRouter: () => ({ push: mockPush }) }));
+jest.mock('../src/privacy/LocalErasureProvider', () => ({
+  useLocalErasure: () => ({
+    status: 'ready',
+    busy: false,
+    message: null,
+    eraseAll: mockEraseAll,
+  }),
+}));
 
 function values() {
   return {
@@ -23,6 +32,11 @@ function values() {
 }
 
 describe('native Settings, privacy, and support flows', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockEraseAll.mockResolvedValue(true);
+  });
+
   it('keeps plan choices and Terms of Use reachable from Settings', async () => {
     const context = values();
     const view = render(<AppControllerProvider value={context}><SettingsScreen /></AppControllerProvider>);
@@ -36,13 +50,16 @@ describe('native Settings, privacy, and support flows', () => {
   it('requires exact DELETE plus a second confirmation before delete all', async () => {
     const context = values();
     const view = await render(<AppControllerProvider value={context}><SettingsScreen /></AppControllerProvider>);
-    await act(async () => { fireEvent.changeText(view.getByLabelText('Type DELETE to delete all saved reports'), 'delete'); });
-    expect(view.getByRole('button', { name: 'Delete all local reports' }).props.accessibilityState.disabled).toBe(true);
-    await act(async () => { fireEvent.changeText(view.getByLabelText('Type DELETE to delete all saved reports'), 'DELETE'); });
-    await act(async () => { fireEvent.press(view.getByRole('button', { name: 'Delete all local reports' })); });
+    await act(async () => { fireEvent.changeText(view.getByLabelText('Type DELETE to delete all local data'), 'delete'); });
+    expect(view.getByRole('button', { name: 'Delete all local data' }).props.accessibilityState.disabled).toBe(true);
+    await act(async () => { fireEvent.changeText(view.getByLabelText('Type DELETE to delete all local data'), 'DELETE'); });
+    await act(async () => { fireEvent.press(view.getByRole('button', { name: 'Delete all local data' })); });
     expect(context.history.deleteAll).not.toHaveBeenCalled();
+    expect(mockEraseAll).not.toHaveBeenCalled();
     await act(async () => { fireEvent.press(view.getByRole('button', { name: 'Confirm delete all' })); });
-    await waitFor(() => expect(context.history.deleteAll).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(mockEraseAll).toHaveBeenCalledTimes(1));
+    expect(context.history.deleteAll).not.toHaveBeenCalled();
+    expect(view.getByText('All active local data was verified as cleared.')).toBeTruthy();
   });
 
   it('reports verified cache cleanup and never turns refused cleanup into success', async () => {
@@ -57,6 +74,7 @@ describe('native Settings, privacy, and support flows', () => {
   it('states local and transient boundaries without account claims', async () => {
     const context = values();
     const settings = await render(<AppControllerProvider value={context}><SettingsScreen /></AppControllerProvider>);
+    expect(settings.queryByText(/unlimited/i)).toBeNull();
     expect(settings.getByText(/usage metadata/i)).toBeTruthy();
     expect(settings.getByText(/up to 30 days/i)).toBeTruthy();
     expect(settings.getByText(/Zero Data Retention.*unverified/i)).toBeTruthy();
@@ -64,7 +82,10 @@ describe('native Settings, privacy, and support flows', () => {
     expect(settings.getByText(/iPhone or iPad backups stored in iCloud or on a Mac or PC/i)).toBeTruthy();
     expect(settings.getByText(/iCloud backups are always encrypted/i)).toBeTruthy();
     expect(settings.getByText(/Computer backups are not encrypted by default.*Encrypt local backup/i)).toBeTruthy();
-    expect(settings.getByText(/Restoring an existing backup may restore reports deleted from the active app/i)).toBeTruthy();
+    expect(settings.getByText(/Restoring an existing backup may restore local data deleted from the active app/i)).toBeTruthy();
+    expect(settings.getByText(/Saved reports, reviewed resume versions, revisions, job labels, and job notes.*never sync/i)).toBeTruthy();
+    expect(settings.getByText(/signed iOS app keeps raw PDF bytes on this device/i)).toBeTruthy();
+    expect(settings.queryByText(/server extracts supported PDFs/i)).toBeNull();
     expect(settings.getByText(/Generated feedback and bullet drafts may quote, transform, or restate names, contact information, resume content, or job-description content/i)).toBeTruthy();
     expect(settings.getByText(/Review generated feedback before saving, sharing, or allowing it to enter device backups/i)).toBeTruthy();
     await act(async () => { settings.unmount(); });
@@ -73,19 +94,21 @@ describe('native Settings, privacy, and support flows', () => {
     expect(privacy.getByText(/iPhone or iPad backups stored in iCloud or on a Mac or PC/i)).toBeTruthy();
     expect(privacy.getByText(/iCloud backups are always encrypted/i)).toBeTruthy();
     expect(privacy.getByText(/Computer backups are not encrypted by default.*Encrypt local backup/i)).toBeTruthy();
-    expect(privacy.getByText(/Restoring an existing backup may restore reports deleted from the active app/i)).toBeTruthy();
+    expect(privacy.getByText(/Restoring an existing backup may restore local data deleted from the active app/i)).toBeTruthy();
     expect(privacy.getByText(/Raw\/original PDF bytes, filenames, resume-input fields, job-description-input fields, installation tokens, and request identifiers are not stored in local reports/i)).toBeTruthy();
     expect(privacy.getByText(/Generated feedback and bullet drafts may quote, transform, or restate names, contact information, resume content, or job-description content/i)).toBeTruthy();
     expect(privacy.getByText(/Review generated feedback before saving, sharing, or allowing it to enter device backups/i)).toBeTruthy();
     expect(privacy.getAllByText(/Groq/i).length).toBeGreaterThan(0);
-    expect(privacy.getByText(/The selected PDF is uploaded and processed before temporary cleanup runs/i)).toBeTruthy();
-    expect(privacy.getByText(/does not show the analysis as successful and blocks future analysis/i)).toBeTruthy();
-    expect(privacy.getByText(/Cleanup cannot undo processing already completed by the Resume\.AI server or Groq/i)).toBeTruthy();
-    expect(privacy.queryByText(/processing stops if cleanup cannot be confirmed/i)).toBeNull();
+    expect(privacy.getByText(/signed iOS app never uploads the selected PDF/i)).toBeTruthy();
+    expect(privacy.getByText(/compatibility web app may transiently upload a selected PDF/i)).toBeTruthy();
+    expect(privacy.getByText(/does not expose the extracted draft or allow analysis until cleanup succeeds/i)).toBeTruthy();
+    expect(privacy.queryByText(/uploaded and processed before temporary cleanup/i)).toBeNull();
     expect(privacy.queryByText(/delete account|cloud history/i)).toBeNull();
-    expect(privacy.getByText(/hosted on Render/i)).toBeTruthy();
-    expect(privacy.getByText(/raw PDF bytes are never sent to Groq/i)).toBeTruthy();
+    expect(privacy.getByText(/reviewed text.*sent to the Resume\.AI service hosted on Render/i)).toBeTruthy();
+    expect(privacy.getByText(/raw PDF bytes never leave the signed iOS app/i)).toBeTruthy();
     expect(privacy.getByText(/Vision OCR stays on this iPhone until you review the text and consent/i)).toBeTruthy();
+    expect(privacy.getByText(/resume versions, revisions, and job notes.*local SQLite/i)).toBeTruthy();
+    expect(privacy.getByText(/Delete all local data.*current session.*reports.*versions.*jobs/i)).toBeTruthy();
     expect(privacy.getByText(/usage metadata/i)).toBeTruthy();
     expect(privacy.getByText(/up to 30 days/i)).toBeTruthy();
     expect(privacy.getByText(/has not verified Zero Data Retention/i)).toBeTruthy();

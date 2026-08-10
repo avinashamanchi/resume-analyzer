@@ -21,6 +21,10 @@ export function TabsLayout() {
         options={{ title: 'History', tabBarAccessibilityLabel: 'History' }}
       />
       <Tabs.Screen
+        name="workspace"
+        options={{ title: 'Workspace', tabBarAccessibilityLabel: 'Workspace' }}
+      />
+      <Tabs.Screen
         name="settings"
         options={{ title: 'Settings', tabBarAccessibilityLabel: 'Settings' }}
       />

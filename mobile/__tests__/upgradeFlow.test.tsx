@@ -41,7 +41,10 @@ it('shows a clear free escape, StoreKit price, restore, and legal links', async 
   expect(view.getByText('Free')).toBeTruthy();
   expect(view.getByText('Resume.AI Pro')).toBeTruthy();
   expect(view.getByText(/Save up to 3 reports locally/i)).toBeTruthy();
-  expect(view.getByText(/Unlimited local report history/i)).toBeTruthy();
+  expect(view.getByText(/Up to 10,000 local reports/i)).toBeTruthy();
+  expect(view.getByText(/1 of 3 AI feedback requests used this month/i)).toBeTruthy();
+  expect(view.getByText(/reports, resume versions, and jobs stay on this device and do not sync/i)).toBeTruthy();
+  expect(view.queryByText(/Unlimited local report history/i)).toBeNull();
   expect(view.queryByText(/ongoing AI analysis service/i)).toBeNull();
   expect(view.queryByText(/free trial/i)).toBeNull();
 
@@ -51,8 +54,7 @@ it('shows a clear free escape, StoreKit price, restore, and legal links', async 
   await act(async () => { fireEvent.press(view.getByRole('button', { name: 'Restore Purchases' })); });
   expect(billing.restore).toHaveBeenCalledTimes(1);
 
-  await act(async () => { fireEvent.press(view.getByRole('button', { name: 'Sign in with Apple to restore across devices' })); });
-  expect(billing.linkApple).toHaveBeenCalledTimes(1);
+  expect(view.queryByRole('button', { name: 'Use Pro on my other devices' })).toBeNull();
 
   await act(async () => { fireEvent.press(view.getByRole('link', { name: 'Privacy Policy' })); });
   expect(Linking.openURL).toHaveBeenCalledWith(PRIVACY_URL);
@@ -60,6 +62,22 @@ it('shows a clear free escape, StoreKit price, restore, and legal links', async 
   expect(Linking.openURL).toHaveBeenCalledWith(TERMS_URL);
   await act(async () => { fireEvent.press(view.getByRole('button', { name: 'Manage Apple subscription' })); });
   expect(Linking.openURL).toHaveBeenCalledWith(MANAGE_SUBSCRIPTIONS_URL);
+});
+
+it('does not create an Apple-linked Resume.AI account even after Pro is verified', async () => {
+  const active: BillingSnapshot = {
+    ...ready,
+    planStatus: 'pro_verified',
+    entitlementActive: true,
+    allowance: { used: 4, limit: 100, resetsAt: '2099-09-01T00:00:00Z' },
+  };
+  const billing = service(active);
+  const view = render(<BillingProvider service={billing}><UpgradeScreen /></BillingProvider>);
+
+  await waitFor(() => expect(view.getByText(/Resume\.AI Pro is server verified/i)).toBeTruthy());
+  expect(view.getByText(/4 of 100 AI feedback requests used this month/i)).toBeTruthy();
+  expect(view.queryByRole('button', { name: 'Use Pro on my other devices' })).toBeNull();
+  expect(billing.linkApple).not.toHaveBeenCalled();
 });
 
 it('keeps restore available when offerings fail to load', async () => {

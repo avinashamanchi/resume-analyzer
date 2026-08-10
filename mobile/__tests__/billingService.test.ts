@@ -124,6 +124,7 @@ it('keeps Expo Go purchases unavailable without loading native billing code', as
     planStatus: 'free',
     entitlementActive: false,
     allowance: null,
+    verifiedPlan: null,
     products: [],
   });
   expect(loader).not.toHaveBeenCalled();
@@ -138,6 +139,7 @@ it('maps native StoreKit products and activates only the configured entitlement'
     planStatus: 'free',
     entitlementActive: false,
     allowance: freePlan.allowance,
+    verifiedPlan: freePlan,
     products: [
       {
         id: 'com.avinashamanchi.resumeai.pro.monthly',
@@ -195,6 +197,7 @@ it('retains verified Pro access when the offerings catalog fails transiently', a
     planStatus: 'pro_verified',
     entitlementActive: true,
     allowance: proPlan.allowance,
+    verifiedPlan: proPlan,
     products: [],
   });
 });
@@ -224,6 +227,7 @@ it('never accepts the RevenueCat SDK entitlement as server-verified Pro access',
     entitlementActive: false,
     planStatus: 'free',
     allowance: { used: 1, limit: 3 },
+    verifiedPlan: freePlan,
   });
   expect(purchases.configure).toHaveBeenCalledWith({
     apiKey: 'appl_public_key',

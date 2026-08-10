@@ -124,6 +124,18 @@ export const uiStyles = StyleSheet.create({
     padding: 14,
     textAlignVertical: 'top',
   },
+  compactInput: {
+    minHeight: 48,
+    borderColor: tokens.color.border,
+    borderWidth: 1,
+    borderRadius: tokens.radius.control,
+    color: tokens.color.text,
+    backgroundColor: tokens.color.background,
+    fontSize: 16,
+    lineHeight: 23,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+  },
 });
 
 const styles = StyleSheet.create({

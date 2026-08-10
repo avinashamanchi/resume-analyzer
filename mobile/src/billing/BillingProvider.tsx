@@ -37,6 +37,7 @@ export type BillingContextValue = Readonly<{
   planStatus: BillingPlanStatus;
   entitlementActive: boolean;
   allowance: BillingSnapshot['allowance'];
+  verifiedPlan: NonNullable<BillingSnapshot['verifiedPlan']> | null;
   products: readonly BillingProduct[];
   busy: boolean;
   message: string | null;
@@ -51,11 +52,17 @@ const defaultSnapshot: BillingSnapshot = {
   planStatus: 'free',
   entitlementActive: false,
   allowance: null,
+  verifiedPlan: null,
   products: [],
 };
 
 const defaultContext: BillingContextValue = {
-  ...defaultSnapshot,
+  availability: defaultSnapshot.availability,
+  planStatus: defaultSnapshot.planStatus,
+  entitlementActive: defaultSnapshot.entitlementActive,
+  allowance: defaultSnapshot.allowance,
+  verifiedPlan: defaultSnapshot.verifiedPlan ?? null,
+  products: defaultSnapshot.products,
   busy: false,
   message: null,
   purchase: async () => {},
@@ -193,6 +200,7 @@ export function BillingProvider({
     planStatus: snapshot?.planStatus ?? 'loading',
     entitlementActive: snapshot?.entitlementActive ?? false,
     allowance: snapshot?.allowance ?? null,
+    verifiedPlan: snapshot?.verifiedPlan ?? null,
     products: snapshot?.products ?? [],
     busy,
     message,

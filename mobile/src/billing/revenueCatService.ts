@@ -16,6 +16,7 @@ export type BillingSnapshot = Readonly<{
   planStatus: BillingPlanStatus;
   entitlementActive: boolean;
   allowance: VerifiedPlanSnapshot['allowance'] | null;
+  verifiedPlan?: VerifiedPlanSnapshot | null;
   products: readonly BillingProduct[];
 }>;
 
@@ -103,6 +104,7 @@ export class RevenueCatBillingService {
   private planStatus: BillingPlanStatus = 'loading';
   private entitlementActive = false;
   private allowance: VerifiedPlanSnapshot['allowance'] | null = null;
+  private verifiedPlan: VerifiedPlanSnapshot | null = null;
   private sdkShowsPro = false;
   private readonly now: () => number;
 
@@ -242,6 +244,7 @@ export class RevenueCatBillingService {
         planStatus: 'free',
         entitlementActive: false,
         allowance: null,
+        verifiedPlan: null,
         products: EMPTY_PRODUCTS,
       };
     }
@@ -251,6 +254,7 @@ export class RevenueCatBillingService {
         planStatus: 'free',
         entitlementActive: false,
         allowance: null,
+        verifiedPlan: null,
         products: EMPTY_PRODUCTS,
       };
     }
@@ -318,6 +322,10 @@ export class RevenueCatBillingService {
       Number.isFinite(entitlementExpiresAt) &&
       entitlementExpiresAt > current;
     this.allowance = Object.freeze(plan.allowance);
+    this.verifiedPlan = Object.freeze({
+      ...plan,
+      allowance: Object.freeze({ ...plan.allowance }),
+    });
     this.entitlementActive = currentVerification && currentEntitlement;
     this.planStatus = this.entitlementActive
       ? 'pro_verified'
@@ -328,6 +336,7 @@ export class RevenueCatBillingService {
 
   private requireVerification(): void {
     this.entitlementActive = false;
+    this.verifiedPlan = null;
     this.planStatus = this.sdkShowsPro ? 'pro_verification_needed' : 'free';
   }
 
@@ -347,6 +356,7 @@ export class RevenueCatBillingService {
       planStatus: this.planStatus,
       entitlementActive: this.entitlementActive,
       allowance: this.allowance,
+      verifiedPlan: this.verifiedPlan,
       products: this.products,
     };
   }

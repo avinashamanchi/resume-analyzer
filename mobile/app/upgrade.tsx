@@ -23,6 +23,7 @@ export default function UpgradeScreen() {
         <Eyebrow>Resume.AI plans</Eyebrow>
         <Title>Keep the analysis free. Upgrade the workflow.</Title>
         <Text style={uiStyles.muted}>Choose Pro for deeper local organization and polished exports. You can continue with Free at any time.</Text>
+        <Text style={uiStyles.muted}>Your reports, resume versions, and jobs stay on this device and do not sync.</Text>
       </View>
 
       <View style={styles.tiers}>
@@ -30,17 +31,29 @@ export default function UpgradeScreen() {
           <Text style={uiStyles.sectionTitle}>Free</Text>
           <Text style={uiStyles.body}>Full resume analysis and text sharing</Text>
           <Text style={uiStyles.body}>Save up to 3 reports locally</Text>
+          <Text style={uiStyles.body}>Save 1 resume version and track up to 3 jobs</Text>
+          <Text style={uiStyles.body}>Up to 3 AI feedback requests each month</Text>
           <Text style={uiStyles.body}>No payment required</Text>
         </Card>
         <Card style={styles.proTier}>
           <Text style={styles.proLabel}>Resume.AI Pro</Text>
-          <Text style={uiStyles.body}>Unlimited local report history</Text>
+          <Text style={uiStyles.body}>Up to 10,000 local reports</Text>
+          <Text style={uiStyles.body}>Up to 200 resume versions and 500 tracked jobs</Text>
+          <Text style={uiStyles.body}>Up to 100 AI feedback requests each month</Text>
           <Text style={uiStyles.body}>Polished PDF report exports</Text>
         </Card>
       </View>
 
       {billing.entitlementActive ? (
-        <Card><Text accessibilityRole="alert" style={uiStyles.sectionTitle}>Resume.AI Pro is active on this Apple account.</Text></Card>
+        <Card><Text accessibilityRole="alert" style={uiStyles.sectionTitle}>Resume.AI Pro is server verified for this installation.</Text></Card>
+      ) : null}
+
+      {billing.allowance !== null ? (
+        <Card>
+          <Text style={uiStyles.sectionTitle}>Monthly AI feedback</Text>
+          <Text style={uiStyles.body}>{billing.allowance.used} of {billing.allowance.limit} AI feedback requests used this month.</Text>
+          <Text style={uiStyles.muted}>Resets on {billing.allowance.resetsAt.slice(0, 10)}.</Text>
+        </Card>
       ) : null}
 
       {billing.availability === 'preview' ? (
@@ -66,7 +79,7 @@ export default function UpgradeScreen() {
           <Card key={product.id}>
             <Text style={uiStyles.sectionTitle}>{product.title}</Text>
             <Text style={styles.price}>{product.price}{period ? ` ${period}` : ''}</Text>
-            <Text style={uiStyles.muted}>{product.description}</Text>
+            <Text style={uiStyles.muted}>Includes the bounded Pro features listed above.</Text>
             <AppButton
               accessibilityLabel={label}
               label={`Choose ${product.price}${period ? ` ${period}` : ''}`}
@@ -86,17 +99,6 @@ export default function UpgradeScreen() {
         disabled={billing.busy || billing.availability === 'loading' || billing.availability === 'preview' || billing.availability === 'configuration'}
         tone="secondary"
       />
-      {billing.availability === 'ready' || billing.availability === 'error' ? (
-        <>
-          <AppButton
-            label="Sign in with Apple to restore across devices"
-            onPress={() => { void billing.linkApple(); }}
-            disabled={billing.busy}
-            tone="secondary"
-          />
-          <Text style={uiStyles.caption}>Optional. Resume.AI uses an opaque Apple account identifier to verify a purchase; it does not request or save your name or email.</Text>
-        </>
-      ) : null}
       <AppButton label="Manage Apple subscription" onPress={() => { void Linking.openURL(MANAGE_SUBSCRIPTIONS_URL); }} disabled={billing.busy} tone="quiet" />
 
       <Text style={uiStyles.caption}>Payment is charged to your Apple Account at confirmation. Subscriptions renew automatically unless canceled at least 24 hours before the current period ends. You can manage or cancel in App Store account settings.</Text>
