@@ -1,6 +1,6 @@
 # Resume.AI iOS release checklist
 
-Last updated: 2026-08-10. `PASS` means directly observed evidence. `BLOCKED` means an authorized account, provider setting, signed binary, hardware check, or App Store action is still required. A local export is not an App Store build.
+Last updated: 2026-08-11. `PASS` means directly observed evidence. `BLOCKED` means an authorized account, provider setting, signed binary, hardware check, or App Store action is still required. A local export is not an App Store build.
 
 ## Repository-controlled implementation
 
@@ -9,19 +9,20 @@ Last updated: 2026-08-10. `PASS` means directly observed evidence. `BLOCKED` mea
 - [x] Pro purchase UI uses RevenueCat's StoreKit boundary, localized price, monthly/annual product identifiers, Restore Purchases, subscription management, Privacy, Terms, official Apple purchase/refund help, and cancellation/error states.
 - [x] Production EAS profile uses store distribution, the SDK-selected Xcode image, remote build-number auto-increment, and no submission credentials.
 - [x] OTA updates are disabled for the first binary, export compliance is declared, tablet support is disabled, and the icon is configured.
-- [x] Final clean-checkout evidence through `de57991`: backend 745 tests passed with 6 explicit real-Redis skips, browser 25 tests passed, mobile 31 suites / 671 tests passed, and TypeScript, lint, native invariant, retention, secret, dependency, Expo Doctor 18/18, prebuild stability, and a 1,174-module / 5.01 MB Hermes iOS export passed.
+- [x] Fresh clean-checkout evidence on 2026-08-11: all 753 backend tests passed with a temporary local Redis 8.10 service, browser 27 tests passed, mobile 31 suites / 671 tests passed, and TypeScript, lint, retention, secret, dependency, Expo Doctor 18/18, release-asset, prebuild stability, and a 5.02 MB Hermes iOS export passed.
 - [x] Production configuration fails closed unless the exact HTTPS API origin and a non-placeholder public RevenueCat Apple SDK key are present. The key is public app configuration, not a RevenueCat secret API key.
 - [x] Resume.AI is guest-first and the first binary exposes no login, account creation, or Sign in with Apple capability. Users can delete individual local records, Delete All active workspace data, and retry temporary-file cleanup.
 - [x] Mobile CI fails closed on any high/critical advisory except the two explicitly reviewed `image-size` parser advisories (GitHub sources `1138808` and `1138809`) through Expo/Metro. The current report has 12 transitive findings; npm proposes only a breaking Expo/React Native downgrade. Project-owned images are signature-checked before export and CI rejects disguised ICNS, JPEG XL, HEIF, and AVIF content. The exception still must be rechecked before the signed candidate.
+- [x] GitHub Dependabot alerts and automated security fixes are enabled. CodeQL default setup uses the extended query suite for Actions, JavaScript/TypeScript, and Python; the current PR scan passed. Workflow actions are pinned to immutable commit SHAs, pytest is locked to 9.1.1, and malformed release-asset CLI arguments can no longer bypass inspection of project-owned files.
 - [x] In-app and static Privacy, Terms, and Support pages disclose content processing, local history, backups, providers, deletion, subscription terms, and product limitations.
 - [x] PDF parsing and OCR boundaries enforce the repository's size, page, text, time, stream, and cleanup limits.
 - [x] `apple-review-guideline-applicability.md` records all five Apple guideline families, evidence, external gates, and absent capabilities that cannot be added without re-review.
-- [x] A production-only Expo config plugin strips development Bonjour/local-network discovery declarations, disables arbitrary ATS loads, and removes localhost transport exceptions from the generated release Info.plist while leaving development builds usable.
+- [x] A production-only Expo config plugin strips development Bonjour/local-network discovery declarations, disables arbitrary ATS loads, and removes localhost transport exceptions from the generated release Info.plist while leaving development builds usable; a sanitized production prebuild was inspected and contained none of those development declarations.
 
 ## Public service and privacy gates
 
-- [ ] `BLOCKED` — production API health and complete analysis flow must pass anonymously against the deployed Render service.
-- [ ] `BLOCKED` — Privacy timed out, while Terms and Support returned HTTP 404, during the anonymous 2026-08-10 release check; all three must return HTTPS 200 before submission.
+- [ ] `BLOCKED` — the deployed Render root returns HTTP 200 but serves the legacy analyzer, and `/healthz` returned HTTP 404 on 2026-08-11. Deploy the current service, then pass health and a synthetic complete analysis flow anonymously.
+- [x] Privacy, Terms, and Support each returned HTTPS 200 anonymously on 2026-08-11 and matched the tracked `static/` release files byte for byte; recheck immediately before submission.
 - [ ] `BLOCKED` — Groq Zero Data Retention or the exact production retention configuration must be verified in the authoritative provider console and reflected in the policy.
 - [ ] `BLOCKED` — Render retention, content-free application logging, rate limiting, and deletion behavior must match the submitted privacy answers.
 
@@ -60,6 +61,6 @@ Last updated: 2026-08-10. `PASS` means directly observed evidence. `BLOCKED` mea
 
 ## Current environment boundary
 
-On 2026-08-09, EAS reported `Not logged in`; on 2026-08-10 this Mac still had Command Line Tools selected with no full Xcode. CocoaPods 1.17.0 is installed, but it cannot replace full Xcode, signing, or an authorized Apple account. Repository work may continue, but signed build, StoreKit, TestFlight, upload, review, and publication cannot be completed until those credentialed steps are performed.
+On 2026-08-11, EAS reported `Not logged in`; this Mac still had Command Line Tools selected with no full Xcode. CocoaPods 1.17.0 is installed, but it cannot replace full Xcode, signing, or an authorized Apple account. The current Render service also requires an authorized deployment and production secrets. Signed build, StoreKit, TestFlight, upload, review, and publication cannot be completed until those credentialed steps are performed.
 
 No App Store acceptance or publication is claimed by this checklist.

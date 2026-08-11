@@ -70,18 +70,21 @@ def test_ios_export_runs_the_project_owned_asset_parser_gate():
 def test_release_asset_gate_rejects_a_disguised_image(tmp_path: Path):
     node = shutil.which("node")
     assert node is not None
-    (tmp_path / "hostile.png").write_bytes(b"icns" + b"\0" * 64)
-
-    completed = subprocess.run(
-        [node, str(MOBILE / "scripts" / "verify-release-assets.mjs"), str(tmp_path)],
-        check=False,
-        capture_output=True,
-        text=True,
-    )
+    hostile = MOBILE / "assets" / f"pytest-hostile-{tmp_path.name}.png"
+    hostile.write_bytes(b"icns" + b"\0" * 64)
+    try:
+        completed = subprocess.run(
+            [node, str(MOBILE / "scripts" / "verify-release-assets.mjs")],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+    finally:
+        hostile.unlink(missing_ok=True)
 
     assert completed.returncode == 1
     assert "disguised ICNS" in completed.stderr
-    assert str(tmp_path) not in completed.stderr
+    assert str(MOBILE) not in completed.stderr
 
 
 def test_eas_profiles_are_commit_gated_and_use_the_candidate_origin():
@@ -178,9 +181,9 @@ def test_public_legal_site_deploys_only_first_party_legal_assets():
     workflow = (ROOT / ".github" / "workflows" / "legal-pages.yml").read_text()
 
     for action in (
-        "actions/configure-pages@v5",
-        "actions/upload-pages-artifact@v3",
-        "actions/deploy-pages@v4",
+        "actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b # v5",
+        "actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa # v3",
+        "actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4",
     ):
         assert action in workflow
     assert "path: .legal-pages" in workflow

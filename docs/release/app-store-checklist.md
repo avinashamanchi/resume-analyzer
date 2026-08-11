@@ -33,8 +33,8 @@ Status vocabulary: `PASS`, `FAIL`, `BLOCKED`, `UNVERIFIED`. Submission, Apple ap
 
 The August 10, 2026 working-tree gate used Python 3.12.13 and Node 22.23.2. It is implementation evidence, not signed-release evidence:
 
-- Service: 148 production/security-boundary tests plus 597 remaining tests passed; 6 real-Redis tests were explicitly skipped because local `TEST_REDIS_URL` was absent.
-- Browser client: 25 Node tests passed. The secret scan passed for 223 tracked files and the sensitive-retention scan passed.
+- Service: all 753 tests passed with a temporary local Redis 8.10 service, including the real-Redis integration coverage.
+- Browser client: 27 Node tests passed. The secret scan and sensitive-retention scan passed.
 - Mobile: 31 suites / 670 tests, typecheck, lint, Expo Doctor 18/18 with CocoaPods 1.17.0 available, the project-owned image gate, the Swift native-core invariant harness, and an iOS Expo export of 1,174 modules passed.
 - Dependency gate: 12 high transitive findings remain through Expo/Metro `image-size` 1.2.1. Only the two reviewed parser advisories are allowlisted; any different high/critical advisory fails closed. The image gate reduces exposure from project-owned bundle assets but is not described as an upstream patch.
 - Capacity tooling: protected staging identity/capacity canaries, fixed-cardinality content-free telemetry, two declared Render instances, and a bounded 25,000-principal load harness passed local contract tests. No production-like hosted load run has been recorded.
