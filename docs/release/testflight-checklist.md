@@ -12,9 +12,9 @@ Status vocabulary: `PASS`, `FAIL`, `BLOCKED`, `UNVERIFIED`. A successful archive
 | Build number | `1` | CONFIGURED; availability unverified |
 | EAS project ID/owner | Not configured | BLOCKED — requires authorized EAS account setup |
 | Production API origin | `https://resume-analyzer-al3g.onrender.com` | BLOCKED — the exact production health and full analysis flow require a fresh anonymous verification from the accepted candidate |
-| Privacy URL | `https://avinashamanchi.github.io/resume-analyzer/privacy.html` | PENDING — verify after the GitHub Pages workflow deploys from `main` |
-| Terms URL | `https://avinashamanchi.github.io/resume-analyzer/terms.html` | PENDING — verify after the GitHub Pages workflow deploys from `main` |
-| Support URL | `https://avinashamanchi.github.io/resume-analyzer/support.html` | PENDING — verify after the GitHub Pages workflow deploys from `main` |
+| Privacy URL | `https://avinashamanchi.github.io/resume-analyzer/privacy.html` | PASS — anonymous HTTPS 200 on 2026-08-11; response matched `static/privacy.html` byte for byte. Recheck immediately before submission. |
+| Terms URL | `https://avinashamanchi.github.io/resume-analyzer/terms.html` | PASS — anonymous HTTPS 200 on 2026-08-11; response matched `static/terms.html` byte for byte. Recheck immediately before submission. |
+| Support URL | `https://avinashamanchi.github.io/resume-analyzer/support.html` | PASS — anonymous HTTPS 200 on 2026-08-11; response matched `static/support.html` byte for byte. Recheck immediately before submission. |
 
 ## Build and beta gates
 
