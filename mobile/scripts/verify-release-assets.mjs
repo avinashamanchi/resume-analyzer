@@ -143,10 +143,11 @@ export async function verifyReleaseAssets() {
 }
 
 if (path.resolve(process.argv[1] ?? '') === fileURLToPath(import.meta.url)) {
-  if (process.argv.length > 2) {
-    process.stderr.write('release asset gate does not accept filesystem paths\n');
-    process.exitCode = 2;
-  } else verifyReleaseAssets()
+  verifyReleaseAssets()
+    .then((count) => {
+      if (process.argv.length > 2) throw new Error('release asset gate does not accept filesystem paths');
+      return count;
+    })
     .then((count) => process.stdout.write(`release asset gate passed (${count} project-owned images)\n`))
     .catch((error) => {
       process.stderr.write(`release asset gate failed: ${error instanceof Error ? error.message : 'unknown error'}\n`);

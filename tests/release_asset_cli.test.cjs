@@ -29,3 +29,22 @@ test("release asset CLI rejects caller-selected filesystem roots", () => {
     fs.rmSync(fixtureRoot, { recursive: true, force: true });
   }
 });
+
+test("release asset CLI still inspects owned assets when unexpected arguments are supplied", () => {
+  const hostile = path.resolve(__dirname, "../mobile/assets/node-hostile-argument.png");
+  try {
+    fs.writeFileSync(hostile, Buffer.from("not-a-png", "ascii"));
+
+    const result = spawnSync(
+      process.execPath,
+      [path.resolve(__dirname, "../mobile/scripts/verify-release-assets.mjs"), "unexpected"],
+      { encoding: "utf8" },
+    );
+
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /invalid PNG signature/i);
+    assert.doesNotMatch(result.stderr, /does not accept filesystem paths/i);
+  } finally {
+    fs.rmSync(hostile, { force: true });
+  }
+});
