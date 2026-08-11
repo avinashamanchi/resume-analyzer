@@ -895,7 +895,7 @@ describe('native Analyze and Results flows', () => {
     await runtime.services.openSupport();
 
     expect(Linking.openURL).toHaveBeenCalledWith(
-      'https://resume-analyzer-al3g.onrender.com/static/support.html',
+      'https://avinashamanchi.github.io/resume-analyzer/support.html',
     );
   });
 

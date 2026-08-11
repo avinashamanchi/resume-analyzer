@@ -100,7 +100,7 @@ def test_flask_serves_documented_first_party_web_assets(web_client, path, conten
     body = response.get_data(as_text=True)
     if path == "/static/support.html":
         assert body.count("https://") == 4
-        assert "https://resume-analyzer-al3g.onrender.com/static/support.html" in body
+        assert "https://avinashamanchi.github.io/resume-analyzer/support.html" in body
         assert "https://github.com/avinashamanchi/resume-analyzer/issues" in body
         assert "https://apps.apple.com/account/subscriptions" in body
         assert "https://reportaproblem.apple.com/" in body
@@ -138,7 +138,7 @@ def test_public_pages_distinguish_signed_ios_from_compatibility_web(web_client):
     for page in (index, privacy, support):
         assert "Selected standard PDFs are transiently sent" not in page
 
-    assert 'href="https://resume-analyzer-al3g.onrender.com/static/support.html"' in support
+    assert 'href="https://avinashamanchi.github.io/resume-analyzer/support.html"' in support
     assert 'rel="noreferrer"' in support
     assert 'href="https://github.com/avinashamanchi/resume-analyzer/issues"' in support
     assert "Never post resume or job-description content" in support

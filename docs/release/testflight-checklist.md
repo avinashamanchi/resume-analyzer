@@ -12,9 +12,9 @@ Status vocabulary: `PASS`, `FAIL`, `BLOCKED`, `UNVERIFIED`. A successful archive
 | Build number | `1` | CONFIGURED; availability unverified |
 | EAS project ID/owner | Not configured | BLOCKED — requires authorized EAS account setup |
 | Production API origin | `https://resume-analyzer-al3g.onrender.com` | BLOCKED — the exact production health and full analysis flow require a fresh anonymous verification from the accepted candidate |
-| Privacy URL | `https://resume-analyzer-al3g.onrender.com/static/privacy.html` | BLOCKED — timed out during the 2026-08-09 anonymous check |
-| Terms URL | `https://resume-analyzer-al3g.onrender.com/static/terms.html` | BLOCKED — returned HTTP 404 during the 2026-08-09 anonymous check |
-| Support URL | `https://resume-analyzer-al3g.onrender.com/static/support.html` | BLOCKED — returned HTTP 404 during the 2026-08-09 anonymous check |
+| Privacy URL | `https://avinashamanchi.github.io/resume-analyzer/privacy.html` | PENDING — verify after the GitHub Pages workflow deploys from `main` |
+| Terms URL | `https://avinashamanchi.github.io/resume-analyzer/terms.html` | PENDING — verify after the GitHub Pages workflow deploys from `main` |
+| Support URL | `https://avinashamanchi.github.io/resume-analyzer/support.html` | PENDING — verify after the GitHub Pages workflow deploys from `main` |
 
 ## Build and beta gates
 

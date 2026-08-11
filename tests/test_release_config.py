@@ -11,6 +11,7 @@ import yaml
 ROOT = Path(__file__).resolve().parents[1]
 MOBILE = ROOT / "mobile"
 CANDIDATE_ORIGIN = "https://resume-analyzer-al3g.onrender.com"
+LEGAL_ORIGIN = "https://avinashamanchi.github.io/resume-analyzer"
 
 
 def _read_json(path: Path) -> dict[str, object]:
@@ -139,10 +140,9 @@ def test_app_store_metadata_candidate_is_valid_and_truthful():
     assert " " not in metadata["keywords"]
     assert metadata["primaryCategory"] == "Productivity"
     assert metadata["secondaryCategory"] == "Business"
-    assert metadata["privacyPolicyUrl"] == (
-        CANDIDATE_ORIGIN + "/static/privacy.html"
-    )
-    assert metadata["supportUrl"] == CANDIDATE_ORIGIN + "/static/support.html"
+    assert metadata["privacyPolicyUrl"] == LEGAL_ORIGIN + "/privacy.html"
+    assert metadata["termsOfUseUrl"] == LEGAL_ORIGIN + "/terms.html"
+    assert metadata["supportUrl"] == LEGAL_ORIGIN + "/support.html"
 
     public_copy = " ".join(
         str(metadata[key])
@@ -172,6 +172,28 @@ def test_app_store_metadata_candidate_is_valid_and_truthful():
     assert "not linked" in purchase_history
     assert "not used for tracking" in purchase_history
     assert "userId" not in metadata["appPrivacyDraft"]
+
+
+def test_public_legal_site_deploys_only_first_party_legal_assets():
+    workflow = (ROOT / ".github" / "workflows" / "legal-pages.yml").read_text()
+
+    for action in (
+        "actions/configure-pages@v5",
+        "actions/upload-pages-artifact@v3",
+        "actions/deploy-pages@v4",
+    ):
+        assert action in workflow
+    assert "path: .legal-pages" in workflow
+    assert "static/privacy.html" in workflow
+    assert "static/terms.html" in workflow
+    assert "static/support.html" in workflow
+    assert "static/styles.css" in workflow
+    assert "static/app.js" not in workflow
+
+    for name in ("privacy.html", "terms.html", "support.html"):
+        page = (ROOT / "static" / name).read_text()
+        assert 'href="./styles.css"' in page
+        assert 'href="/static/' not in page
 
 
 def test_render_declares_two_instances_and_every_backend_only_billing_secret():
