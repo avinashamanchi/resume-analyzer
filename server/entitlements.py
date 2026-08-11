@@ -24,7 +24,7 @@ from .plans import (
 )
 
 
-_MAX_TRANSACTION_ATTEMPTS = 16
+_MAX_TRANSACTION_ATTEMPTS = 256
 _MAX_CANONICAL_DEPTH = 16
 _MAX_CANONICAL_MEMBERS = 64
 MAX_AFFECTED_APP_USER_IDS = 64
@@ -150,7 +150,7 @@ class AiAllowanceStore:
                             self._request_key("charged", member, request_id)
                             for member in members
                         )
-                        pipe.watch(*charged_keys, *lease_keys, counter_key)
+                        pipe.watch(*charged_keys, *lease_keys)
                         charged = any(pipe.get(key) is not None for key in charged_keys)
                         existing_owner = any(
                             pipe.get(key) is not None for key in lease_keys
@@ -276,6 +276,8 @@ class AiAllowanceStore:
                             installation_canonical != account_canonical
                             or merged_members != set(account_members)
                         )
+                        if not link_changed:
+                            return
                         installation_counter = self._counter_key(
                             installation_canonical, period
                         )
@@ -370,7 +372,7 @@ class AiAllowanceStore:
             for digest, generation in identity.versions:
                 previous = merged.get(digest)
                 if previous is not None and previous != generation:
-                    raise ValueError("corrupt link generation")
+                    raise WatchError
                 merged[digest] = generation
         return tuple(merged.items())
 

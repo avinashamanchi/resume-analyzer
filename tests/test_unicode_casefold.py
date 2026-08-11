@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import sys
 import unicodedata
 from pathlib import Path
 
@@ -55,3 +56,20 @@ def test_committed_mobile_unicode_module_is_the_same_deterministic_python_artifa
     generator = load_generator()
 
     assert MOBILE_MODULE_PATH.read_text(encoding="utf-8") == generator.render_mobile_module()
+
+
+def test_generated_artifact_provenance_is_stable_across_python_patch_releases():
+    generator = load_generator()
+    python_series = f"Python {sys.version_info.major}.{sys.version_info.minor}; Unicode"
+    patch_specific = (
+        f"Python {sys.version_info.major}.{sys.version_info.minor}."
+        f"{sys.version_info.micro}; Unicode"
+    )
+
+    for rendered in (
+        generator.render_module(),
+        generator.render_normalization_module(),
+        generator.render_mobile_module(),
+    ):
+        assert python_series in rendered
+        assert patch_specific not in rendered
