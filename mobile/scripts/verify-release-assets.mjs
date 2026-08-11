@@ -1,4 +1,5 @@
-import { lstat, readdir, readFile } from 'node:fs/promises';
+import { constants } from 'node:fs';
+import { open, readdir } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -113,31 +114,39 @@ async function collectImages(directory, images) {
   }
 }
 
-export async function verifyReleaseAssets(root = mobileRoot) {
-  const resolvedRoot = path.resolve(root);
-  const roots = resolvedRoot === mobileRoot
-    ? ['assets', 'app', 'src', 'ios'].map((name) => path.join(resolvedRoot, name))
-    : [resolvedRoot];
+export async function verifyReleaseAssets() {
+  const roots = ['assets', 'app', 'src', 'ios'].map((name) => path.join(mobileRoot, name));
   const images = [];
   for (const directory of roots) await collectImages(directory, images);
   if (images.length === 0) throw new Error('no project-owned release images were found');
 
   for (const absolutePath of images.sort()) {
-    const stat = await lstat(absolutePath);
-    const relativePath = path.relative(resolvedRoot, absolutePath);
-    if (!stat.isFile() || stat.size === 0 || stat.size > MAX_ASSET_BYTES) {
-      throw new Error(`${relativePath}: release image size is invalid`);
+    const relativePath = path.relative(mobileRoot, absolutePath);
+    let handle;
+    try {
+      handle = await open(absolutePath, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+      const stat = await handle.stat();
+      if (!stat.isFile() || stat.size === 0 || stat.size > MAX_ASSET_BYTES) {
+        throw new Error(`${relativePath}: release image size is invalid`);
+      }
+      const buffer = await handle.readFile();
+      rejectKnownParserConfusion(buffer, relativePath);
+      verifySignature(path.extname(absolutePath).toLowerCase(), buffer, relativePath);
+    } catch (error) {
+      if (error?.code === 'ELOOP') throw new Error(`${relativePath}: symlinks are forbidden in release asset roots`);
+      throw error;
+    } finally {
+      await handle?.close();
     }
-    const buffer = await readFile(absolutePath);
-    rejectKnownParserConfusion(buffer, relativePath);
-    verifySignature(path.extname(absolutePath).toLowerCase(), buffer, relativePath);
   }
   return images.length;
 }
 
 if (path.resolve(process.argv[1] ?? '') === fileURLToPath(import.meta.url)) {
-  const requestedRoot = process.argv[2] ? path.resolve(process.argv[2]) : mobileRoot;
-  verifyReleaseAssets(requestedRoot)
+  if (process.argv.length > 2) {
+    process.stderr.write('release asset gate does not accept filesystem paths\n');
+    process.exitCode = 2;
+  } else verifyReleaseAssets()
     .then((count) => process.stdout.write(`release asset gate passed (${count} project-owned images)\n`))
     .catch((error) => {
       process.stderr.write(`release asset gate failed: ${error instanceof Error ? error.message : 'unknown error'}\n`);
