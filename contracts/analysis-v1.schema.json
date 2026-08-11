@@ -1,0 +1,83 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://resume.ai/contracts/analysis-v1.schema.json",
+  "title": "Resume.AI analysis response v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "analysisId", "sourceType", "score", "feedback"],
+  "properties": {
+    "schemaVersion": {"const": 1},
+    "analysisId": {"type": "string", "format": "uuid"},
+    "sourceType": {"enum": ["pdf", "text", "vision_text"]},
+    "score": {"$ref": "#/$defs/score"},
+    "feedback": {"$ref": "#/$defs/feedback"}
+  },
+  "$defs": {
+    "nonEmptyText": {"type": "string", "minLength": 1, "maxLength": 600},
+    "score": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["scoreVersion", "readinessScore", "label", "components", "explanations"],
+      "properties": {
+        "scoreVersion": {"const": "resume-readiness-v1"},
+        "readinessScore": {"type": "integer", "minimum": 0, "maximum": 100},
+        "label": {"enum": ["Needs work", "Developing", "Good", "Strong"]},
+        "components": {"$ref": "#/$defs/components"},
+        "explanations": {
+          "type": "array",
+          "maxItems": 12,
+          "items": {"type": "string", "minLength": 1, "maxLength": 240}
+        }
+      }
+    },
+    "components": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["structure", "impact", "readability", "keywords"],
+      "properties": {
+        "structure": {"type": "integer", "minimum": 0, "maximum": 30},
+        "impact": {"type": "integer", "minimum": 0, "maximum": 40},
+        "readability": {"type": "integer", "minimum": 0, "maximum": 30},
+        "keywords": {"type": ["integer", "null"], "minimum": 0, "maximum": 25}
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {"keywords": {"type": "null"}},
+            "required": ["keywords"]
+          },
+          "then": {
+            "properties": {
+              "structure": {"maximum": 30},
+              "impact": {"maximum": 40},
+              "readability": {"maximum": 30},
+              "keywords": {"type": "null"}
+            }
+          },
+          "else": {
+            "properties": {
+              "structure": {"maximum": 25},
+              "impact": {"maximum": 30},
+              "readability": {"maximum": 20},
+              "keywords": {"type": "integer", "minimum": 0, "maximum": 25}
+            }
+          }
+        }
+      ]
+    },
+    "feedback": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["matchedKeywords", "missingKeywords", "strengths", "improvements", "powerBullets", "summary", "simulatedRecruiterComment"],
+      "properties": {
+        "matchedKeywords": {"type": "array", "maxItems": 20, "items": {"$ref": "#/$defs/nonEmptyText"}},
+        "missingKeywords": {"type": "array", "maxItems": 20, "items": {"$ref": "#/$defs/nonEmptyText"}},
+        "strengths": {"type": "array", "minItems": 1, "maxItems": 12, "items": {"$ref": "#/$defs/nonEmptyText"}},
+        "improvements": {"type": "array", "minItems": 1, "maxItems": 12, "items": {"$ref": "#/$defs/nonEmptyText"}},
+        "powerBullets": {"type": "array", "maxItems": 10, "items": {"$ref": "#/$defs/nonEmptyText"}},
+        "summary": {"type": "string", "minLength": 1, "maxLength": 500},
+        "simulatedRecruiterComment": {"type": "string", "minLength": 1, "maxLength": 800, "pattern": "^Simulated AI recruiter feedback:"}
+      }
+    }
+  }
+}

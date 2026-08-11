@@ -1,0 +1,10 @@
+Professional Summary
+Backend engineer focused on dependable services and clear operational documentation.
+
+Experience
+- Built Python services that reduced request latency by 20 percent.
+- Added bounded Redis admission controls and deterministic failure tests.
+- Documented release gates, incident timelines, and rollback decisions.
+
+Technical Skills
+Python Flask PostgreSQL Redis testing observability security performance reliability

@@ -1,0 +1,47 @@
+{
+  "expo": {
+    "name": "Resume.AI",
+    "slug": "resume-ai",
+    "version": "1.0.0",
+    "icon": "./assets/icon.png",
+    "orientation": "portrait",
+    "scheme": "resume-ai",
+    "userInterfaceStyle": "dark",
+    "updates": {
+      "enabled": false
+    },
+    "ios": {
+      "supportsTablet": false,
+      "bundleIdentifier": "com.avinashamanchi.resumeai",
+      "buildNumber": "1",
+      "icon": "./assets/icon.png",
+      "infoPlist": {
+        "ITSAppUsesNonExemptEncryption": false
+      }
+    },
+    "plugins": [
+      "expo-router",
+      "expo-sqlite",
+      [
+        "expo-secure-store",
+        {
+          "faceIDPermission": false
+        }
+      ],
+      [
+        "expo-splash-screen",
+        {
+          "backgroundColor": "#101416",
+          "image": "./assets/icon.png",
+          "imageWidth": 220,
+          "resizeMode": "contain"
+        }
+      ],
+      "expo-asset",
+      "./plugins/withReleaseNetworkPolicy.cjs"
+    ],
+    "experiments": {
+      "typedRoutes": true
+    }
+  }
+}

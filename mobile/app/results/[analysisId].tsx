@@ -1,0 +1,557 @@
+import { useLocalSearchParams, useRouter } from 'expo-router';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  AccessibilityInfo,
+  AppState,
+  findNodeHandle,
+  StyleSheet,
+  Text,
+  View,
+} from 'react-native';
+
+import { useBilling } from '../../src/billing/BillingProvider';
+import { FeedbackSections } from '../../src/components/FeedbackSections';
+import { AppButton, Card, Eyebrow, Screen, Title, uiStyles } from '../../src/components/primitives';
+import { ScoreCard } from '../../src/components/ScoreCard';
+import {
+  useAppController,
+  type AnalysisPresentation,
+  type DisplayReport,
+} from '../../src/controllers/AppController';
+import { AnalysisResultSchema } from '../../src/domain/contracts';
+import {
+  ReportExportError,
+  reportExporter,
+  type ReportExporterPort,
+} from '../../src/export/reportExporter';
+import {
+  ReportRecordSchema,
+  type ReportRecord,
+} from '../../src/storage/reportRepository';
+import { tokens } from '../../src/theme/tokens';
+
+type LoadedReport = Readonly<{
+  result: AnalysisPresentation;
+  exportRecord: ReportRecord | null;
+}>;
+
+type ReceiptNotice = Readonly<{ sequence: number; routeEpoch: number; message: string }>;
+
+type ShareAuthority = Readonly<{
+  token: symbol;
+  kind: 'text' | 'pdf';
+  analysisId: string;
+  routeEpoch: number;
+  report: LoadedReport;
+  lifecycle: AbortController;
+}>;
+
+type DeleteAuthority = Readonly<{
+  token: symbol;
+  analysisId: string;
+  routeEpoch: number;
+  report: LoadedReport;
+  lifecycle: AbortController;
+}>;
+
+function loadedFromDisplay(value: DisplayReport): LoadedReport | null {
+  const stored = ReportRecordSchema.safeParse(value);
+  if (stored.success) {
+    const result: AnalysisPresentation = {
+      analysisId: stored.data.id,
+      sourceType: stored.data.sourceType,
+      score: stored.data.score,
+      feedback: stored.data.feedback,
+      aiStatus: stored.data.aiStatus,
+    };
+    return {
+      result,
+      exportRecord: stored.data.feedback === null ? null : stored.data,
+    };
+  }
+  const direct = AnalysisResultSchema.safeParse(value);
+  if (!direct.success) return null;
+  const result: AnalysisPresentation = {
+    analysisId: direct.data.analysisId,
+    sourceType: direct.data.sourceType,
+    score: direct.data.score,
+    feedback: direct.data.feedback,
+    aiStatus: direct.data.schemaVersion === 1
+      ? 'legacy_feedback_present'
+      : direct.data.aiStatus,
+  };
+  const exportRecord = ReportRecordSchema.safeParse({
+    id: result.analysisId,
+    title: 'Resume analysis',
+    createdAt: new Date().toISOString(),
+    sourceType: result.sourceType,
+    score: result.score,
+    feedback: result.feedback,
+    aiStatus: result.aiStatus,
+  });
+  return {
+    result,
+    exportRecord: exportRecord.success && exportRecord.data.feedback !== null
+      ? exportRecord.data
+      : null,
+  };
+}
+
+function focusNode(value: View | Text | null): void {
+  if (value === null) return;
+  try {
+    const handle = findNodeHandle(value);
+    if (handle !== null) AccessibilityInfo.setAccessibilityFocus(handle);
+  } catch {
+    // A screen disappearing during an async action has no remaining focus target.
+  }
+}
+
+export function ResultsScreen({
+  exporter = reportExporter,
+  entitlementActive = true,
+  onUpgrade = () => {},
+}: Readonly<{
+  exporter?: ReportExporterPort;
+  entitlementActive?: boolean;
+  onUpgrade?: () => void;
+}>) {
+  const params = useLocalSearchParams<{ analysisId?: string | string[] }>();
+  const id = Array.isArray(params.analysisId) ? params.analysisId[0] : params.analysisId;
+  return (
+    <ResultsScreenContent
+      entitlementActive={entitlementActive}
+      exporter={exporter}
+      id={id}
+      key={id ?? 'missing'}
+      onUpgrade={onUpgrade}
+    />
+  );
+}
+
+function ResultsScreenContent({
+  id,
+  exporter,
+  entitlementActive,
+  onUpgrade,
+}: Readonly<{
+  id: string | undefined;
+  exporter: ReportExporterPort;
+  entitlementActive: boolean;
+  onUpgrade: () => void;
+}>) {
+  const router = useRouter();
+  const { actions, analysis, history } = useAppController();
+  const [loadedReport, setLoadedReport] = useState<LoadedReport | null>(null);
+  const [loaded, setLoaded] = useState(typeof id !== 'string');
+  const [receipt, setReceipt] = useState<ReceiptNotice | null>(null);
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [sharing, setSharing] = useState(false);
+  const [preparingPdf, setPreparingPdf] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const mounted = useRef(true);
+  const shareAuthority = useRef<ShareAuthority | null>(null);
+  const deleteAuthority = useRef<DeleteAuthority | null>(null);
+  const routeEpoch = 0;
+  const currentReport = loaded ? loadedReport : null;
+  const currentReportRef = useRef<LoadedReport | null>(currentReport);
+  const headingRef = useRef<View | null>(null);
+  const receiptRef = useRef<Text | null>(null);
+  const deleteErrorRef = useRef<Text | null>(null);
+  const receiptSequence = useRef(0);
+  const saved = useMemo(
+    () => history.reports.some(report => report.id === id),
+    [history.reports, id],
+  );
+  const getReport = history.get;
+
+  const publishReceipt = useCallback((message: string) => {
+    receiptSequence.current += 1;
+    setReceipt({ sequence: receiptSequence.current, routeEpoch, message });
+  }, []);
+
+  const routeIsCurrent = (authority: ShareAuthority): boolean => (
+    mounted.current &&
+    !authority.lifecycle.signal.aborted &&
+    id === authority.analysisId &&
+    routeEpoch === authority.routeEpoch &&
+    currentReportRef.current === authority.report
+  );
+
+  const beginShare = (
+    kind: 'text' | 'pdf',
+    analysisId: string | undefined,
+    epoch: number,
+    report: LoadedReport,
+  ): ShareAuthority | null => {
+    if (
+      !mounted.current ||
+      typeof analysisId !== 'string' ||
+      id !== analysisId ||
+      routeEpoch !== epoch ||
+      currentReportRef.current !== report ||
+      report.result.analysisId !== analysisId ||
+      (kind === 'pdf' && report.exportRecord?.id !== analysisId) ||
+      shareAuthority.current !== null ||
+      deleteAuthority.current !== null
+    ) return null;
+    const authority = Object.freeze({
+      token: Symbol('results-share'),
+      kind,
+      analysisId,
+      routeEpoch: epoch,
+      report,
+      lifecycle: new AbortController(),
+    });
+    shareAuthority.current = authority;
+    setSharing(true);
+    setPreparingPdf(kind === 'pdf');
+    return authority;
+  };
+
+  const finishShare = (authority: ShareAuthority): void => {
+    if (shareAuthority.current !== authority) return;
+    shareAuthority.current = null;
+    if (mounted.current) {
+      setSharing(false);
+      setPreparingPdf(false);
+    }
+  };
+
+  const deleteIsCurrent = (authority: DeleteAuthority): boolean => (
+    mounted.current &&
+    !authority.lifecycle.signal.aborted &&
+    deleteAuthority.current === authority &&
+    id === authority.analysisId &&
+    routeEpoch === authority.routeEpoch &&
+    currentReportRef.current === authority.report
+  );
+
+  const beginDelete = (
+    analysisId: string | undefined,
+    epoch: number,
+    report: LoadedReport,
+  ): DeleteAuthority | null => {
+    if (
+      !mounted.current ||
+      typeof analysisId !== 'string' ||
+      id !== analysisId ||
+      routeEpoch !== epoch ||
+      currentReportRef.current !== report ||
+      report.result.analysisId !== analysisId ||
+      shareAuthority.current !== null ||
+      deleteAuthority.current !== null
+    ) return null;
+    const authority = Object.freeze({
+      token: Symbol('results-delete'),
+      analysisId,
+      routeEpoch: epoch,
+      report,
+      lifecycle: new AbortController(),
+    });
+    deleteAuthority.current = authority;
+    setDeleting(true);
+    setDeleteError(null);
+    publishReceipt('Deleting local report…');
+    return authority;
+  };
+
+  const finishDelete = (authority: DeleteAuthority): void => {
+    if (deleteAuthority.current !== authority) return;
+    deleteAuthority.current = null;
+    if (mounted.current) setDeleting(false);
+  };
+
+  useEffect(() => {
+    mounted.current = true;
+    const appStateSubscription = AppState.addEventListener('change', nextState => {
+      if (nextState === 'inactive' || nextState === 'background') {
+        shareAuthority.current?.lifecycle.abort();
+      }
+    });
+    return () => {
+      mounted.current = false;
+      shareAuthority.current?.lifecycle.abort();
+      deleteAuthority.current?.lifecycle.abort();
+      appStateSubscription.remove();
+    };
+  }, []);
+
+  useEffect(() => {
+    void exporter.cleanupAbandoned().catch(() => {
+      if (mounted.current) {
+        publishReceipt('A temporary PDF could not be verified as removed. Reopen this report to retry cleanup.');
+      }
+    });
+  }, [exporter, publishReceipt]);
+
+  useEffect(() => {
+    currentReportRef.current = currentReport;
+  }, [currentReport]);
+
+  useEffect(() => {
+    let active = true;
+    if (typeof id !== 'string') return () => { active = false; };
+    void getReport(id).then(value => {
+      if (!active) return;
+      setLoadedReport(value === null ? null : loadedFromDisplay(value));
+      setLoaded(true);
+    });
+    return () => { active = false; };
+  }, [getReport, id]);
+
+  useEffect(() => {
+    if (loadedReport !== null) focusNode(headingRef.current);
+  }, [loadedReport]);
+
+  useEffect(() => {
+    if (receipt === null || receipt.routeEpoch !== routeEpoch) return;
+    AccessibilityInfo.announceForAccessibility(receipt.message);
+    focusNode(deleteError === null ? receiptRef.current : deleteErrorRef.current);
+  }, [deleteError, receipt, routeEpoch]);
+
+  if (!loaded) {
+    return <Screen><Eyebrow>Resume.AI</Eyebrow><Title>Opening report…</Title></Screen>;
+  }
+  if (currentReport === null) {
+    return (
+      <Screen>
+        <Eyebrow>Local report</Eyebrow>
+        <Title>Report not found.</Title>
+        <Text style={uiStyles.muted}>This analysis is not available in the current session or local history.</Text>
+        <AppButton
+          label="Start a new analysis"
+          accessibilityHint="Returns to the Analyze tab."
+          onPress={() => router.replace('/(tabs)')}
+        />
+      </Screen>
+    );
+  }
+
+  const { result, exportRecord } = currentReport;
+
+  const save = async () => {
+    if (!entitlementActive && !saved && history.reportCount !== null && history.reportCount >= 3) {
+      publishReceipt('Free includes up to 3 saved reports. Resume.AI Pro allows up to 10,000 local reports.');
+      onUpgrade();
+      return;
+    }
+    const savedReport = await history.saveCurrent(entitlementActive ? 10_000 : 3);
+    if (mounted.current) {
+      publishReceipt(savedReport === null
+        ? 'The report could not be saved locally.'
+        : 'Saved in the app’s local report store.');
+    }
+  };
+
+  const shareText = async () => {
+    const authority = beginShare('text', id, routeEpoch, currentReport);
+    if (authority === null) return;
+    try {
+      await actions.shareSummary(result);
+      if (routeIsCurrent(authority)) publishReceipt('Text share sheet closed.');
+    } catch {
+      if (routeIsCurrent(authority)) publishReceipt('The text summary was not shared.');
+    } finally {
+      finishShare(authority);
+    }
+  };
+
+  const sharePdf = async () => {
+    if (exportRecord === null) {
+      publishReceipt('A verified feedback report is required before PDF export.');
+      return;
+    }
+    if (!entitlementActive) {
+      publishReceipt('PDF report export is included with Resume.AI Pro.');
+      onUpgrade();
+      return;
+    }
+    const authority = beginShare('pdf', id, routeEpoch, currentReport);
+    if (authority === null) return;
+    publishReceipt('Preparing a PDF report…');
+    try {
+      const exportReceipt = await exporter.export(exportRecord);
+      if (!routeIsCurrent(authority)) {
+        await exporter.discard(exportReceipt);
+        return;
+      }
+      await exporter.share(exportReceipt, authority.lifecycle.signal);
+      if (routeIsCurrent(authority)) {
+        publishReceipt('Share sheet closed. The temporary PDF was removed.');
+      }
+    } catch (error) {
+      if (!routeIsCurrent(authority)) return;
+      publishReceipt(
+        error instanceof ReportExportError && error.code === 'cleanup_failed'
+          ? 'The temporary PDF could not be verified as removed. Reopen this report to retry cleanup.'
+          : 'The PDF report was not shared.',
+      );
+    } finally {
+      finishShare(authority);
+    }
+  };
+
+  const deleteReport = async () => {
+    const authority = beginDelete(id, routeEpoch, currentReport);
+    if (authority === null) return;
+    try {
+      const deleted = await history.delete(result.analysisId);
+      if (!deleteIsCurrent(authority)) return;
+      if (deleted) {
+        setConfirmDelete(false);
+        setDeleteError(null);
+        publishReceipt('Local report deleted.');
+      } else {
+        const message = 'The local report was not deleted. Try again.';
+        setDeleteError(message);
+        publishReceipt(message);
+      }
+    } catch {
+      if (deleteIsCurrent(authority)) {
+        const message = 'The local report was not deleted. Try again.';
+        setDeleteError(message);
+        publishReceipt(message);
+      }
+    } finally {
+      finishDelete(authority);
+    }
+  };
+
+  const startNew = async () => {
+    await analysis.commands.reset();
+    if (mounted.current) router.replace('/(tabs)');
+  };
+
+  return (
+    <Screen>
+      <View
+        ref={headingRef}
+        accessible
+        accessibilityLabel="Analysis complete. Your editorial read."
+        accessibilityRole="header"
+        style={styles.heading}>
+        <Eyebrow>Analysis complete</Eyebrow>
+        <Title>Your editorial read.</Title>
+        <Text style={uiStyles.muted}>Use the score as a structured review signal, then judge each suggestion against the role and your real experience.</Text>
+      </View>
+      <ScoreCard score={result.score} />
+      <FeedbackSections result={result} />
+      <Card>
+        <Text style={uiStyles.sectionTitle}>Keep or share</Text>
+        <Text style={uiStyles.muted}>Nothing saves automatically. Raw/original PDF bytes, filenames, resume-input fields, job-description-input fields, installation tokens, and request identifiers are not stored in local reports. Generated feedback and bullet drafts may quote, transform, or restate names, contact information, resume content, or job-description content. Review generated feedback before saving, sharing, or allowing it to enter device backups. A temporary PDF is removed when the share sheet closes or fails.</Text>
+        {!saved ? (
+          <AppButton
+            label="Save locally"
+            accessibilityHint="Saves this bounded report in the local report store."
+            onPress={() => { void save(); }}
+            disabled={sharing || deleting}
+          />
+        ) : null}
+        <AppButton
+          label="Share text summary"
+          accessibilityHint="Opens the system share sheet with a bounded text summary."
+          onPress={() => { void shareText(); }}
+          disabled={sharing || deleting}
+          tone="secondary"
+        />
+        {exportRecord !== null ? (
+          <AppButton
+            label={entitlementActive
+              ? (preparingPdf ? 'Preparing PDF report…' : 'Share PDF report')
+              : 'Unlock PDF report'}
+            accessibilityLabel={entitlementActive ? 'Share report' : 'Unlock PDF report'}
+            accessibilityHint={entitlementActive
+              ? 'Creates a PDF report, opens the system share sheet, then removes the temporary file.'
+              : 'Opens Resume.AI plan options. PDF exports are included with Pro.'}
+            onPress={() => { void sharePdf(); }}
+            disabled={sharing || deleting}
+            tone="secondary"
+          />
+        ) : null}
+        <AppButton
+          label="New analysis"
+          accessibilityHint="Clears the current analysis and returns to Analyze."
+          onPress={() => { void startNew(); }}
+          disabled={sharing || deleting}
+          tone="quiet"
+        />
+        {saved ? (
+          <AppButton
+            label="Delete saved report"
+            accessibilityHint="Opens a confirmation before deleting this local report."
+            onPress={() => { setDeleteError(null); setConfirmDelete(true); }}
+            disabled={sharing || deleting}
+            tone="danger"
+          />
+        ) : null}
+      </Card>
+      {receipt !== null && receipt.routeEpoch === routeEpoch ? (
+        <Text
+          ref={receiptRef}
+          accessibilityRole="alert"
+          accessibilityLiveRegion="polite"
+          style={styles.receipt}>
+          {receipt.message}
+        </Text>
+      ) : null}
+      {confirmDelete ? (
+        <View
+          accessibilityViewIsModal
+          accessibilityLabel="Delete this local report?"
+          testID="delete-result-modal">
+          <Card style={styles.deleteCard}>
+            <Text accessibilityRole="header" style={uiStyles.sectionTitle}>Delete this local report?</Text>
+            <Text style={uiStyles.muted}>This removes the active local record. Restoring an existing backup may restore reports deleted from the active app.</Text>
+            {deleteError !== null ? (
+              <Text
+                ref={deleteErrorRef}
+                accessibilityRole="alert"
+                accessibilityLiveRegion="assertive"
+                testID="delete-result-error"
+                style={styles.deleteError}>
+                {deleteError}
+              </Text>
+            ) : null}
+            <AppButton
+              label="Keep report"
+              accessibilityHint="Returns to the report without deleting it."
+              onPress={() => { setDeleteError(null); setConfirmDelete(false); }}
+              disabled={deleting}
+              tone="quiet"
+            />
+            <AppButton
+              label={deleting ? 'Deleting local report…' : 'Confirm delete report'}
+              accessibilityLabel="Confirm delete report"
+              accessibilityHint="Deletes this bounded report from active local history. Restoring an existing backup may restore it."
+              onPress={() => { void deleteReport(); }}
+              disabled={deleting}
+              tone="danger"
+            />
+          </Card>
+        </View>
+      ) : null}
+    </Screen>
+  );
+}
+
+function ResultsRoute() {
+  const billing = useBilling();
+  const router = useRouter();
+  return (
+    <ResultsScreen
+      entitlementActive={billing.entitlementActive}
+      onUpgrade={() => router.push('/upgrade')}
+    />
+  );
+}
+
+export default ResultsRoute;
+
+const styles = StyleSheet.create({
+  heading: { rowGap: 10 },
+  receipt: { color: tokens.color.accent, fontSize: 15, lineHeight: 22 },
+  deleteError: { color: tokens.color.warning, fontSize: 15, lineHeight: 22 },
+  deleteCard: { borderColor: tokens.color.danger },
+});

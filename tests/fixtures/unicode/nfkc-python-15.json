@@ -1,0 +1,2098 @@
+[
+  {
+    "input": "e\u0301",
+    "nfkc": "\u00e9"
+  },
+  {
+    "input": "\u00e9",
+    "nfkc": "\u00e9"
+  },
+  {
+    "input": "a\u0301\u0323",
+    "nfkc": "\u1ea1\u0301"
+  },
+  {
+    "input": "\u212b\u0323",
+    "nfkc": "\u1ea0\u030a"
+  },
+  {
+    "input": "\u1100\u1161",
+    "nfkc": "\uac00"
+  },
+  {
+    "input": "\ufb03",
+    "nfkc": "ffi"
+  },
+  {
+    "input": "\u2163",
+    "nfkc": "IV"
+  },
+  {
+    "input": "\ua7f1",
+    "nfkc": "\ua7f1"
+  },
+  {
+    "input": "S",
+    "nfkc": "S"
+  },
+  {
+    "input": "\ud800",
+    "nfkc": "\ud800"
+  },
+  {
+    "input": "\ua7f1\u0301S",
+    "nfkc": "\ua7f1\u0301S"
+  },
+  {
+    "input": "\u00a0\u212a\ufb00\u0345",
+    "nfkc": " Kff\u0345"
+  },
+  {
+    "input": "\u0323\u0345\ud800\u212a\u0345\u00c5",
+    "nfkc": "\u0323\u0345\ud800K\u0345\u00c5"
+  },
+  {
+    "input": "\ud800\ua7f1\ufb03eA\u2163",
+    "nfkc": "\ud800\ua7f1ffieAIV"
+  },
+  {
+    "input": "\u2163\u0323\ud833\udcd6A\u00c5\u212b\ud800",
+    "nfkc": "I\u1e7e\ud833\udcd6A\u00c5\u00c5\ud800"
+  },
+  {
+    "input": "e\ufb03A\udbff\udfff\ud800\ud800",
+    "nfkc": "effiA\udbff\udfff\ud800\ud800"
+  },
+  {
+    "input": "\u0345\u1100",
+    "nfkc": "\u0345\u1100"
+  },
+  {
+    "input": "\u0301A\u1c80\u1161\u1100\udbff\udfffe\u0345",
+    "nfkc": "\u0301A\u1c80\u1161\u1100\udbff\udfffe\u0345"
+  },
+  {
+    "input": "\ud833\udcd6\u212b\u1c80",
+    "nfkc": "\ud833\udcd6\u00c5\u1c80"
+  },
+  {
+    "input": "Ae\u212bAA\u0345\u0345\u1161",
+    "nfkc": "Ae\u00c5AA\u0345\u0345\u1161"
+  },
+  {
+    "input": "\u212bA\u1161\ua7f1\u1c80\u00c5\ud833\udcd6",
+    "nfkc": "\u00c5A\u1161\ua7f1\u1c80\u00c5\ud833\udcd6"
+  },
+  {
+    "input": "\ud800\ufb03\ua7f1eA\ufb03\ud833\udcd6",
+    "nfkc": "\ud800ffi\ua7f1eAffi\ud833\udcd6"
+  },
+  {
+    "input": "\u212a\u0301\u0301\u1161\u212b\udbff\udfff\u1100\u2163",
+    "nfkc": "\u1e30\u0301\u1161\u00c5\udbff\udfff\u1100IV"
+  },
+  {
+    "input": "\u1161\u0345\u212b",
+    "nfkc": "\u1161\u0345\u00c5"
+  },
+  {
+    "input": "\ud833\udcd6\ua7f1e\ud800A",
+    "nfkc": "\ud833\udcd6\ua7f1e\ud800A"
+  },
+  {
+    "input": "\ud800e\ufb03\ud800e",
+    "nfkc": "\ud800effi\ud800e"
+  },
+  {
+    "input": "\u1161\u212a\u212a\ua7f1\u2163\u1c80\u0345\u212a",
+    "nfkc": "\u1161KK\ua7f1IV\u1c80\u0345K"
+  },
+  {
+    "input": "\u212a\u1161",
+    "nfkc": "K\u1161"
+  },
+  {
+    "input": "\u0323\u0301\u1c80",
+    "nfkc": "\u0323\u0301\u1c80"
+  },
+  {
+    "input": "\u212a\ua7f1\u2163\ufb03\u1c80\u0323\u212a",
+    "nfkc": "K\ua7f1IVffi\u1c80\u0323K"
+  },
+  {
+    "input": "\u212a\u0345",
+    "nfkc": "K\u0345"
+  },
+  {
+    "input": "\ud833\udcd6\u1161\u1c80\u212b\u212b\udbff\udfff\u1161",
+    "nfkc": "\ud833\udcd6\u1161\u1c80\u00c5\u00c5\udbff\udfff\u1161"
+  },
+  {
+    "input": "e\u2163\u0345A\u0345\u0345\ud833\udcd6",
+    "nfkc": "eIV\u0345A\u0345\u0345\ud833\udcd6"
+  },
+  {
+    "input": "\u1c80\ud833\udcd6\ufb03\u0323\u2163\ua7f1",
+    "nfkc": "\u1c80\ud833\udcd6ff\u1ecbIV\ua7f1"
+  },
+  {
+    "input": "\ud800\ud800\u0301\u0345\u0345\ud800\ua7f1\udbff\udfff",
+    "nfkc": "\ud800\ud800\u0301\u0345\u0345\ud800\ua7f1\udbff\udfff"
+  },
+  {
+    "input": "\u212a\u1c80\u1161",
+    "nfkc": "K\u1c80\u1161"
+  },
+  {
+    "input": "\u212a\u0345\u1161\u1161",
+    "nfkc": "K\u0345\u1161\u1161"
+  },
+  {
+    "input": "\u1161\ud833\udcd6\u00c5\ufb03\u1161",
+    "nfkc": "\u1161\ud833\udcd6\u00c5ffi\u1161"
+  },
+  {
+    "input": "\u212b\ua7f1\ufb03\u1100\u212b\u0345",
+    "nfkc": "\u00c5\ua7f1ffi\u1100\u00c5\u0345"
+  },
+  {
+    "input": "\udbff\udfffA\u212a\ud833\udcd6\ua7f1\ud800",
+    "nfkc": "\udbff\udfffAK\ud833\udcd6\ua7f1\ud800"
+  },
+  {
+    "input": "\ud833\udcd6e\ud833\udcd6\u212b\ufb03\u212b\u0323\ud833\udcd6",
+    "nfkc": "\ud833\udcd6e\ud833\udcd6\u00c5ffi\u1ea0\u030a\ud833\udcd6"
+  },
+  {
+    "input": "\u0323\ud800\ud833\udcd6",
+    "nfkc": "\u0323\ud800\ud833\udcd6"
+  },
+  {
+    "input": "\u1161\ua7f1\u1c80\ufb03",
+    "nfkc": "\u1161\ua7f1\u1c80ffi"
+  },
+  {
+    "input": "\ud800A\u1c80\ud833\udcd6\ufb03",
+    "nfkc": "\ud800A\u1c80\ud833\udcd6ffi"
+  },
+  {
+    "input": "\u0345\u0301\udbff\udfff\ud800",
+    "nfkc": "\u0301\u0345\udbff\udfff\ud800"
+  },
+  {
+    "input": "\udbff\udfff\u2163\u1100\udbff\udfff",
+    "nfkc": "\udbff\udfffIV\u1100\udbff\udfff"
+  },
+  {
+    "input": "\ua7f1\u00c5\ud833\udcd6\u1100",
+    "nfkc": "\ua7f1\u00c5\ud833\udcd6\u1100"
+  },
+  {
+    "input": "\u1c80A",
+    "nfkc": "\u1c80A"
+  },
+  {
+    "input": "\udbff\udfff\u0345\ufb03\ua7f1\u0345",
+    "nfkc": "\udbff\udfff\u0345ffi\ua7f1\u0345"
+  },
+  {
+    "input": "\u0345\u00c5\udbff\udfff",
+    "nfkc": "\u0345\u00c5\udbff\udfff"
+  },
+  {
+    "input": "\u212b\ud833\udcd6\u1161",
+    "nfkc": "\u00c5\ud833\udcd6\u1161"
+  },
+  {
+    "input": "\u00c5\ufb03",
+    "nfkc": "\u00c5ffi"
+  },
+  {
+    "input": "\u212a\u1c80\u0345\u1100",
+    "nfkc": "K\u1c80\u0345\u1100"
+  },
+  {
+    "input": "e\u212b\ufb03\u0345",
+    "nfkc": "e\u00c5ffi\u0345"
+  },
+  {
+    "input": "\u0345\u00c5e\u212b",
+    "nfkc": "\u0345\u00c5e\u00c5"
+  },
+  {
+    "input": "\u1161\u1100",
+    "nfkc": "\u1161\u1100"
+  },
+  {
+    "input": "\u0323\u212a\u0301\udbff\udfff\u1161",
+    "nfkc": "\u0323\u1e30\udbff\udfff\u1161"
+  },
+  {
+    "input": "\u212b\udbff\udfff\u0323\u0301\ufb03",
+    "nfkc": "\u00c5\udbff\udfff\u0323\u0301ffi"
+  },
+  {
+    "input": "\u1c80\ud833\udcd6\u1161\ud833\udcd6\u0345\ufb03",
+    "nfkc": "\u1c80\ud833\udcd6\u1161\ud833\udcd6\u0345ffi"
+  },
+  {
+    "input": "\u1c80\ua7f1\u1c80\u1c80\udbff\udfff\u212b\u00c5",
+    "nfkc": "\u1c80\ua7f1\u1c80\u1c80\udbff\udfff\u00c5\u00c5"
+  },
+  {
+    "input": "\u1c80\u0323",
+    "nfkc": "\u1c80\u0323"
+  },
+  {
+    "input": "e\u1100e\ufb03\ufb03e",
+    "nfkc": "e\u1100effiffie"
+  },
+  {
+    "input": "\u1100\udbff\udfff\ud800\u0301\u0301\u212b\ud833\udcd6\u00c5",
+    "nfkc": "\u1100\udbff\udfff\ud800\u0301\u0301\u00c5\ud833\udcd6\u00c5"
+  },
+  {
+    "input": "\u0323\u0323\ua7f1\u0301\ua7f1",
+    "nfkc": "\u0323\u0323\ua7f1\u0301\ua7f1"
+  },
+  {
+    "input": "\u212a\u0345\u212b\u212b",
+    "nfkc": "K\u0345\u00c5\u00c5"
+  },
+  {
+    "input": "\udbff\udfff\u0345e\ud833\udcd6\udbff\udfffA",
+    "nfkc": "\udbff\udfff\u0345e\ud833\udcd6\udbff\udfffA"
+  },
+  {
+    "input": "e\ud833\udcd6\u1c80\u1161\u0323",
+    "nfkc": "e\ud833\udcd6\u1c80\u1161\u0323"
+  },
+  {
+    "input": "\ua7f1\u2163\u212a\u212b\u0301\u0345\udbff\udfff",
+    "nfkc": "\ua7f1IVK\u01fa\u0345\udbff\udfff"
+  },
+  {
+    "input": "\ud800e\u1161\ua7f1\u1100",
+    "nfkc": "\ud800e\u1161\ua7f1\u1100"
+  },
+  {
+    "input": "\u0323\u1161\u1100\u1c80e",
+    "nfkc": "\u0323\u1161\u1100\u1c80e"
+  },
+  {
+    "input": "\u2163\u2163",
+    "nfkc": "IVIV"
+  },
+  {
+    "input": "e\ua7f1A\u0323\u212b\u0345\u212b\udbff\udfff",
+    "nfkc": "e\ua7f1\u1ea0\u00c5\u0345\u00c5\udbff\udfff"
+  },
+  {
+    "input": "e\u0345\ud833\udcd6\u212b\ua7f1\ud800\u212a",
+    "nfkc": "e\u0345\ud833\udcd6\u00c5\ua7f1\ud800K"
+  },
+  {
+    "input": "\ud800\u0301e\u1100e",
+    "nfkc": "\ud800\u0301e\u1100e"
+  },
+  {
+    "input": "\udbff\udfff\u1c80\ud833\udcd6\u1161\u0301\u0301",
+    "nfkc": "\udbff\udfff\u1c80\ud833\udcd6\u1161\u0301\u0301"
+  },
+  {
+    "input": "\u1100\u0345",
+    "nfkc": "\u1100\u0345"
+  },
+  {
+    "input": "\ufb03\ufb03\u1100\u212a",
+    "nfkc": "ffiffi\u1100K"
+  },
+  {
+    "input": "\u1161\u1c80\ufb03\ud833\udcd6e\u0301",
+    "nfkc": "\u1161\u1c80ffi\ud833\udcd6\u00e9"
+  },
+  {
+    "input": "\u212b\ud800\u00c5\u0323\ufb03\u0323",
+    "nfkc": "\u00c5\ud800\u1ea0\u030aff\u1ecb"
+  },
+  {
+    "input": "\u212ae\u0301\ud800\u212b\u1c80\udbff\udfff",
+    "nfkc": "K\u00e9\ud800\u00c5\u1c80\udbff\udfff"
+  },
+  {
+    "input": "\udbff\udfff\u1c80\u00c5\u00c5\ud800\u0301\u1161",
+    "nfkc": "\udbff\udfff\u1c80\u00c5\u00c5\ud800\u0301\u1161"
+  },
+  {
+    "input": "A\u1161\u2163\u1c80\u2163",
+    "nfkc": "A\u1161IV\u1c80IV"
+  },
+  {
+    "input": "\ud800ee",
+    "nfkc": "\ud800ee"
+  },
+  {
+    "input": "\u1161\u0345\ud800",
+    "nfkc": "\u1161\u0345\ud800"
+  },
+  {
+    "input": "\u0345\u0345\ud800\u00c5\u0301\ufb03A",
+    "nfkc": "\u0345\u0345\ud800\u01faffiA"
+  },
+  {
+    "input": "\u0301\u0323\u1100\u1c80\ud833\udcd6\ud800\u0301",
+    "nfkc": "\u0323\u0301\u1100\u1c80\ud833\udcd6\ud800\u0301"
+  },
+  {
+    "input": "\u0301\ud800\u2163\ud800\udbff\udfff\u00c5",
+    "nfkc": "\u0301\ud800IV\ud800\udbff\udfff\u00c5"
+  },
+  {
+    "input": "\u1100\udbff\udfff\u212a",
+    "nfkc": "\u1100\udbff\udfffK"
+  },
+  {
+    "input": "\u00c5\u0345\u212a\ua7f1\u0323\u0345A\ud800",
+    "nfkc": "\u00c5\u0345K\ua7f1\u0323\u0345A\ud800"
+  },
+  {
+    "input": "\u212b\u1161\u0345\u2163\udbff\udfff\udbff\udfff\u1161",
+    "nfkc": "\u00c5\u1161\u0345IV\udbff\udfff\udbff\udfff\u1161"
+  },
+  {
+    "input": "A\u00c5",
+    "nfkc": "A\u00c5"
+  },
+  {
+    "input": "A\u0323\u1c80\ufb03\u0301",
+    "nfkc": "\u1ea0\u1c80ff\u00ed"
+  },
+  {
+    "input": "A\u2163\ud800\ud833\udcd6\u2163\ua7f1",
+    "nfkc": "AIV\ud800\ud833\udcd6IV\ua7f1"
+  },
+  {
+    "input": "\u212b\u1161\u1c80\u1100A",
+    "nfkc": "\u00c5\u1161\u1c80\u1100A"
+  },
+  {
+    "input": "\u00c5\ua7f1\u0301\u00c5\u0345\u0323\ufb03",
+    "nfkc": "\u00c5\ua7f1\u0301\u1ea0\u030a\u0345ffi"
+  },
+  {
+    "input": "\u0323\u00c5\u0345",
+    "nfkc": "\u0323\u00c5\u0345"
+  },
+  {
+    "input": "\udbff\udfff\u0345\u0345\u1161\u2163\udbff\udfff\u1c80\u1c80",
+    "nfkc": "\udbff\udfff\u0345\u0345\u1161IV\udbff\udfff\u1c80\u1c80"
+  },
+  {
+    "input": "\ud833\udcd6\udbff\udfff",
+    "nfkc": "\ud833\udcd6\udbff\udfff"
+  },
+  {
+    "input": "\u0301\u1100A\u212a\u0323\u0345\u0323",
+    "nfkc": "\u0301\u1100A\u1e32\u0323\u0345"
+  },
+  {
+    "input": "\u1c80\u1100\u1161\u0323\u1161",
+    "nfkc": "\u1c80\uac00\u0323\u1161"
+  },
+  {
+    "input": "\u0301\udbff\udfff\ud800\u00c5\ua7f1\u0301\u1100",
+    "nfkc": "\u0301\udbff\udfff\ud800\u00c5\ua7f1\u0301\u1100"
+  },
+  {
+    "input": "\u212ae",
+    "nfkc": "Ke"
+  },
+  {
+    "input": "A\u1161A\ua7f1\ud800e\u0345",
+    "nfkc": "A\u1161A\ua7f1\ud800e\u0345"
+  },
+  {
+    "input": "\u1100\u1100",
+    "nfkc": "\u1100\u1100"
+  },
+  {
+    "input": "e\u0301\u2163A\u1c80A",
+    "nfkc": "\u00e9IVA\u1c80A"
+  },
+  {
+    "input": "\u0323\u212a\ufb03\u2163\u1100",
+    "nfkc": "\u0323KffiIV\u1100"
+  },
+  {
+    "input": "\udbff\udfff\u2163",
+    "nfkc": "\udbff\udfffIV"
+  },
+  {
+    "input": "\ua7f1\u00c5\u0323\ud833\udcd6",
+    "nfkc": "\ua7f1\u1ea0\u030a\ud833\udcd6"
+  },
+  {
+    "input": "\u1c80\udbff\udfff\ufb03",
+    "nfkc": "\u1c80\udbff\udfffffi"
+  },
+  {
+    "input": "\u0345A\ua7f1\u0323\u212b",
+    "nfkc": "\u0345A\ua7f1\u0323\u00c5"
+  },
+  {
+    "input": "\u0345\ufb03\ud833\udcd6A\u212a",
+    "nfkc": "\u0345ffi\ud833\udcd6AK"
+  },
+  {
+    "input": "\u2163\u212b\u1c80\u1161\u1c80\u1100\ud800",
+    "nfkc": "IV\u00c5\u1c80\u1161\u1c80\u1100\ud800"
+  },
+  {
+    "input": "\u1161\u212b\ud833\udcd6\u212a\ua7f1\ufb03",
+    "nfkc": "\u1161\u00c5\ud833\udcd6K\ua7f1ffi"
+  },
+  {
+    "input": "\u1100\u0323e\u1c80\ua7f1A\ufb03\ud800",
+    "nfkc": "\u1100\u0323e\u1c80\ua7f1Affi\ud800"
+  },
+  {
+    "input": "\u0301A\u1161\u00c5\u1161\u1161\ufb03",
+    "nfkc": "\u0301A\u1161\u00c5\u1161\u1161ffi"
+  },
+  {
+    "input": "\u1100\u00c5\u2163",
+    "nfkc": "\u1100\u00c5IV"
+  },
+  {
+    "input": "\u0323\u1161\ufb03\u212b\u1161\u2163",
+    "nfkc": "\u0323\u1161ffi\u00c5\u1161IV"
+  },
+  {
+    "input": "\ud833\udcd6\ufb03\u0345\ua7f1\ua7f1\u1161A",
+    "nfkc": "\ud833\udcd6ffi\u0345\ua7f1\ua7f1\u1161A"
+  },
+  {
+    "input": "A\u1161\ud800\u1c80",
+    "nfkc": "A\u1161\ud800\u1c80"
+  },
+  {
+    "input": "\u212a\u1c80\ud800\u212a\u212a",
+    "nfkc": "K\u1c80\ud800KK"
+  },
+  {
+    "input": "\u00c5\u0301\u212b",
+    "nfkc": "\u01fa\u00c5"
+  },
+  {
+    "input": "\ud800\u00c5A\u1c80\u212b\ua7f1A\u0345",
+    "nfkc": "\ud800\u00c5A\u1c80\u00c5\ua7f1A\u0345"
+  },
+  {
+    "input": "\ud833\udcd6A\u1100e",
+    "nfkc": "\ud833\udcd6A\u1100e"
+  },
+  {
+    "input": "\u00c5\u2163A",
+    "nfkc": "\u00c5IVA"
+  },
+  {
+    "input": "\u00c5\ua7f1",
+    "nfkc": "\u00c5\ua7f1"
+  },
+  {
+    "input": "\u2163\u0301\u0345\u1c80\ud800\u1161\ud800",
+    "nfkc": "IV\u0301\u0345\u1c80\ud800\u1161\ud800"
+  },
+  {
+    "input": "\ufb03A\ud800\u2163",
+    "nfkc": "ffiA\ud800IV"
+  },
+  {
+    "input": "e\ud800",
+    "nfkc": "e\ud800"
+  },
+  {
+    "input": "\u212a\u212a\udbff\udfff\u212a\u2163",
+    "nfkc": "KK\udbff\udfffKIV"
+  },
+  {
+    "input": "\u1c80\u212a\u00c5\ud800",
+    "nfkc": "\u1c80K\u00c5\ud800"
+  },
+  {
+    "input": "\ua7f1\u212bAA\u1100\ud800",
+    "nfkc": "\ua7f1\u00c5AA\u1100\ud800"
+  },
+  {
+    "input": "\ud800\u1100\u0345\u0345\u212b\ud833\udcd6",
+    "nfkc": "\ud800\u1100\u0345\u0345\u00c5\ud833\udcd6"
+  },
+  {
+    "input": "\u2163\u00c5\u0323\ud800\ua7f1",
+    "nfkc": "IV\u1ea0\u030a\ud800\ua7f1"
+  },
+  {
+    "input": "\u212a\ua7f1\u0345\u0345\udbff\udfff",
+    "nfkc": "K\ua7f1\u0345\u0345\udbff\udfff"
+  },
+  {
+    "input": "\ud800\u212be\u0323\u212a\u212a\u212b\u1161",
+    "nfkc": "\ud800\u00c5\u1eb9KK\u00c5\u1161"
+  },
+  {
+    "input": "\u0345\u0301\u00c5\u2163\u1100\ud833\udcd6",
+    "nfkc": "\u0301\u0345\u00c5IV\u1100\ud833\udcd6"
+  },
+  {
+    "input": "\u212a\u212b\u0301",
+    "nfkc": "K\u01fa"
+  },
+  {
+    "input": "\u0345\u0345\u1c80",
+    "nfkc": "\u0345\u0345\u1c80"
+  },
+  {
+    "input": "\ud800\u0301\u212b\u212b",
+    "nfkc": "\ud800\u0301\u00c5\u00c5"
+  },
+  {
+    "input": "\u1100\udbff\udfffA",
+    "nfkc": "\u1100\udbff\udfffA"
+  },
+  {
+    "input": "\u212a\u0345",
+    "nfkc": "K\u0345"
+  },
+  {
+    "input": "e\ud800",
+    "nfkc": "e\ud800"
+  },
+  {
+    "input": "\ufb03\u1c80\u212bA\u0323\udbff\udfff\ufb03\u1161",
+    "nfkc": "ffi\u1c80\u00c5\u1ea0\udbff\udfffffi\u1161"
+  },
+  {
+    "input": "\ud833\udcd6\u1100\ufb03\u0323\ua7f1\ud833\udcd6",
+    "nfkc": "\ud833\udcd6\u1100ff\u1ecb\ua7f1\ud833\udcd6"
+  },
+  {
+    "input": "\u0323\u00c5\u212bA\u0301A\u0345A",
+    "nfkc": "\u0323\u00c5\u00c5\u00c1A\u0345A"
+  },
+  {
+    "input": "\u212b\u212b\u0323",
+    "nfkc": "\u00c5\u1ea0\u030a"
+  },
+  {
+    "input": "\ud800\udbff\udfffA\u0301\ua7f1\ud800A",
+    "nfkc": "\ud800\udbff\udfff\u00c1\ua7f1\ud800A"
+  },
+  {
+    "input": "e\ufb03\u0301\ufb03\ud800\u212aA\u0345",
+    "nfkc": "eff\u00edffi\ud800KA\u0345"
+  },
+  {
+    "input": "A\u0323AA\udbff\udfffe",
+    "nfkc": "\u1ea0AA\udbff\udfffe"
+  },
+  {
+    "input": "e\u1161A\udbff\udfff\u0301A\u212b\u2163",
+    "nfkc": "e\u1161A\udbff\udfff\u0301A\u00c5IV"
+  },
+  {
+    "input": "\u0323A\udbff\udfff\u1c80\u212b\u0301\ud800",
+    "nfkc": "\u0323A\udbff\udfff\u1c80\u01fa\ud800"
+  },
+  {
+    "input": "\u0345\u0301\ud800",
+    "nfkc": "\u0301\u0345\ud800"
+  },
+  {
+    "input": "AAA\u1161",
+    "nfkc": "AAA\u1161"
+  },
+  {
+    "input": "A\u1161\u2163\u0345\ud800",
+    "nfkc": "A\u1161IV\u0345\ud800"
+  },
+  {
+    "input": "\u1161\u212b\u00c5\u212be\udbff\udfff\u212b\udbff\udfff",
+    "nfkc": "\u1161\u00c5\u00c5\u00c5e\udbff\udfff\u00c5\udbff\udfff"
+  },
+  {
+    "input": "\u0345\u212b\u00c5\u0345\ud833\udcd6\u1161\u0301",
+    "nfkc": "\u0345\u00c5\u00c5\u0345\ud833\udcd6\u1161\u0301"
+  },
+  {
+    "input": "\u1100\u2163\u0345",
+    "nfkc": "\u1100IV\u0345"
+  },
+  {
+    "input": "\u1161\ud800\ud800\u0323\u00c5\u0301\u212b",
+    "nfkc": "\u1161\ud800\ud800\u0323\u01fa\u00c5"
+  },
+  {
+    "input": "\ud800\u0301\u1100",
+    "nfkc": "\ud800\u0301\u1100"
+  },
+  {
+    "input": "\u2163\udbff\udfff\u00c5\ud833\udcd6\u0323\ufb03\u212b",
+    "nfkc": "IV\udbff\udfff\u00c5\ud833\udcd6\u0323ffi\u00c5"
+  },
+  {
+    "input": "\u00c5\ud833\udcd6\u2163\ud800\ud833\udcd6",
+    "nfkc": "\u00c5\ud833\udcd6IV\ud800\ud833\udcd6"
+  },
+  {
+    "input": "\ud800\u2163\u212a",
+    "nfkc": "\ud800IVK"
+  },
+  {
+    "input": "\u1161\ud833\udcd6\ua7f1\u1100\ua7f1\ufb03",
+    "nfkc": "\u1161\ud833\udcd6\ua7f1\u1100\ua7f1ffi"
+  },
+  {
+    "input": "\u212be\ud800\u0301\u0301\ud800",
+    "nfkc": "\u00c5e\ud800\u0301\u0301\ud800"
+  },
+  {
+    "input": "\u0345\u212b\u212a\u00c5\ud800\u1100\u00c5\u212b",
+    "nfkc": "\u0345\u00c5K\u00c5\ud800\u1100\u00c5\u00c5"
+  },
+  {
+    "input": "\ua7f1\u1c80\udbff\udfff\u1c80\u0301\ud833\udcd6\ua7f1",
+    "nfkc": "\ua7f1\u1c80\udbff\udfff\u1c80\u0301\ud833\udcd6\ua7f1"
+  },
+  {
+    "input": "\ua7f1\ufb03\u00c5\u2163\u00c5\u0323",
+    "nfkc": "\ua7f1ffi\u00c5IV\u1ea0\u030a"
+  },
+  {
+    "input": "\u00c5\u00c5\udbff\udfff\udbff\udfff",
+    "nfkc": "\u00c5\u00c5\udbff\udfff\udbff\udfff"
+  },
+  {
+    "input": "\ud833\udcd6e\u00c5\u0345\u1161",
+    "nfkc": "\ud833\udcd6e\u00c5\u0345\u1161"
+  },
+  {
+    "input": "e\u1161\u2163\u212a",
+    "nfkc": "e\u1161IVK"
+  },
+  {
+    "input": "\ufb03\udbff\udfff\udbff\udfff\u0345",
+    "nfkc": "ffi\udbff\udfff\udbff\udfff\u0345"
+  },
+  {
+    "input": "\u0345\u1100",
+    "nfkc": "\u0345\u1100"
+  },
+  {
+    "input": "\u0345\u0345",
+    "nfkc": "\u0345\u0345"
+  },
+  {
+    "input": "A\ud833\udcd6\ud833\udcd6\ud800\ud800\u212b",
+    "nfkc": "A\ud833\udcd6\ud833\udcd6\ud800\ud800\u00c5"
+  },
+  {
+    "input": "A\ua7f1\u212a",
+    "nfkc": "A\ua7f1K"
+  },
+  {
+    "input": "\udbff\udfffeA\u1c80\ufb03\ud800\ua7f1\u212a",
+    "nfkc": "\udbff\udfffeA\u1c80ffi\ud800\ua7f1K"
+  },
+  {
+    "input": "\u0323A",
+    "nfkc": "\u0323A"
+  },
+  {
+    "input": "\ufb03\u1c80",
+    "nfkc": "ffi\u1c80"
+  },
+  {
+    "input": "\u1161\u1c80\u00c5",
+    "nfkc": "\u1161\u1c80\u00c5"
+  },
+  {
+    "input": "A\u1100eA\u0345",
+    "nfkc": "A\u1100eA\u0345"
+  },
+  {
+    "input": "\u212b\u1100\ud800\ua7f1e\u1161\ua7f1\ud833\udcd6",
+    "nfkc": "\u00c5\u1100\ud800\ua7f1e\u1161\ua7f1\ud833\udcd6"
+  },
+  {
+    "input": "\ud800\ufb03",
+    "nfkc": "\ud800ffi"
+  },
+  {
+    "input": "\u1161\u212b\u1100\u0301e\u1100\ud800",
+    "nfkc": "\u1161\u00c5\u1100\u0301e\u1100\ud800"
+  },
+  {
+    "input": "\u1161\u1161\u0301\u1100\u1c80\ufb03",
+    "nfkc": "\u1161\u1161\u0301\u1100\u1c80ffi"
+  },
+  {
+    "input": "\u1100\u212b\ua7f1\u1161A",
+    "nfkc": "\u1100\u00c5\ua7f1\u1161A"
+  },
+  {
+    "input": "\u2163\u1161\u0345\u212a",
+    "nfkc": "IV\u1161\u0345K"
+  },
+  {
+    "input": "\udbff\udfff\ufb03\u0301\u212be\ud800\u1161",
+    "nfkc": "\udbff\udfffff\u00ed\u00c5e\ud800\u1161"
+  },
+  {
+    "input": "e\u00c5\u1c80\u1161\ud800\udbff\udfff",
+    "nfkc": "e\u00c5\u1c80\u1161\ud800\udbff\udfff"
+  },
+  {
+    "input": "\u1c80\u0323\u1161\udbff\udfff\ud833\udcd6",
+    "nfkc": "\u1c80\u0323\u1161\udbff\udfff\ud833\udcd6"
+  },
+  {
+    "input": "\u0301\u0323\ua7f1\u2163\ud833\udcd6\ua7f1\u00c5",
+    "nfkc": "\u0323\u0301\ua7f1IV\ud833\udcd6\ua7f1\u00c5"
+  },
+  {
+    "input": "\u0301\u0301\u0323\udbff\udfff\u1161\ud833\udcd6",
+    "nfkc": "\u0323\u0301\u0301\udbff\udfff\u1161\ud833\udcd6"
+  },
+  {
+    "input": "\u0301\u212b",
+    "nfkc": "\u0301\u00c5"
+  },
+  {
+    "input": "e\u1161\udbff\udfff\u00c5\ud800",
+    "nfkc": "e\u1161\udbff\udfff\u00c5\ud800"
+  },
+  {
+    "input": "\u2163\u1161",
+    "nfkc": "IV\u1161"
+  },
+  {
+    "input": "\ua7f1A\u1c80\u0345",
+    "nfkc": "\ua7f1A\u1c80\u0345"
+  },
+  {
+    "input": "A\u1100\u00c5\u1100\u1100\ud833\udcd6",
+    "nfkc": "A\u1100\u00c5\u1100\u1100\ud833\udcd6"
+  },
+  {
+    "input": "e\u0301\ud800\u212aA\u212b\u00c5\u2163",
+    "nfkc": "\u00e9\ud800KA\u00c5\u00c5IV"
+  },
+  {
+    "input": "e\udbff\udfff\u0323e\u212b",
+    "nfkc": "e\udbff\udfff\u0323e\u00c5"
+  },
+  {
+    "input": "\ua7f1\u0301\u1c80\u0323\u2163",
+    "nfkc": "\ua7f1\u0301\u1c80\u0323IV"
+  },
+  {
+    "input": "\u1100\udbff\udfff\u0301A\u0301\u1100\udbff\udfff\ud800",
+    "nfkc": "\u1100\udbff\udfff\u0301\u00c1\u1100\udbff\udfff\ud800"
+  },
+  {
+    "input": "\u0301\ua7f1\u0301A\u0323\ud833\udcd6A",
+    "nfkc": "\u0301\ua7f1\u0301\u1ea0\ud833\udcd6A"
+  },
+  {
+    "input": "\u00c5\u1c80",
+    "nfkc": "\u00c5\u1c80"
+  },
+  {
+    "input": "\u1161\u1100\u0345\u00c5\udbff\udfff\u1c80\udbff\udfff\udbff\udfff",
+    "nfkc": "\u1161\u1100\u0345\u00c5\udbff\udfff\u1c80\udbff\udfff\udbff\udfff"
+  },
+  {
+    "input": "\u2163\u2163\u0345",
+    "nfkc": "IVIV\u0345"
+  },
+  {
+    "input": "\ud833\udcd6\u1100\u212a\ud833\udcd6\ud800",
+    "nfkc": "\ud833\udcd6\u1100K\ud833\udcd6\ud800"
+  },
+  {
+    "input": "\ud800\ufb03\ud800\u2163\u1c80\ua7f1\ud800",
+    "nfkc": "\ud800ffi\ud800IV\u1c80\ua7f1\ud800"
+  },
+  {
+    "input": "e\u0345",
+    "nfkc": "e\u0345"
+  },
+  {
+    "input": "\u00c5\u00c5Ae\u212b\u0323",
+    "nfkc": "\u00c5\u00c5Ae\u1ea0\u030a"
+  },
+  {
+    "input": "\u0301\u1c80",
+    "nfkc": "\u0301\u1c80"
+  },
+  {
+    "input": "\udbff\udfff\u1c80\u212a",
+    "nfkc": "\udbff\udfff\u1c80K"
+  },
+  {
+    "input": "A\u212a\ua7f1\u212b",
+    "nfkc": "AK\ua7f1\u00c5"
+  },
+  {
+    "input": "Ae\u212b\u1c80\u0301\u00c5\u0301",
+    "nfkc": "Ae\u00c5\u1c80\u0301\u01fa"
+  },
+  {
+    "input": "\ud833\udcd6\u0345\u2163A",
+    "nfkc": "\ud833\udcd6\u0345IVA"
+  },
+  {
+    "input": "e\u212b\u1161e\u1c80\u2163",
+    "nfkc": "e\u00c5\u1161e\u1c80IV"
+  },
+  {
+    "input": "\u0323\u00c5\ua7f1\u0345",
+    "nfkc": "\u0323\u00c5\ua7f1\u0345"
+  },
+  {
+    "input": "\u212a\ud800\u212b\ua7f1",
+    "nfkc": "K\ud800\u00c5\ua7f1"
+  },
+  {
+    "input": "\u0301\u1100",
+    "nfkc": "\u0301\u1100"
+  },
+  {
+    "input": "\u2163\u00c5\u00c5",
+    "nfkc": "IV\u00c5\u00c5"
+  },
+  {
+    "input": "\u0345\ud833\udcd6\ud833\udcd6\udbff\udfff\u0323",
+    "nfkc": "\u0345\ud833\udcd6\ud833\udcd6\udbff\udfff\u0323"
+  },
+  {
+    "input": "\u212aA\u1161\u212a",
+    "nfkc": "KA\u1161K"
+  },
+  {
+    "input": "\u0301\u212a\u212b\u0345e",
+    "nfkc": "\u0301K\u00c5\u0345e"
+  },
+  {
+    "input": "\u0301\ud833\udcd6\u00c5\ufb03A\u1100",
+    "nfkc": "\u0301\ud833\udcd6\u00c5ffiA\u1100"
+  },
+  {
+    "input": "\ufb03\u0301",
+    "nfkc": "ff\u00ed"
+  },
+  {
+    "input": "AA\ua7f1\u2163\u212a\u2163\ua7f1",
+    "nfkc": "AA\ua7f1IVKIV\ua7f1"
+  },
+  {
+    "input": "\ufb03\u00c5\u0301\u2163\u1161",
+    "nfkc": "ffi\u01faIV\u1161"
+  },
+  {
+    "input": "\ua7f1\ua7f1\u0323",
+    "nfkc": "\ua7f1\ua7f1\u0323"
+  },
+  {
+    "input": "\u212a\u1100\ufb03",
+    "nfkc": "K\u1100ffi"
+  },
+  {
+    "input": "\u0301\u00c5A\u00c5",
+    "nfkc": "\u0301\u00c5A\u00c5"
+  },
+  {
+    "input": "\u0345\ufb03\u1100e\ud800\ud800",
+    "nfkc": "\u0345ffi\u1100e\ud800\ud800"
+  },
+  {
+    "input": "\u0323\u2163A\u1161",
+    "nfkc": "\u0323IVA\u1161"
+  },
+  {
+    "input": "\u1c80\ua7f1",
+    "nfkc": "\u1c80\ua7f1"
+  },
+  {
+    "input": "A\udbff\udfff",
+    "nfkc": "A\udbff\udfff"
+  },
+  {
+    "input": "\u0345\u212a\udbff\udfff\ud833\udcd6e",
+    "nfkc": "\u0345K\udbff\udfff\ud833\udcd6e"
+  },
+  {
+    "input": "\ufb03\u212a\u1161\u0301\u00c5",
+    "nfkc": "ffiK\u1161\u0301\u00c5"
+  },
+  {
+    "input": "\ud833\udcd6\ufb03e\u0345A\u0323\u0323\u1161",
+    "nfkc": "\ud833\udcd6ffie\u0345\u1ea0\u0323\u1161"
+  },
+  {
+    "input": "\ufb03\u2163\u0345\ufb03\u212a\ufb03\u0301",
+    "nfkc": "ffiIV\u0345ffiKff\u00ed"
+  },
+  {
+    "input": "\ud800\u00c5",
+    "nfkc": "\ud800\u00c5"
+  },
+  {
+    "input": "\ud800\ufb03\ufb03\u0323\ud800\ud833\udcd6\u0345\u0345",
+    "nfkc": "\ud800ffiff\u1ecb\ud800\ud833\udcd6\u0345\u0345"
+  },
+  {
+    "input": "\u212a\u00c5\ua7f1",
+    "nfkc": "K\u00c5\ua7f1"
+  },
+  {
+    "input": "\u212ae\u212b",
+    "nfkc": "Ke\u00c5"
+  },
+  {
+    "input": "\u1100e\ua7f1\u0301\u212a\ud800\u212b\ufb03",
+    "nfkc": "\u1100e\ua7f1\u0301K\ud800\u00c5ffi"
+  },
+  {
+    "input": "\u1c80\u1100",
+    "nfkc": "\u1c80\u1100"
+  },
+  {
+    "input": "\u0301\u1161\ua7f1\u2163\udbff\udfff\udbff\udfff",
+    "nfkc": "\u0301\u1161\ua7f1IV\udbff\udfff\udbff\udfff"
+  },
+  {
+    "input": "\u212bA\u2163\ud833\udcd6\ud800\ud800",
+    "nfkc": "\u00c5AIV\ud833\udcd6\ud800\ud800"
+  },
+  {
+    "input": "\ud800\u2163\u212b",
+    "nfkc": "\ud800IV\u00c5"
+  },
+  {
+    "input": "\u1c80A\u212b\u1c80\u0345\u1c80",
+    "nfkc": "\u1c80A\u00c5\u1c80\u0345\u1c80"
+  },
+  {
+    "input": "\u1c80\u0323\u1100\u0323e\ua7f1A",
+    "nfkc": "\u1c80\u0323\u1100\u0323e\ua7f1A"
+  },
+  {
+    "input": "\u0345\u1c80\ua7f1\ud833\udcd6\u1100",
+    "nfkc": "\u0345\u1c80\ua7f1\ud833\udcd6\u1100"
+  },
+  {
+    "input": "\u0301\udbff\udfff\udbff\udfff\u1161\u1c80\u0323\u0323A",
+    "nfkc": "\u0301\udbff\udfff\udbff\udfff\u1161\u1c80\u0323\u0323A"
+  },
+  {
+    "input": "\ud800\u1161\u1100\u212a",
+    "nfkc": "\ud800\u1161\u1100K"
+  },
+  {
+    "input": "\u0301\ud833\udcd6\u0323",
+    "nfkc": "\u0301\ud833\udcd6\u0323"
+  },
+  {
+    "input": "\u212b\u212b",
+    "nfkc": "\u00c5\u00c5"
+  },
+  {
+    "input": "\u2163\u0301\u0323",
+    "nfkc": "I\u1e7e\u0301"
+  },
+  {
+    "input": "eAA\u0345\ud800",
+    "nfkc": "eAA\u0345\ud800"
+  },
+  {
+    "input": "\u1c80\u1161\ua7f1",
+    "nfkc": "\u1c80\u1161\ua7f1"
+  },
+  {
+    "input": "AA\udbff\udfff\udbff\udfff\u212b",
+    "nfkc": "AA\udbff\udfff\udbff\udfff\u00c5"
+  },
+  {
+    "input": "\ufb03\ufb03\u1100\u1100\u1c80",
+    "nfkc": "ffiffi\u1100\u1100\u1c80"
+  },
+  {
+    "input": "e\u0323\u0301\u2163\ufb03\u212b\u0301\u212b",
+    "nfkc": "\u1eb9\u0301IVffi\u01fa\u00c5"
+  },
+  {
+    "input": "\u1161\u1161\u0345\u212b\udbff\udfff\u0345Ae",
+    "nfkc": "\u1161\u1161\u0345\u00c5\udbff\udfff\u0345Ae"
+  },
+  {
+    "input": "\u1100\u0301\u212a\u212a\u0301\u1161\ud800\u1c80",
+    "nfkc": "\u1100\u0301K\u1e30\u1161\ud800\u1c80"
+  },
+  {
+    "input": "\ua7f1\u0345\u0301\ua7f1\u00c5",
+    "nfkc": "\ua7f1\u0301\u0345\ua7f1\u00c5"
+  },
+  {
+    "input": "\udbff\udfff\u00c5\u1c80\ud800\u212b\u1161\u00c5\u0323",
+    "nfkc": "\udbff\udfff\u00c5\u1c80\ud800\u00c5\u1161\u1ea0\u030a"
+  },
+  {
+    "input": "\u00c5\u1c80\u212a\ufb03\udbff\udfff",
+    "nfkc": "\u00c5\u1c80Kffi\udbff\udfff"
+  },
+  {
+    "input": "\u1c80\ud800e\u212a",
+    "nfkc": "\u1c80\ud800eK"
+  },
+  {
+    "input": "\u0301\u212a",
+    "nfkc": "\u0301K"
+  },
+  {
+    "input": "\u1161\u212b\ufb03\u0345",
+    "nfkc": "\u1161\u00c5ffi\u0345"
+  },
+  {
+    "input": "\u0345\ua7f1\u212a",
+    "nfkc": "\u0345\ua7f1K"
+  },
+  {
+    "input": "\u1c80\u00c5\u0323\u0345\u1100\u0301",
+    "nfkc": "\u1c80\u1ea0\u030a\u0345\u1100\u0301"
+  },
+  {
+    "input": "\ud833\udcd6\u1161",
+    "nfkc": "\ud833\udcd6\u1161"
+  },
+  {
+    "input": "\ud833\udcd6\u00c5\u2163\ua7f1\ud833\udcd6",
+    "nfkc": "\ud833\udcd6\u00c5IV\ua7f1\ud833\udcd6"
+  },
+  {
+    "input": "\u1c80\u1c80\ua7f1\u212b\u0345\ud800\ud833\udcd6",
+    "nfkc": "\u1c80\u1c80\ua7f1\u00c5\u0345\ud800\ud833\udcd6"
+  },
+  {
+    "input": "\u0345\u212a\u0323\u00c5\u00c5\ua7f1\u0323",
+    "nfkc": "\u0345\u1e32\u00c5\u00c5\ua7f1\u0323"
+  },
+  {
+    "input": "\ud833\udcd6\u212b\ufb03\u0345\ud833\udcd6\ud833\udcd6",
+    "nfkc": "\ud833\udcd6\u00c5ffi\u0345\ud833\udcd6\ud833\udcd6"
+  },
+  {
+    "input": "\udbff\udfff\u212a",
+    "nfkc": "\udbff\udfffK"
+  },
+  {
+    "input": "\u1100\ua7f1",
+    "nfkc": "\u1100\ua7f1"
+  },
+  {
+    "input": "e\ud800\u0301\ua7f1\ud833\udcd6\u1100",
+    "nfkc": "e\ud800\u0301\ua7f1\ud833\udcd6\u1100"
+  },
+  {
+    "input": "\ud833\udcd6\u2163\u1161\u2163\u1100\u1c80e\u0323",
+    "nfkc": "\ud833\udcd6IV\u1161IV\u1100\u1c80\u1eb9"
+  },
+  {
+    "input": "\u1100\u2163\u0301\ufb03\u2163",
+    "nfkc": "\u1100IV\u0301ffiIV"
+  },
+  {
+    "input": "\u212be\u1c80\u0345\udbff\udfff\u1c80\udbff\udfffe",
+    "nfkc": "\u00c5e\u1c80\u0345\udbff\udfff\u1c80\udbff\udfffe"
+  },
+  {
+    "input": "\u1161\u1c80\u1161\u2163\ud833\udcd6",
+    "nfkc": "\u1161\u1c80\u1161IV\ud833\udcd6"
+  },
+  {
+    "input": "\ufb03\u1100\u212a",
+    "nfkc": "ffi\u1100K"
+  },
+  {
+    "input": "\ud833\udcd6\u1100\ud833\udcd6\u1161e\u0301\u2163",
+    "nfkc": "\ud833\udcd6\u1100\ud833\udcd6\u1161\u00e9IV"
+  },
+  {
+    "input": "\u212b\u0301\u2163\u1100\u212a\u0301e",
+    "nfkc": "\u01faIV\u1100\u1e30e"
+  },
+  {
+    "input": "\u0323\ud800",
+    "nfkc": "\u0323\ud800"
+  },
+  {
+    "input": "\u1100A\u2163\u212a\u00c5",
+    "nfkc": "\u1100AIVK\u00c5"
+  },
+  {
+    "input": "\udbff\udfff\u1c80e\udbff\udfff\ufb03\u00c5\u1c80\ua7f1",
+    "nfkc": "\udbff\udfff\u1c80e\udbff\udfffffi\u00c5\u1c80\ua7f1"
+  },
+  {
+    "input": "\u2163\u1100\ufb03\u2163\u1c80\u1c80\u1c80\ud833\udcd6",
+    "nfkc": "IV\u1100ffiIV\u1c80\u1c80\u1c80\ud833\udcd6"
+  },
+  {
+    "input": "\u1161\u1161A\ud833\udcd6\u212b",
+    "nfkc": "\u1161\u1161A\ud833\udcd6\u00c5"
+  },
+  {
+    "input": "\u0345\ud800A\ufb03\u0345",
+    "nfkc": "\u0345\ud800Affi\u0345"
+  },
+  {
+    "input": "\ud833\udcd6\u1161\ud833\udcd6\u2163",
+    "nfkc": "\ud833\udcd6\u1161\ud833\udcd6IV"
+  },
+  {
+    "input": "\u1c80ee\u1161\u1c80\u212a\ud833\udcd6\u0301",
+    "nfkc": "\u1c80ee\u1161\u1c80K\ud833\udcd6\u0301"
+  },
+  {
+    "input": "\ua7f1A\ufb03\udbff\udfff\udbff\udfff\u00c5\u0301",
+    "nfkc": "\ua7f1Affi\udbff\udfff\udbff\udfff\u01fa"
+  },
+  {
+    "input": "\u0323e\u0345",
+    "nfkc": "\u0323e\u0345"
+  },
+  {
+    "input": "\u212ae\ud800\ud800",
+    "nfkc": "Ke\ud800\ud800"
+  },
+  {
+    "input": "\udbff\udfff\u0323\u0323\u1100\u212b",
+    "nfkc": "\udbff\udfff\u0323\u0323\u1100\u00c5"
+  },
+  {
+    "input": "e\u2163\u1c80\u1100\ufb03",
+    "nfkc": "eIV\u1c80\u1100ffi"
+  },
+  {
+    "input": "\u0323\u212be\ua7f1\u0345\u2163",
+    "nfkc": "\u0323\u00c5e\ua7f1\u0345IV"
+  },
+  {
+    "input": "\u0345\u0345\u1100\u2163\ud833\udcd6",
+    "nfkc": "\u0345\u0345\u1100IV\ud833\udcd6"
+  },
+  {
+    "input": "\u212a\ufb03\u212b\ufb03\u00c5\u212b",
+    "nfkc": "Kffi\u00c5ffi\u00c5\u00c5"
+  },
+  {
+    "input": "\u212a\u0301\u0301\ua7f1\u0301\u1c80e",
+    "nfkc": "\u1e30\u0301\ua7f1\u0301\u1c80e"
+  },
+  {
+    "input": "\ua7f1\u0301\u1161\u0345\u0301",
+    "nfkc": "\ua7f1\u0301\u1161\u0301\u0345"
+  },
+  {
+    "input": "\ua7f1\u0323\udbff\udfff\u212b\u00c5\udbff\udfff",
+    "nfkc": "\ua7f1\u0323\udbff\udfff\u00c5\u00c5\udbff\udfff"
+  },
+  {
+    "input": "\u212b\u212b\u1c80\u1161",
+    "nfkc": "\u00c5\u00c5\u1c80\u1161"
+  },
+  {
+    "input": "\ufb03\u00c5\ufb03\udbff\udfff\u00c5",
+    "nfkc": "ffi\u00c5ffi\udbff\udfff\u00c5"
+  },
+  {
+    "input": "\u00c5\u0323\u1c80\u00c5",
+    "nfkc": "\u1ea0\u030a\u1c80\u00c5"
+  },
+  {
+    "input": "\u212b\u2163\u212a\u0301\u0323\u212b",
+    "nfkc": "\u00c5IV\u1e32\u0301\u00c5"
+  },
+  {
+    "input": "e\u2163\ud833\udcd6\u212bA\udbff\udfff\u0323\u1100",
+    "nfkc": "eIV\ud833\udcd6\u00c5A\udbff\udfff\u0323\u1100"
+  },
+  {
+    "input": "\udbff\udfff\u212b\u1161\ua7f1\u0323\u1100\u212b\u0345",
+    "nfkc": "\udbff\udfff\u00c5\u1161\ua7f1\u0323\u1100\u00c5\u0345"
+  },
+  {
+    "input": "\u00c5\ua7f1\u212b",
+    "nfkc": "\u00c5\ua7f1\u00c5"
+  },
+  {
+    "input": "\u1161\u2163\u212be\u0323\ufb03\udbff\udfff",
+    "nfkc": "\u1161IV\u00c5\u1eb9ffi\udbff\udfff"
+  },
+  {
+    "input": "\u212b\u0301",
+    "nfkc": "\u01fa"
+  },
+  {
+    "input": "\udbff\udfff\ua7f1\u0345",
+    "nfkc": "\udbff\udfff\ua7f1\u0345"
+  },
+  {
+    "input": "\u0323\ufb03\u00c5\u212b\u1c80\ud833\udcd6",
+    "nfkc": "\u0323ffi\u00c5\u00c5\u1c80\ud833\udcd6"
+  },
+  {
+    "input": "\ua7f1\u0323\ufb03\u00c5\u1100\u1100\ufb03\ud833\udcd6",
+    "nfkc": "\ua7f1\u0323ffi\u00c5\u1100\u1100ffi\ud833\udcd6"
+  },
+  {
+    "input": "\u0301\u0345\ufb03\u0345\u0345\u212a",
+    "nfkc": "\u0301\u0345ffi\u0345\u0345K"
+  },
+  {
+    "input": "\u212a\ufb03\u1100\udbff\udfff\u212ae",
+    "nfkc": "Kffi\u1100\udbff\udfffKe"
+  },
+  {
+    "input": "\u1c80\ufb03\u0301",
+    "nfkc": "\u1c80ff\u00ed"
+  },
+  {
+    "input": "\ufb03\ufb03\u0323\u212a\ud833\udcd6\ua7f1",
+    "nfkc": "ffiff\u1ecbK\ud833\udcd6\ua7f1"
+  },
+  {
+    "input": "\u212be\ufb03AA\ufb03",
+    "nfkc": "\u00c5effiAAffi"
+  },
+  {
+    "input": "\ud800\u1c80\u00c5\ua7f1\u0323",
+    "nfkc": "\ud800\u1c80\u00c5\ua7f1\u0323"
+  },
+  {
+    "input": "\ua7f1\ud800\ufb03",
+    "nfkc": "\ua7f1\ud800ffi"
+  },
+  {
+    "input": "\u0323\u212a\u0345",
+    "nfkc": "\u0323K\u0345"
+  },
+  {
+    "input": "\u0323\u00c5\ufb03",
+    "nfkc": "\u0323\u00c5ffi"
+  },
+  {
+    "input": "\ud800\ufb03\u1c80\u1100",
+    "nfkc": "\ud800ffi\u1c80\u1100"
+  },
+  {
+    "input": "\ufb03\udbff\udfff\u212b\ufb03A\udbff\udfff\ufb03\u2163",
+    "nfkc": "ffi\udbff\udfff\u00c5ffiA\udbff\udfffffiIV"
+  },
+  {
+    "input": "\u212b\u0301\u212bA\u0345",
+    "nfkc": "\u01fa\u00c5A\u0345"
+  },
+  {
+    "input": "\udbff\udfff\u1c80\u0301\u00c5\u2163\u1161\ua7f1",
+    "nfkc": "\udbff\udfff\u1c80\u0301\u00c5IV\u1161\ua7f1"
+  },
+  {
+    "input": "e\udbff\udfff\ua7f1\u212b",
+    "nfkc": "e\udbff\udfff\ua7f1\u00c5"
+  },
+  {
+    "input": "\u0345\u00c5",
+    "nfkc": "\u0345\u00c5"
+  },
+  {
+    "input": "eA\u1100\u212b\u00c5\ua7f1",
+    "nfkc": "eA\u1100\u00c5\u00c5\ua7f1"
+  },
+  {
+    "input": "\u1100\u1100",
+    "nfkc": "\u1100\u1100"
+  },
+  {
+    "input": "\u1c80\ud800\ua7f1",
+    "nfkc": "\u1c80\ud800\ua7f1"
+  },
+  {
+    "input": "\ud800\u1100\u212be\u0323\ud800",
+    "nfkc": "\ud800\u1100\u00c5\u1eb9\ud800"
+  },
+  {
+    "input": "\u1c80\u1161\u2163\u0323\udbff\udfff\u1c80A\ua7f1",
+    "nfkc": "\u1c80\u1161I\u1e7e\udbff\udfff\u1c80A\ua7f1"
+  },
+  {
+    "input": "\u1c80A\u212b\u212be\udbff\udfff",
+    "nfkc": "\u1c80A\u00c5\u00c5e\udbff\udfff"
+  },
+  {
+    "input": "\u0301\ufb03\u1c80\u212b\u1c80\u00c5\ufb03",
+    "nfkc": "\u0301ffi\u1c80\u00c5\u1c80\u00c5ffi"
+  },
+  {
+    "input": "\ud833\udcd6\u1c80\u212a\ud800e",
+    "nfkc": "\ud833\udcd6\u1c80K\ud800e"
+  },
+  {
+    "input": "\u2163\ud833\udcd6\u0323\udbff\udfffe\u2163e\u2163",
+    "nfkc": "IV\ud833\udcd6\u0323\udbff\udfffeIVeIV"
+  },
+  {
+    "input": "\u0323\udbff\udfff\ud833\udcd6\u00c5e",
+    "nfkc": "\u0323\udbff\udfff\ud833\udcd6\u00c5e"
+  },
+  {
+    "input": "\ufb03\u1c80Ae\u1161\ud800",
+    "nfkc": "ffi\u1c80Ae\u1161\ud800"
+  },
+  {
+    "input": "\u0323\u1c80e\u1161",
+    "nfkc": "\u0323\u1c80e\u1161"
+  },
+  {
+    "input": "e\u0323\ud800\u0345",
+    "nfkc": "\u1eb9\ud800\u0345"
+  },
+  {
+    "input": "\u212b\ud800\u1100",
+    "nfkc": "\u00c5\ud800\u1100"
+  },
+  {
+    "input": "\ud833\udcd6\ua7f1\udbff\udfff\u0301\ud833\udcd6\ufb03",
+    "nfkc": "\ud833\udcd6\ua7f1\udbff\udfff\u0301\ud833\udcd6ffi"
+  },
+  {
+    "input": "\u1161\u1c80\udbff\udfff\u2163\ufb03\u2163\ud833\udcd6",
+    "nfkc": "\u1161\u1c80\udbff\udfffIVffiIV\ud833\udcd6"
+  },
+  {
+    "input": "\u00c5\u212b\u1c80\u0345",
+    "nfkc": "\u00c5\u00c5\u1c80\u0345"
+  },
+  {
+    "input": "\u212b\u1161\udbff\udfff\u2163\u0323",
+    "nfkc": "\u00c5\u1161\udbff\udfffI\u1e7e"
+  },
+  {
+    "input": "\u1100\u0301\u0301",
+    "nfkc": "\u1100\u0301\u0301"
+  },
+  {
+    "input": "\u212a\u0323\u1100\ud800",
+    "nfkc": "\u1e32\u1100\ud800"
+  },
+  {
+    "input": "\udbff\udfffe\u0301\u212be",
+    "nfkc": "\udbff\udfff\u00e9\u00c5e"
+  },
+  {
+    "input": "\ua7f1\u00c5e",
+    "nfkc": "\ua7f1\u00c5e"
+  },
+  {
+    "input": "\u0323\u212a\ud800\u212a\udbff\udfff",
+    "nfkc": "\u0323K\ud800K\udbff\udfff"
+  },
+  {
+    "input": "\u1161\u1161\ud800\ua7f1\u0301\u0323",
+    "nfkc": "\u1161\u1161\ud800\ua7f1\u0323\u0301"
+  },
+  {
+    "input": "\u1100\ud833\udcd6\u00c5\u2163\udbff\udfff\u00c5",
+    "nfkc": "\u1100\ud833\udcd6\u00c5IV\udbff\udfff\u00c5"
+  },
+  {
+    "input": "\ud833\udcd6\ua7f1\udbff\udfff",
+    "nfkc": "\ud833\udcd6\ua7f1\udbff\udfff"
+  },
+  {
+    "input": "A\udbff\udfff\u1c80\ua7f1\ud833\udcd6e\udbff\udfff",
+    "nfkc": "A\udbff\udfff\u1c80\ua7f1\ud833\udcd6e\udbff\udfff"
+  },
+  {
+    "input": "\u1c80\u212a\u2163\u00c5\u0323\u212a\u0345\udbff\udfff",
+    "nfkc": "\u1c80KIV\u1ea0\u030aK\u0345\udbff\udfff"
+  },
+  {
+    "input": "\u2163\u1c80\ufb03\u212b\u212b",
+    "nfkc": "IV\u1c80ffi\u00c5\u00c5"
+  },
+  {
+    "input": "\ufb03\u1100\u212a",
+    "nfkc": "ffi\u1100K"
+  },
+  {
+    "input": "\u1c80\ud800\u0323\u1c80\u1161\ud800\ud833\udcd6",
+    "nfkc": "\u1c80\ud800\u0323\u1c80\u1161\ud800\ud833\udcd6"
+  },
+  {
+    "input": "\u2163\u212b\u1161\ud800\u00c5\ua7f1\u0323\u212a",
+    "nfkc": "IV\u00c5\u1161\ud800\u00c5\ua7f1\u0323K"
+  },
+  {
+    "input": "\u1c80\u2163\u0301\u212a\u1c80\u2163\u0301\u00c5",
+    "nfkc": "\u1c80IV\u0301K\u1c80IV\u0301\u00c5"
+  },
+  {
+    "input": "\u2163\udbff\udfffe\u212a\udbff\udfff\ud800\u0301",
+    "nfkc": "IV\udbff\udfffeK\udbff\udfff\ud800\u0301"
+  },
+  {
+    "input": "\u0323\u1161\u212a\u00c5\u1c80\u1161\ufb03",
+    "nfkc": "\u0323\u1161K\u00c5\u1c80\u1161ffi"
+  },
+  {
+    "input": "\ud800\u1c80A\u2163A\ufb03",
+    "nfkc": "\ud800\u1c80AIVAffi"
+  },
+  {
+    "input": "\u212a\ud833\udcd6\u1100\ud800\u2163\ufb03e",
+    "nfkc": "K\ud833\udcd6\u1100\ud800IVffie"
+  },
+  {
+    "input": "\u0301\u1161",
+    "nfkc": "\u0301\u1161"
+  },
+  {
+    "input": "e\u00c5A\u0323\u212b\u212b\ufb03\u1c80",
+    "nfkc": "e\u00c5\u1ea0\u00c5\u00c5ffi\u1c80"
+  },
+  {
+    "input": "\u1c80\u2163\u0301\ua7f1\udbff\udfff\ud833\udcd6\u0301",
+    "nfkc": "\u1c80IV\u0301\ua7f1\udbff\udfff\ud833\udcd6\u0301"
+  },
+  {
+    "input": "\u212a\u212aeA",
+    "nfkc": "KKeA"
+  },
+  {
+    "input": "\u0301\ud833\udcd6A\ud800",
+    "nfkc": "\u0301\ud833\udcd6A\ud800"
+  },
+  {
+    "input": "\u0345\ua7f1\udbff\udfff\u212b\ud800A\u00c5\u00c5",
+    "nfkc": "\u0345\ua7f1\udbff\udfff\u00c5\ud800A\u00c5\u00c5"
+  },
+  {
+    "input": "\u1161e\ud800\u1100\u212a\u0345",
+    "nfkc": "\u1161e\ud800\u1100K\u0345"
+  },
+  {
+    "input": "\ud833\udcd6\udbff\udfff\u0345\u212a\u0345\u212aA",
+    "nfkc": "\ud833\udcd6\udbff\udfff\u0345K\u0345KA"
+  },
+  {
+    "input": "\u0345e\u0345\udbff\udfff\u00c5\u0323\u1100",
+    "nfkc": "\u0345e\u0345\udbff\udfff\u1ea0\u030a\u1100"
+  },
+  {
+    "input": "\udbff\udfff\u00c5A\udbff\udfff\u1161\u0323\u0301",
+    "nfkc": "\udbff\udfff\u00c5A\udbff\udfff\u1161\u0323\u0301"
+  },
+  {
+    "input": "e\ua7f1A\u1161",
+    "nfkc": "e\ua7f1A\u1161"
+  },
+  {
+    "input": "\u0345\ua7f1\u1100\u0323\u0301\u212b\u00c5",
+    "nfkc": "\u0345\ua7f1\u1100\u0323\u0301\u00c5\u00c5"
+  },
+  {
+    "input": "A\u2163\u212b\ufb03\u2163\u2163",
+    "nfkc": "AIV\u00c5ffiIVIV"
+  },
+  {
+    "input": "A\udbff\udfff\u1161\u2163\u00c5\u1100",
+    "nfkc": "A\udbff\udfff\u1161IV\u00c5\u1100"
+  },
+  {
+    "input": "\u1100\u1c80\u0345\udbff\udfff\u1100\u1161\udbff\udfffe",
+    "nfkc": "\u1100\u1c80\u0345\udbff\udfff\uac00\udbff\udfffe"
+  },
+  {
+    "input": "\u212a\u0323",
+    "nfkc": "\u1e32"
+  },
+  {
+    "input": "\u2163\u0301\u1161\u1161\u1161\u00c5\ufb03\ua7f1",
+    "nfkc": "IV\u0301\u1161\u1161\u1161\u00c5ffi\ua7f1"
+  },
+  {
+    "input": "\u212b\ud800\ud833\udcd6\u0345",
+    "nfkc": "\u00c5\ud800\ud833\udcd6\u0345"
+  },
+  {
+    "input": "\u212a\ud833\udcd6\ud833\udcd6\u1100\u1c80\u2163\u212a\udbff\udfff",
+    "nfkc": "K\ud833\udcd6\ud833\udcd6\u1100\u1c80IVK\udbff\udfff"
+  },
+  {
+    "input": "\u0301A\u1c80e\u00c5",
+    "nfkc": "\u0301A\u1c80e\u00c5"
+  },
+  {
+    "input": "\u212a\ufb03\u1161\u1100",
+    "nfkc": "Kffi\u1161\u1100"
+  },
+  {
+    "input": "\ua7f1\ufb03\udbff\udfff\u1100\u0323",
+    "nfkc": "\ua7f1ffi\udbff\udfff\u1100\u0323"
+  },
+  {
+    "input": "\ud833\udcd6\ua7f1\ua7f1\u1c80\u2163\u0345\ud800\u00c5",
+    "nfkc": "\ud833\udcd6\ua7f1\ua7f1\u1c80IV\u0345\ud800\u00c5"
+  },
+  {
+    "input": "\ua7f1\u2163",
+    "nfkc": "\ua7f1IV"
+  },
+  {
+    "input": "\u00c5\u1100",
+    "nfkc": "\u00c5\u1100"
+  },
+  {
+    "input": "\u212b\u2163A\u0301",
+    "nfkc": "\u00c5IV\u00c1"
+  },
+  {
+    "input": "\u2163\u00c5\ufb03\u212a\u2163\u212a\u00c5",
+    "nfkc": "IV\u00c5ffiKIVK\u00c5"
+  },
+  {
+    "input": "\ud833\udcd6\ua7f1\u2163\u2163\ud833\udcd6\u00c5",
+    "nfkc": "\ud833\udcd6\ua7f1IVIV\ud833\udcd6\u00c5"
+  },
+  {
+    "input": "A\u212a\ud800\ud833\udcd6\u0301\u212b",
+    "nfkc": "AK\ud800\ud833\udcd6\u0301\u00c5"
+  },
+  {
+    "input": "\ua7f1\ua7f1\u1161\ufb03",
+    "nfkc": "\ua7f1\ua7f1\u1161ffi"
+  },
+  {
+    "input": "\ud800\ua7f1\u1100\u0323",
+    "nfkc": "\ud800\ua7f1\u1100\u0323"
+  },
+  {
+    "input": "\ua7f1\u212a\u1100\ua7f1",
+    "nfkc": "\ua7f1K\u1100\ua7f1"
+  },
+  {
+    "input": "\u212aA",
+    "nfkc": "KA"
+  },
+  {
+    "input": "e\u1c80\u212a\u212b\u1100\ud833\udcd6\u212a",
+    "nfkc": "e\u1c80K\u00c5\u1100\ud833\udcd6K"
+  },
+  {
+    "input": "\u0345\ud833\udcd6\u0345",
+    "nfkc": "\u0345\ud833\udcd6\u0345"
+  },
+  {
+    "input": "\u212a\u0345\ud833\udcd6\ufb03\ua7f1\udbff\udfff",
+    "nfkc": "K\u0345\ud833\udcd6ffi\ua7f1\udbff\udfff"
+  },
+  {
+    "input": "\u2163\u1100\u1161\u00c5\u1161\u0301\u0323",
+    "nfkc": "IV\uac00\u00c5\u1161\u0323\u0301"
+  },
+  {
+    "input": "\u1c80\u00c5\u0301\u212a",
+    "nfkc": "\u1c80\u01faK"
+  },
+  {
+    "input": "\u0301\u212a\u0323\u0323A\ufb03\u00c5\ufb03",
+    "nfkc": "\u0301\u1e32\u0323Affi\u00c5ffi"
+  },
+  {
+    "input": "\ua7f1\udbff\udfffA\u212b",
+    "nfkc": "\ua7f1\udbff\udfffA\u00c5"
+  },
+  {
+    "input": "e\u212a\u1161\u1c80\u2163\ua7f1\u0301\u0345",
+    "nfkc": "eK\u1161\u1c80IV\ua7f1\u0301\u0345"
+  },
+  {
+    "input": "\u2163\u212a\u1161\u212a\u0301",
+    "nfkc": "IVK\u1161\u1e30"
+  },
+  {
+    "input": "A\u2163A",
+    "nfkc": "AIVA"
+  },
+  {
+    "input": "\u2163\u1c80",
+    "nfkc": "IV\u1c80"
+  },
+  {
+    "input": "\u1161\u2163\u1161\ud833\udcd6\ud800\u0345",
+    "nfkc": "\u1161IV\u1161\ud833\udcd6\ud800\u0345"
+  },
+  {
+    "input": "\u0345\u212a\u1161\ud800\ufb03",
+    "nfkc": "\u0345K\u1161\ud800ffi"
+  },
+  {
+    "input": "\ud833\udcd6A",
+    "nfkc": "\ud833\udcd6A"
+  },
+  {
+    "input": "\u1100\u0323e",
+    "nfkc": "\u1100\u0323e"
+  },
+  {
+    "input": "\u1c80\u0345e\ud800\ud833\udcd6",
+    "nfkc": "\u1c80\u0345e\ud800\ud833\udcd6"
+  },
+  {
+    "input": "\u00c5\u00c5\udbff\udfff",
+    "nfkc": "\u00c5\u00c5\udbff\udfff"
+  },
+  {
+    "input": "A\u1c80\u1161\u212a\u0301\u1161\udbff\udfff\u1c80",
+    "nfkc": "A\u1c80\u1161\u1e30\u1161\udbff\udfff\u1c80"
+  },
+  {
+    "input": "\ufb03\ua7f1",
+    "nfkc": "ffi\ua7f1"
+  },
+  {
+    "input": "\ua7f1\u2163\ua7f1\u1100\u0301\u1c80",
+    "nfkc": "\ua7f1IV\ua7f1\u1100\u0301\u1c80"
+  },
+  {
+    "input": "\u1c80\u0345\u1c80AA\u1c80",
+    "nfkc": "\u1c80\u0345\u1c80AA\u1c80"
+  },
+  {
+    "input": "\ufb03\ud833\udcd6\u0323\udbff\udfff\u1100\ua7f1",
+    "nfkc": "ffi\ud833\udcd6\u0323\udbff\udfff\u1100\ua7f1"
+  },
+  {
+    "input": "\u1100\u1c80\ud800\ud833\udcd6e\ud800\u0323",
+    "nfkc": "\u1100\u1c80\ud800\ud833\udcd6e\ud800\u0323"
+  },
+  {
+    "input": "\u1100\u1161\u212a\u0323",
+    "nfkc": "\uac00\u1e32"
+  },
+  {
+    "input": "\u0323\u0323",
+    "nfkc": "\u0323\u0323"
+  },
+  {
+    "input": "\ufb03\u1100\udbff\udfff",
+    "nfkc": "ffi\u1100\udbff\udfff"
+  },
+  {
+    "input": "\ud833\udcd6\u1100e",
+    "nfkc": "\ud833\udcd6\u1100e"
+  },
+  {
+    "input": "\ud833\udcd6\ua7f1A\u212b\u212b\udbff\udfff\u2163",
+    "nfkc": "\ud833\udcd6\ua7f1A\u00c5\u00c5\udbff\udfffIV"
+  },
+  {
+    "input": "AA\u212b\u1161",
+    "nfkc": "AA\u00c5\u1161"
+  },
+  {
+    "input": "\u0301\u1c80\u212b\u0345\u2163\ud800\u0323\u212a",
+    "nfkc": "\u0301\u1c80\u00c5\u0345IV\ud800\u0323K"
+  },
+  {
+    "input": "\u1161\u1161e\udbff\udfff\ua7f1",
+    "nfkc": "\u1161\u1161e\udbff\udfff\ua7f1"
+  },
+  {
+    "input": "\u00c5\u1c80\u00c5",
+    "nfkc": "\u00c5\u1c80\u00c5"
+  },
+  {
+    "input": "\u0345\u0323",
+    "nfkc": "\u0323\u0345"
+  },
+  {
+    "input": "\u1c80\ud800\u0301\ud800\u0301",
+    "nfkc": "\u1c80\ud800\u0301\ud800\u0301"
+  },
+  {
+    "input": "\ua7f1\u1c80A\u0323\udbff\udfff\u1161\u0301\u0301",
+    "nfkc": "\ua7f1\u1c80\u1ea0\udbff\udfff\u1161\u0301\u0301"
+  },
+  {
+    "input": "\ud800\u212b\u0345\u00c5\u1161\u1161\u1c80\u2163",
+    "nfkc": "\ud800\u00c5\u0345\u00c5\u1161\u1161\u1c80IV"
+  },
+  {
+    "input": "\ud800\u212a\u2163",
+    "nfkc": "\ud800KIV"
+  },
+  {
+    "input": "\u00c5\ufb03",
+    "nfkc": "\u00c5ffi"
+  },
+  {
+    "input": "\ufb03\u0301\u2163\udbff\udfff\u212a\u1c80\u2163\u1161",
+    "nfkc": "ff\u00edIV\udbff\udfffK\u1c80IV\u1161"
+  },
+  {
+    "input": "\ua7f1\u0345",
+    "nfkc": "\ua7f1\u0345"
+  },
+  {
+    "input": "\u212b\ufb03\ud833\udcd6\u212b",
+    "nfkc": "\u00c5ffi\ud833\udcd6\u00c5"
+  },
+  {
+    "input": "\u1c80\u2163",
+    "nfkc": "\u1c80IV"
+  },
+  {
+    "input": "\ud800A\u1161\u2163",
+    "nfkc": "\ud800A\u1161IV"
+  },
+  {
+    "input": "\udbff\udfff\u0323\u1c80\u1161\udbff\udfff",
+    "nfkc": "\udbff\udfff\u0323\u1c80\u1161\udbff\udfff"
+  },
+  {
+    "input": "\ufb03\u1100\udbff\udfff\ud800A\u2163\ua7f1",
+    "nfkc": "ffi\u1100\udbff\udfff\ud800AIV\ua7f1"
+  },
+  {
+    "input": "\u00c5\u1161e\u2163",
+    "nfkc": "\u00c5\u1161eIV"
+  },
+  {
+    "input": "\u1c80e\u1c80e\ua7f1\u212b",
+    "nfkc": "\u1c80e\u1c80e\ua7f1\u00c5"
+  },
+  {
+    "input": "\u00c5\u00c5\u0345\u2163\ua7f1\u0345\u0323\u1161",
+    "nfkc": "\u00c5\u00c5\u0345IV\ua7f1\u0323\u0345\u1161"
+  },
+  {
+    "input": "\u1c80\ud833\udcd6\u00c5e\ua7f1\u2163",
+    "nfkc": "\u1c80\ud833\udcd6\u00c5e\ua7f1IV"
+  },
+  {
+    "input": "\ufb03\ua7f1",
+    "nfkc": "ffi\ua7f1"
+  },
+  {
+    "input": "\udbff\udfff\u1161\u0323\u0323\u0345",
+    "nfkc": "\udbff\udfff\u1161\u0323\u0323\u0345"
+  },
+  {
+    "input": "\u1161\u1100A",
+    "nfkc": "\u1161\u1100A"
+  },
+  {
+    "input": "\u212b\u1100A",
+    "nfkc": "\u00c5\u1100A"
+  },
+  {
+    "input": "e\udbff\udfff\u2163\u212a\u212a\u1c80",
+    "nfkc": "e\udbff\udfffIVKK\u1c80"
+  },
+  {
+    "input": "\ua7f1\udbff\udfff\u1100",
+    "nfkc": "\ua7f1\udbff\udfff\u1100"
+  },
+  {
+    "input": "\ufb03\u1161\u212a",
+    "nfkc": "ffi\u1161K"
+  },
+  {
+    "input": "\ud833\udcd6\u1c80\ud800\u0345\u2163",
+    "nfkc": "\ud833\udcd6\u1c80\ud800\u0345IV"
+  },
+  {
+    "input": "\ud833\udcd6\u1161\udbff\udfff\u0323\u1c80\ud833\udcd6",
+    "nfkc": "\ud833\udcd6\u1161\udbff\udfff\u0323\u1c80\ud833\udcd6"
+  },
+  {
+    "input": "\ua7f1A\ud833\udcd6A\u00c5\u212b",
+    "nfkc": "\ua7f1A\ud833\udcd6A\u00c5\u00c5"
+  },
+  {
+    "input": "\ua7f1\u00c5\u00c5",
+    "nfkc": "\ua7f1\u00c5\u00c5"
+  },
+  {
+    "input": "\u1100\u00c5\u1c80\u0345\u1100",
+    "nfkc": "\u1100\u00c5\u1c80\u0345\u1100"
+  },
+  {
+    "input": "\u1161\u1c80\u0323\ud800\ud800",
+    "nfkc": "\u1161\u1c80\u0323\ud800\ud800"
+  },
+  {
+    "input": "\ufb03\u1161\u00c5e\ud800",
+    "nfkc": "ffi\u1161\u00c5e\ud800"
+  },
+  {
+    "input": "\u1c80\u0345A\udbff\udfff\u1100",
+    "nfkc": "\u1c80\u0345A\udbff\udfff\u1100"
+  },
+  {
+    "input": "\u1161\u1c80",
+    "nfkc": "\u1161\u1c80"
+  },
+  {
+    "input": "\u0345\ud833\udcd6\u212ae",
+    "nfkc": "\u0345\ud833\udcd6Ke"
+  },
+  {
+    "input": "\u1c80\u212a\u1161\u1100\u1100\u00c5",
+    "nfkc": "\u1c80K\u1161\u1100\u1100\u00c5"
+  },
+  {
+    "input": "\u212a\ud800\u1161\u00c5\udbff\udfff\u212b\ufb03",
+    "nfkc": "K\ud800\u1161\u00c5\udbff\udfff\u00c5ffi"
+  },
+  {
+    "input": "\u00c5\u1161\u212b\u0323e\u0323",
+    "nfkc": "\u00c5\u1161\u1ea0\u030a\u1eb9"
+  },
+  {
+    "input": "\ufb03\u00c5\u0323\udbff\udfff",
+    "nfkc": "ffi\u1ea0\u030a\udbff\udfff"
+  },
+  {
+    "input": "\u0323\ud800\u1c80",
+    "nfkc": "\u0323\ud800\u1c80"
+  },
+  {
+    "input": "\u212b\ud833\udcd6\u212b\u2163\u00c5\u1c80",
+    "nfkc": "\u00c5\ud833\udcd6\u00c5IV\u00c5\u1c80"
+  },
+  {
+    "input": "\u1c80\ud800\u0345\u1161\u2163\u1100",
+    "nfkc": "\u1c80\ud800\u0345\u1161IV\u1100"
+  },
+  {
+    "input": "\u0323\u00c5\ua7f1",
+    "nfkc": "\u0323\u00c5\ua7f1"
+  },
+  {
+    "input": "\u0301\u212b",
+    "nfkc": "\u0301\u00c5"
+  },
+  {
+    "input": "\u212b\ufb03\u212b",
+    "nfkc": "\u00c5ffi\u00c5"
+  },
+  {
+    "input": "\u0323\u2163\u212a\u0323\u212a\u2163\u0323\udbff\udfff",
+    "nfkc": "\u0323IV\u1e32KI\u1e7e\udbff\udfff"
+  },
+  {
+    "input": "\ufb03\ua7f1\u0323",
+    "nfkc": "ffi\ua7f1\u0323"
+  },
+  {
+    "input": "\u1100\u1100\u0323\u1c80",
+    "nfkc": "\u1100\u1100\u0323\u1c80"
+  },
+  {
+    "input": "e\u1c80\u00c5\u0301e\ua7f1\u2163\u1c80",
+    "nfkc": "e\u1c80\u01fae\ua7f1IV\u1c80"
+  },
+  {
+    "input": "A\u0301\u00c5",
+    "nfkc": "\u00c1\u00c5"
+  },
+  {
+    "input": "\u2163\u1161\u0345\u212b\ud833\udcd6e\ud833\udcd6",
+    "nfkc": "IV\u1161\u0345\u00c5\ud833\udcd6e\ud833\udcd6"
+  },
+  {
+    "input": "\u1100\u1c80\udbff\udfff",
+    "nfkc": "\u1100\u1c80\udbff\udfff"
+  },
+  {
+    "input": "\udbff\udfffA\u1161\u1100",
+    "nfkc": "\udbff\udfffA\u1161\u1100"
+  },
+  {
+    "input": "\ud800e\ud833\udcd6",
+    "nfkc": "\ud800e\ud833\udcd6"
+  },
+  {
+    "input": "\u0345\u0345",
+    "nfkc": "\u0345\u0345"
+  },
+  {
+    "input": "\u0323\u0345\u212b",
+    "nfkc": "\u0323\u0345\u00c5"
+  },
+  {
+    "input": "\u2163\u0301\u1100\ua7f1\ufb03A\u212b",
+    "nfkc": "IV\u0301\u1100\ua7f1ffiA\u00c5"
+  },
+  {
+    "input": "\u212b\ua7f1\u1100\udbff\udfff",
+    "nfkc": "\u00c5\ua7f1\u1100\udbff\udfff"
+  },
+  {
+    "input": "\u1100\u0301\ufb03e\u0301\u212a\ud833\udcd6",
+    "nfkc": "\u1100\u0301ffi\u00e9K\ud833\udcd6"
+  },
+  {
+    "input": "\u212a\udbff\udfff\u0301\u1c80",
+    "nfkc": "K\udbff\udfff\u0301\u1c80"
+  },
+  {
+    "input": "\u1100\u1100\u00c5\u2163",
+    "nfkc": "\u1100\u1100\u00c5IV"
+  },
+  {
+    "input": "\udbff\udfff\u0323\u0301\u1100\u2163\u00c5\u1100",
+    "nfkc": "\udbff\udfff\u0323\u0301\u1100IV\u00c5\u1100"
+  },
+  {
+    "input": "e\ud833\udcd6\u212a\u0323",
+    "nfkc": "e\ud833\udcd6\u1e32"
+  },
+  {
+    "input": "\u1c80\u212b\u0301\ufb03eA\ud833\udcd6\u0345",
+    "nfkc": "\u1c80\u01faffieA\ud833\udcd6\u0345"
+  },
+  {
+    "input": "\udbff\udfff\u212aA\u212a\u212a\ua7f1\u2163",
+    "nfkc": "\udbff\udfffKAKK\ua7f1IV"
+  },
+  {
+    "input": "\u1c80A\ud800\ud833\udcd6\u0301\u2163",
+    "nfkc": "\u1c80A\ud800\ud833\udcd6\u0301IV"
+  },
+  {
+    "input": "\u1161\u212b\ud833\udcd6\u1c80\ud833\udcd6\u0345",
+    "nfkc": "\u1161\u00c5\ud833\udcd6\u1c80\ud833\udcd6\u0345"
+  },
+  {
+    "input": "\u1161\u0301\udbff\udfff\ud833\udcd6\u1161",
+    "nfkc": "\u1161\u0301\udbff\udfff\ud833\udcd6\u1161"
+  },
+  {
+    "input": "\ua7f1\u0301e",
+    "nfkc": "\ua7f1\u0301e"
+  },
+  {
+    "input": "A\u2163\u1100\u212a\u1c80\u1161\u0345",
+    "nfkc": "AIV\u1100K\u1c80\u1161\u0345"
+  },
+  {
+    "input": "\u1161\u0323\u0345\u0323\u212b\ud833\udcd6e",
+    "nfkc": "\u1161\u0323\u0323\u0345\u00c5\ud833\udcd6e"
+  },
+  {
+    "input": "\u1161\ud833\udcd6",
+    "nfkc": "\u1161\ud833\udcd6"
+  },
+  {
+    "input": "e\u1161",
+    "nfkc": "e\u1161"
+  },
+  {
+    "input": "\u212b\u1161\u212bA\u00c5",
+    "nfkc": "\u00c5\u1161\u00c5A\u00c5"
+  },
+  {
+    "input": "\u1100\u00c5\u0345",
+    "nfkc": "\u1100\u00c5\u0345"
+  },
+  {
+    "input": "\u0301\ua7f1",
+    "nfkc": "\u0301\ua7f1"
+  },
+  {
+    "input": "\u1c80A",
+    "nfkc": "\u1c80A"
+  },
+  {
+    "input": "\ua7f1\u212b\u212be\ud833\udcd6\u00c5\u00c5",
+    "nfkc": "\ua7f1\u00c5\u00c5e\ud833\udcd6\u00c5\u00c5"
+  },
+  {
+    "input": "\u0323\u1100ee\u0323",
+    "nfkc": "\u0323\u1100e\u1eb9"
+  },
+  {
+    "input": "\u2163\u1c80\ud800\u2163\u0301A",
+    "nfkc": "IV\u1c80\ud800IV\u0301A"
+  },
+  {
+    "input": "\ud833\udcd6\ud800\u1c80\udbff\udfff\u0323",
+    "nfkc": "\ud833\udcd6\ud800\u1c80\udbff\udfff\u0323"
+  },
+  {
+    "input": "\u2163e",
+    "nfkc": "IVe"
+  },
+  {
+    "input": "\u1100\u212a\u2163\u0301\u1161\ua7f1\u0345\u1100",
+    "nfkc": "\u1100KIV\u0301\u1161\ua7f1\u0345\u1100"
+  },
+  {
+    "input": "\u1c80\udbff\udfffe\u212a\u1100A",
+    "nfkc": "\u1c80\udbff\udfffeK\u1100A"
+  },
+  {
+    "input": "\u212a\ud833\udcd6eA\u212a\ua7f1",
+    "nfkc": "K\ud833\udcd6eAK\ua7f1"
+  },
+  {
+    "input": "\u0345\udbff\udfff\u1c80",
+    "nfkc": "\u0345\udbff\udfff\u1c80"
+  },
+  {
+    "input": "\u1161\u1100\u1100",
+    "nfkc": "\u1161\u1100\u1100"
+  },
+  {
+    "input": "\udbff\udfff\u0301A\udbff\udfff\udbff\udfff\u212b",
+    "nfkc": "\udbff\udfff\u0301A\udbff\udfff\udbff\udfff\u00c5"
+  },
+  {
+    "input": "\u212b\u1c80\u0345\u2163\udbff\udfff",
+    "nfkc": "\u00c5\u1c80\u0345IV\udbff\udfff"
+  },
+  {
+    "input": "\u0323\u212a\u212a\u212a",
+    "nfkc": "\u0323KKK"
+  },
+  {
+    "input": "\ufb03\u1100",
+    "nfkc": "ffi\u1100"
+  },
+  {
+    "input": "\u212a\udbff\udfffe",
+    "nfkc": "K\udbff\udfffe"
+  },
+  {
+    "input": "\u0301\ufb03\ufb03\ufb03\u0323A\u00c5\u212b",
+    "nfkc": "\u0301ffiffiff\u1ecbA\u00c5\u00c5"
+  },
+  {
+    "input": "\u0301\ud800\u00c5",
+    "nfkc": "\u0301\ud800\u00c5"
+  }
+]

@@ -1,0 +1,31 @@
+{
+  "schemaVersion": 1,
+  "analysisId": "8ec8a3bc-7a15-4b75-9f94-a5353a2a2f9b",
+  "sourceType": "text",
+  "score": {
+    "scoreVersion": "resume-readiness-v1",
+    "readinessScore": 85,
+    "label": "Strong",
+    "components": {
+      "structure": 25,
+      "impact": 25,
+      "readability": 20,
+      "keywords": 15
+    },
+    "explanations": [
+      "All core resume sections are present.",
+      "Experience bullets show measurable impact.",
+      "The document is easy to scan.",
+      "Most relevant job terms are represented."
+    ]
+  },
+  "feedback": {
+    "matchedKeywords": ["Python", "Flask"],
+    "missingKeywords": ["Kubernetes"],
+    "strengths": ["Your experience is presented in a clear progression."],
+    "improvements": ["Quantify the impact of recent projects."],
+    "powerBullets": ["Built a Flask service that reduced response time by 20%."],
+    "summary": "A focused resume with strong technical evidence and a few opportunities to add measurable outcomes.",
+    "simulatedRecruiterComment": "Simulated AI recruiter feedback: a recruiter would quickly see relevant backend experience, but stronger outcome metrics would improve differentiation."
+  }
+}

@@ -1,0 +1,32 @@
+{
+  "name": "Resume.AI",
+  "subtitle": "Feedback, Score & AI Coaching",
+  "primaryLanguage": "English (U.S.)",
+  "sku": "resume-ai-ios",
+  "promotionalText": "Review a PDF or pasted resume with a transparent readiness score and optional AI coaching. Keep a private, local career workspace.",
+  "description": "Review your resume with two clearly separated signals: a deterministic readiness score and optional AI coaching.\n\nHOW IT WORKS\n\n• Paste resume text or choose a readable PDF.\n• Review on-device PDF text before anything is submitted.\n• Add an optional role description for relevant-term feedback.\n• Consent before reviewed text is sent for analysis.\n• See structure, impact, readability, and relevant-term components.\n• Keep bounded reports, resume versions, and job notes locally.\n• Share a text summary or temporary PDF report through the iOS share sheet.\n\nPRIVACY CONTROLS\n\nApple PDFKit and Vision extract PDF text on your device. Raw PDF bytes are not uploaded by the iOS app. Reviewed resume text and an optional role description are sent to Groq only after consent. The service keeps no report or content history. Local reports, resume versions, and job notes do not sync to Resume.AI servers and may enter device backups. No login, ads, cross-app tracking, or behavioral analytics are used in this release. Apple processes payment and RevenueCat processes anonymous purchase and entitlement history for app functionality and subscription analytics.\n\nIMPORTANT LIMITS\n\nThe readiness score is deterministic coaching feedback. It is not an employer's ATS and is not a hiring decision. AI feedback may be incomplete or wrong and may restate submitted content. Resume.AI does not predict or guarantee interviews, jobs, or application outcomes. Review every suggestion before editing, saving, or sharing your material.",
+  "keywords": "cv,career,job,application,skills,writing,interview,format,builder,review",
+  "primaryCategory": "Productivity",
+  "secondaryCategory": "Business",
+  "privacyPolicyUrl": "https://resume-analyzer-al3g.onrender.com/static/privacy.html",
+  "termsOfUseUrl": "https://resume-analyzer-al3g.onrender.com/static/terms.html",
+  "supportUrl": "https://resume-analyzer-al3g.onrender.com/static/support.html",
+  "sellerName": "ACCOUNT HOLDER TO CONFIRM",
+  "copyright": "ACCOUNT HOLDER TO CONFIRM",
+  "appPrivacyDraft": {
+    "tracking": false,
+    "purchaseHistory": "Analytics and App Functionality; RevenueCat-generated anonymous identifier; not linked to the user; not used for tracking; Apple and RevenueCat",
+    "deviceId": "App Functionality and service security; pseudonymous; not used for tracking",
+    "userContent": "App Functionality; resume and optional role text are processed only after consent; no server report history"
+  },
+  "submissionStatus": "BLOCKED",
+  "submissionBlockers": [
+    "Confirm seller and copyright values in the authorized App Store Connect account.",
+    "Deploy and anonymously verify the production API plus Privacy, Terms, and Support URLs; Privacy timed out and Terms/Support returned HTTP 404 during the 2026-08-09 anonymous check.",
+    "Create, localize, and submit the two Apple subscription products; connect them to the resume_pro RevenueCat entitlement and verify sandbox purchase/restore.",
+    "Verify Groq retention settings in the authoritative console.",
+    "Complete physical-iPhone, backup and restore, signed build, and TestFlight gates.",
+    "Capture required screenshots from the accepted TestFlight binary with synthetic content.",
+    "Obtain explicit authorization before upload or submission."
+  ]
+}

@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Privacy — Resume.AI</title><link rel="stylesheet" href="/static/styles.css"></head>
+<body>
+  <header class="site-header wrap"><a class="wordmark" href="/static/index.html">Resume<span>.</span>AI</a><nav aria-label="Utility"><a href="/static/terms.html">Terms</a><a href="/static/support.html">Support</a></nav></header>
+  <main class="wrap prose">
+    <p class="eyebrow">Privacy</p><h1>Use your material with clear boundaries.</h1>
+    <p>Effective August 10, 2026. Provider configuration and release-candidate behavior must be verified before App Store submission.</p>
+
+    <h2>Signed iOS app</h2>
+    <p>In the signed iOS app, a PDF stays on the device while Apple PDFKit extracts selectable text or Apple Vision recognizes a scan. Resume.AI shows the result for review. Only reviewed text and an optional job description leave the device after consent. Raw PDF bytes are not uploaded by the signed iOS app and are never sent to Groq.</p>
+
+    <h2>Compatibility web app</h2>
+    <p>The compatibility web app can transiently upload a standard PDF to the Resume.AI service on Render for bounded text extraction. Raw PDF bytes are not sent to Groq or retained as report history. Extracted or pasted text and an optional job description are sent to Groq only after consent. This browser keeps no resume, job description, or report history.</p>
+
+    <h2>Local workspace and deletion</h2>
+    <p>The iOS app can store local reports, local resume versions, comparisons, and job notes in an on-device SQLite workspace. This data does not sync to Resume.AI servers. Delete controls erase the active local store, but device backups may restore older data. iCloud backups are end-to-end encrypted only when Advanced Data Protection is enabled, and computer backups require the user to enable encryption. Temporary share files are removed on a best-effort basis after use.</p>
+
+    <h2>Security and telemetry</h2>
+    <p>An opaque installation security identifier and server-side rate-limit state authenticate requests, prevent replay, enforce plan allowances, and protect capacity. The first release has no login or Resume.AI user account. App-controlled telemetry uses fixed, content-free event categories and excludes submitted content, local workspace content, identifiers, filenames, request bodies, provider responses, IP addresses, and raw exceptions. Render may separately process connection and HTTP metadata, Device/IP Data, and IP-based geolocation under its policies.</p>
+
+    <h2>Subscriptions</h2>
+    <p>Apple processes App Store payments. RevenueCat processes an anonymous entitlement identity and purchase history for app functionality and subscription analytics. Resume.AI does not receive full payment-card details or use purchase data for tracking. Free use is limited to 3 local reports, 1 resume version, 3 tracked jobs, and up to 3 AI requests per month. A verified Pro entitlement permits up to 10,000 local reports, 200 resume versions, 500 tracked jobs, 100 comparison snapshots, and up to 100 AI requests per month, plus PDF export. Deleting the app or local data does not cancel an Apple subscription.</p>
+
+    <h2>Providers and retention</h2>
+    <p>Groq retains usage metadata and may log inference content for up to 30 days for reliability and abuse prevention unless Zero Data Retention is enabled. Resume.AI's production setting is unverified and must be checked before release. Render application-log retention varies by plan. Resume.AI does not promise deletion of provider-controlled metadata beyond verified provider terms.</p>
+
+    <h2>Limits</h2>
+    <p>Deterministic readiness feedback and optional AI coaching are not an employer's ATS, a hiring decision, or an employment prediction. AI may be incomplete or wrong. There is no interview or job guarantee, and the service is not professional, legal, or employment advice.</p>
+    <p>Use is also governed by the <a href="/static/terms.html">Terms of Use</a>.</p>
+  </main>
+  <footer class="site-footer wrap"><span>Resume.AI coaching</span><a href="/static/index.html">Back to review</a></footer>
+</body>
+</html>

@@ -1,0 +1,7 @@
+{
+  "name": "resume-vision",
+  "version": "1.0.0",
+  "description": "Private on-device scanned PDF text recognition for Resume.AI.",
+  "main": "src/index.ts",
+  "private": true
+}

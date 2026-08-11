@@ -1,0 +1,64 @@
+services:
+  - type: web
+    name: resume-analyzer-al3g
+    runtime: python
+    plan: starter
+    numInstances: 2
+    region: oregon
+    autoDeployTrigger: off
+    previews:
+      generation: off
+    buildCommand: uv sync --frozen --no-dev
+    startCommand: >-
+      gunicorn 'server.app:create_app()' --bind 0.0.0.0:$PORT --workers 2
+      --threads 4 --timeout 45 --graceful-timeout 30 --keep-alive 5
+      --max-requests 1000 --max-requests-jitter 100
+      --access-logfile /dev/null --error-logfile - --log-level warning
+      --logger-class server.gunicorn_logger.ContentFreeGunicornLogger
+    healthCheckPath: /healthz
+    envVars:
+      - key: APP_ENV
+        value: production
+      - key: DEBUG
+        value: "false"
+      - key: GUNICORN_CMD_ARGS
+        value: ""
+      - key: GROQ_API_KEY
+        sync: false
+      - key: GROQ_MODEL
+        value: llama-3.3-70b-versatile
+      - key: INSTALLATION_SIGNING_KEY
+        generateValue: true
+      - key: REDIS_URL
+        fromService:
+          type: keyvalue
+          name: resume-ai-rate-limit
+          property: connectionString
+      - key: ALLOWED_WEB_ORIGINS
+        value: https://resume-analyzer-al3g.onrender.com
+      - key: PROVIDER_DEADLINE_SECONDS
+        value: "8"
+      - key: REQUEST_DEADLINE_SECONDS
+        value: "10"
+      - key: REVENUECAT_SECRET_API_KEY
+        sync: false
+      - key: REVENUECAT_APP_ID
+        sync: false
+      - key: REVENUECAT_WEBHOOK_SECRET
+        sync: false
+      - key: REVENUECAT_WEBHOOK_SIGNING_SECRET
+        sync: false
+      - key: APPLE_BUNDLE_ID
+        value: com.avinashamanchi.resumeai
+      - key: APPLE_TEAM_ID
+        sync: false
+      - key: APPLE_JWKS_URL
+        value: https://appleid.apple.com/auth/keys
+
+  - type: keyvalue
+    name: resume-ai-rate-limit
+    plan: starter
+    region: oregon
+    ipAllowList: []
+    persistenceMode: off
+    maxmemoryPolicy: noeviction
