@@ -34,4 +34,4 @@ Privacy candidate: https://avinashamanchi.github.io/resume-analyzer/privacy.html
 
 Terms candidate: https://avinashamanchi.github.io/resume-analyzer/terms.html
 
-All three URLs must return HTTPS 200 anonymously from the exact production release before submission. Signed PDFKit/Vision device evidence, Apple Sandbox, RevenueCat webhooks, production-like load evidence, TestFlight, and App Review remain external gates. These notes have not been submitted and no Apple approval is claimed.
+All three URLs returned HTTPS 200 anonymously on 2026-08-11 and matched their tracked release files byte for byte. Recheck them immediately before submission. The current Render deployment still serves the legacy analyzer and returns HTTP 404 at `/healthz`; deploy and verify the current service before review. Signed PDFKit/Vision device evidence, Apple Sandbox, RevenueCat webhooks, production-like load evidence, TestFlight, and App Review remain external gates. These notes have not been submitted and no Apple approval is claimed.
