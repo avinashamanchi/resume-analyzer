@@ -11,7 +11,7 @@ Status vocabulary: `PASS`, `FAIL`, `BLOCKED`, `UNVERIFIED`. A successful archive
 | Marketing version | `1.0.0` | CONFIGURED |
 | Build number | `1` | CONFIGURED; availability unverified |
 | EAS project ID/owner | Not configured | BLOCKED — requires authorized EAS account setup |
-| Production API origin | `https://resume-analyzer-al3g.onrender.com` | BLOCKED — the exact production health and full analysis flow require a fresh anonymous verification from the accepted candidate |
+| Production API origin | `https://resume-analyzer-al3g.onrender.com` | BLOCKED — earlier 2026-08-11 probes reached the legacy root and a 404 `/healthz`; later 25-second and 90-second probes to both endpoints timed out with zero response bytes. Deploy the current service and verify health plus a synthetic full flow. |
 | Privacy URL | `https://avinashamanchi.github.io/resume-analyzer/privacy.html` | PASS — anonymous HTTPS 200 on 2026-08-11; response matched `static/privacy.html` byte for byte. Recheck immediately before submission. |
 | Terms URL | `https://avinashamanchi.github.io/resume-analyzer/terms.html` | PASS — anonymous HTTPS 200 on 2026-08-11; response matched `static/terms.html` byte for byte. Recheck immediately before submission. |
 | Support URL | `https://avinashamanchi.github.io/resume-analyzer/support.html` | PASS — anonymous HTTPS 200 on 2026-08-11; response matched `static/support.html` byte for byte. Recheck immediately before submission. |
