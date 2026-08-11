@@ -181,9 +181,9 @@ def test_public_legal_site_deploys_only_first_party_legal_assets():
     workflow = (ROOT / ".github" / "workflows" / "legal-pages.yml").read_text()
 
     for action in (
-        "actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b # v5",
-        "actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa # v3",
-        "actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4",
+        "actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0",
+        "actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0",
+        "actions/deploy-pages@cd2ce8fcbc39b97be8ca5fce6e763baed58fa128 # v5.0.0",
     ):
         assert action in workflow
     assert "path: .legal-pages" in workflow
