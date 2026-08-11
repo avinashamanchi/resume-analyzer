@@ -1,6 +1,6 @@
 # Resume.AI support
 
-Release-candidate first-party support page: https://resume-analyzer-al3g.onrender.com/static/support.html.
+Release-candidate first-party support page: https://avinashamanchi.github.io/resume-analyzer/support.html.
 
 The page provides content-free self-help and links to the public project issue tracker at https://github.com/avinashamanchi/resume-analyzer/issues. Its anonymous live reachability is **UNVERIFIED** until an authorized production deployment; failure to verify it blocks submission. Never send or publish resumes, job descriptions, tokens, request identifiers, filenames, contact information, or other private identifiers. Public issues must contain only app/iOS versions, reproduction actions, and the stable error category.
 

@@ -1332,7 +1332,7 @@ def test_release_docs_and_ci_cover_required_unverified_boundaries():
         "not an exact ATS",
         "no hiring guarantee",
         "not professional, legal, or employment advice",
-        "https://resume-analyzer-al3g.onrender.com/static/support.html",
+        "https://avinashamanchi.github.io/resume-analyzer/support.html",
         "iPhone or iPad backups",
         "stored in iCloud or on a Mac or PC",
         "iCloud backups are always encrypted",

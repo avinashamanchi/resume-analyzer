@@ -42,4 +42,4 @@ Render application-log retention depends on the hosting plan. Resume.AI controls
 
 Resume.AI provides deterministic coaching plus optional AI suggestions. It is not an employer's ATS, a hiring decision, or a prediction of employment. AI feedback may be incomplete or wrong. There is no interview or job guarantee, and the service is not professional, legal, or employment advice.
 
-Release-candidate pages: [Support](https://resume-analyzer-al3g.onrender.com/static/support.html) and [Terms](https://resume-analyzer-al3g.onrender.com/static/terms.html). Anonymous live reachability remains **UNVERIFIED** until an authorized production deployment. Do not send resumes, job descriptions, tokens, request identifiers, or other private content to a public support channel.
+Release-candidate pages: [Support](https://avinashamanchi.github.io/resume-analyzer/support.html) and [Terms](https://avinashamanchi.github.io/resume-analyzer/terms.html). Anonymous live reachability remains **UNVERIFIED** until the GitHub Pages deployment is verified. Do not send resumes, job descriptions, tokens, request identifiers, or other private content to a public support channel.

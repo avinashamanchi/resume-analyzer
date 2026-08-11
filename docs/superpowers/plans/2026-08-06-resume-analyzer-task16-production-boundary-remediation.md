@@ -93,7 +93,7 @@
 - Modify relevant mobile/browser/production-boundary tests.
 
 **Required behavior:**
-- Use the first-party candidate support page `https://resume-analyzer-al3g.onrender.com/static/support.html` everywhere instead of the restricted GitHub issue tracker.
+- Use the first-party candidate support page `https://avinashamanchi.github.io/resume-analyzer/support.html` everywhere instead of the restricted GitHub issue tracker.
 - The support page itself provides content-free troubleshooting and clearly states that interactive support is not yet available. It must not direct users to expose resumes or private data.
 - Drafts identify the support URL as a release candidate whose anonymous live reachability must be verified after authorized deployment; failure blocks submission.
 - CI checks committed whitespace for both pull requests and pushes using event-aware base/head ranges, with a shallow-clone-safe checkout configuration and structural regression tests. It may also check the worktree but must not rely on bare `git diff --check` alone.

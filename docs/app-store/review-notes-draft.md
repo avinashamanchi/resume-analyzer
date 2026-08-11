@@ -28,10 +28,10 @@ The server keeps no content or report history. App-controlled telemetry is conte
 
 The readiness score is deterministic coaching, not an exact ATS or hiring decision. AI may be incomplete or wrong. Resume.AI makes no hiring, interview, or employment guarantee and does not provide professional, legal, or employment advice.
 
-Support candidate: https://resume-analyzer-al3g.onrender.com/static/support.html
+Support candidate: https://avinashamanchi.github.io/resume-analyzer/support.html
 
-Privacy candidate: https://resume-analyzer-al3g.onrender.com/static/privacy.html
+Privacy candidate: https://avinashamanchi.github.io/resume-analyzer/privacy.html
 
-Terms candidate: https://resume-analyzer-al3g.onrender.com/static/terms.html
+Terms candidate: https://avinashamanchi.github.io/resume-analyzer/terms.html
 
 All three URLs must return HTTPS 200 anonymously from the exact production release before submission. Signed PDFKit/Vision device evidence, Apple Sandbox, RevenueCat webhooks, production-like load evidence, TestFlight, and App Review remain external gates. These notes have not been submitted and no Apple approval is claimed.
