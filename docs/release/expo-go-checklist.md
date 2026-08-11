@@ -27,6 +27,6 @@ Expo Go can verify JavaScript/native-client behavior for pasted text and text-ba
 | 320×568 layout at 200% Dynamic Type | UNVERIFIED | No clipped actions or horizontal overflow. |
 | VoiceOver labels, order, announcements, and focus recovery | UNVERIFIED | Test consent, errors, results, save/share, and delete confirmation. |
 | Reduce Motion | UNVERIFIED | No required information depends on animation. |
-| Privacy and self-help pages | UNVERIFIED | Copy must disclose provider retention and generated-feedback content. |
+| Privacy and self-help pages | PASS for public content; in-app opening UNVERIFIED | All three public pages returned HTTPS 200 anonymously on 2026-08-11 and matched the tracked release files byte for byte. Confirm link opening on the actual iPhone. |
 
 Completion requires dated observations from the actual iPhone. Automated tests and static export do not convert an `UNVERIFIED` row to `PASS`.
