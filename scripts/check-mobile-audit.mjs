@@ -7,9 +7,10 @@ import { fileURLToPath } from 'node:url';
 const AUDIT_LEVEL = '--audit-level=high';
 const ALLOWED_ADVISORY_SOURCES = new Set([1138808, 1138809]);
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+const mobileRoot = resolve(root, 'mobile');
 const npm = process.platform === 'win32' ? 'npm.cmd' : 'npm';
 const result = spawnSync(npm, ['audit', AUDIT_LEVEL, '--json'], {
-  cwd: resolve(root, 'mobile'),
+  cwd: mobileRoot,
   encoding: 'utf8',
   maxBuffer: 16 * 1024 * 1024,
 });
@@ -90,7 +91,35 @@ if (failures.length > 0) {
   process.exit(1);
 }
 
+const mitigationProbe = spawnSync(process.execPath, ['--eval', String.raw`
+  const { readFileSync } = require('node:fs');
+  require('./metro.config.js');
+  const imageSizeModule = require('image-size');
+  const imageSize = imageSizeModule.imageSize || imageSizeModule;
+  const disabled = [
+    Buffer.from([0x69,0x63,0x6e,0x73,0,0,0,16,0x49,0x43,0x4f,0x4e,0,0,0,0]),
+    Buffer.from([0,0,0,12,0x4a,0x58,0x4c,0x20,13,10,135,10,0,0,0,20,0x66,0x74,0x79,0x70,0x6a,0x78,0x6c,0x20,0,0,0,0,0,0,0,0]),
+    Buffer.from([0xff,0x0a,0,0,0,0,0,0]),
+    Buffer.from([0,0,0,16,0x66,0x74,0x79,0x70,0x61,0x76,0x69,0x66,0,0,0,0]),
+  ];
+  for (const input of disabled) {
+    try { imageSize(input); process.exit(10); }
+    catch (error) { if (!String(error).includes('disabled file type')) process.exit(11); }
+  }
+  const parserSource = readFileSync(require.resolve('image-size/dist/types/utils.js'), 'utf8');
+  if (!parserSource.includes('offset += box.size > 0 ? box.size : 8')) process.exit(12);
+`], {
+  cwd: mobileRoot,
+  encoding: 'utf8',
+  timeout: 2_000,
+});
+if (mitigationProbe.error !== undefined || mitigationProbe.status !== 0) {
+  process.stderr.write('Mobile dependency audit failed closed: image parser mitigation is absent or invalid.\n');
+  process.exit(1);
+}
+
 process.stdout.write(
   `Mobile dependency audit accepted ${severe.size} transitive findings rooted only in ` +
-  'GHSA-w3rx-r6r6-pgpr and GHSA-5p2g-fcmc-qvqq; any new high or critical advisory fails closed.\n',
+  'GHSA-w3rx-r6r6-pgpr and GHSA-5p2g-fcmc-qvqq with verified Metro parser mitigation; ' +
+  'any new high or critical advisory fails closed.\n',
 );
