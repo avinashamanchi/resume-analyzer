@@ -27,6 +27,40 @@ def test_web_has_privacy_support_and_consent_copy():
     assert "2026-08-04.v1" in html
 
 
+def test_web_entry_explains_the_coaching_method_before_the_real_form():
+    html = (STATIC / "index.html").read_text()
+
+    assert 'aria-label="Resume coaching demo"' in html
+    assert 'id="demo"' in html
+    assert 'id="method"' in html
+    assert 'href="#analysis-form"' in html
+    assert 'src="/static/landing_demo.js"' in html
+    assert ">Pause demo<" in html
+    assert ">Replay<" in html
+    for label in ("Original", "Review", "Priorities", "Improved"):
+        assert f">{label}<" in html
+    assert "This example is coaching—not a hiring decision." in html
+    assert 'id="analysis-form"' in html
+
+
+def test_web_entry_preserves_truthful_career_and_privacy_boundaries():
+    html = (STATIC / "index.html").read_text().lower()
+
+    assert "does not predict an application outcome" in html
+    assert "raw pdf bytes never go to groq" in html
+    assert "the service and this browser keep no content or report history" in html
+    assert "guaranteed interview" not in html
+    assert "guaranteed job" not in html
+
+
+def test_web_entry_constrains_the_upload_form_at_320_css_pixels():
+    styles = (STATIC / "styles.css").read_text()
+
+    assert "input[type=\"file\"] { width: 100%;" in styles
+    assert ".source-fieldset, .source-panel, .file-drop { min-width: 0;" in styles
+    assert ".file-drop > span:last-child { min-width: 0; overflow-wrap: anywhere;" in styles
+
+
 def test_public_legal_pages_disclose_subscription_processing_and_cancellation():
     privacy = (STATIC / "privacy.html").read_text()
     terms = (STATIC / "terms.html").read_text()
@@ -82,6 +116,7 @@ def web_client():
         ("/", "text/html"),
         ("/static/styles.css", "text/css"),
         ("/static/app.js", "text/javascript"),
+        ("/static/landing_demo.js", "text/javascript"),
         ("/static/unicode_normalization.js", "text/javascript"),
         ("/static/unicode_casefold.js", "text/javascript"),
         ("/static/contract.js", "text/javascript"),
@@ -89,6 +124,7 @@ def web_client():
         ("/static/privacy.html", "text/html"),
         ("/static/support.html", "text/html"),
         ("/static/terms.html", "text/html"),
+        ("/static/favicon.svg", "image/svg+xml"),
     ],
 )
 def test_flask_serves_documented_first_party_web_assets(web_client, path, content_type):

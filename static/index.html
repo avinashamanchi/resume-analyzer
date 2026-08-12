@@ -4,123 +4,217 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light">
-  <title>Resume.AI — readiness coaching</title>
+  <meta name="theme-color" content="#f6f8fb">
+  <meta name="description" content="Resume.AI offers privacy-conscious resume-readiness coaching, with deterministic checks separated from optional AI feedback.">
+  <title>Resume.AI — make every line earn its place</title>
+  <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="/static/styles.css">
   <script src="/static/unicode_normalization.js" defer></script>
   <script src="/static/unicode_casefold.js" defer></script>
   <script src="/static/contract.js" defer></script>
   <script src="/static/lifecycle.js" defer></script>
+  <script src="/static/landing_demo.js" defer></script>
   <script src="/static/app.js" defer></script>
 </head>
 <body>
-  <a class="skip-link" href="#analysis-form">Skip to analysis form</a>
-  <header class="site-header wrap">
-    <a class="wordmark" href="/static/index.html" aria-label="Resume AI home">Resume<span>.</span>AI</a>
-    <nav aria-label="Utility">
+  <a class="skip-link" href="#main">Skip to content</a>
+  <header class="entry-header">
+    <a class="wordmark" href="#top" aria-label="Resume AI home">Resume<span>.</span>AI</a>
+    <button class="entry-nav-toggle" type="button" aria-expanded="false" aria-controls="entry-nav">Menu</button>
+    <nav class="entry-nav" id="entry-nav" aria-label="Primary navigation">
+      <a href="#demo">Demo</a>
+      <a href="#method">Method</a>
       <a href="/static/privacy.html">Privacy</a>
-      <a href="/static/terms.html">Terms</a>
       <a href="/static/support.html">Support</a>
+      <a class="nav-primary" href="#analysis-form" data-focus-analysis>Review my resume</a>
     </nav>
   </header>
 
-  <main class="wrap workspace">
-    <section class="main-column" aria-labelledby="page-title">
-      <p class="eyebrow">Private career material, deliberate feedback</p>
-      <h1 id="page-title">Make the next reading of your resume more useful.</h1>
-      <p class="lede">Send a PDF or pasted text for a readiness review, with optional role context. The score is coaching feedback—not a hiring decision.</p>
+  <main id="main">
+    <section class="entry-hero wrap" id="top" aria-labelledby="page-title">
+      <div class="hero-copy">
+        <p class="eyebrow">Private career material. Deliberate feedback.</p>
+        <h1 id="page-title">Make every line <em>earn its place.</em></h1>
+        <p class="hero-lede">See where a resume is clear, where evidence is missing, and what to revise next. The score is coaching feedback—not a hiring decision.</p>
+        <div class="hero-actions">
+          <a class="button button-primary" href="#analysis-form" data-focus-analysis>Review my resume</a>
+          <a class="button button-secondary" href="#method">See how feedback works</a>
+        </div>
+        <div class="hero-boundary" aria-label="Product boundaries">
+          <span><strong>10 MB</strong> PDF limit</span>
+          <span><strong>Request-only</strong> web handling</span>
+          <span><strong>No</strong> hiring prediction</span>
+        </div>
+      </div>
 
-      <form id="analysis-form" novalidate>
-        <fieldset class="source-fieldset">
-          <legend>Resume source</legend>
-          <div class="mode-switch" role="radiogroup" aria-label="Choose resume source">
-            <label class="mode-choice"><input type="radio" name="source" value="pdf" checked> <span>PDF upload</span></label>
-            <label class="mode-choice"><input type="radio" name="source" value="text"> <span>Paste resume text</span></label>
+      <section class="resume-demo" id="demo" aria-label="Resume coaching demo" data-demo-stage="improved">
+        <div class="demo-topline">
+          <p><span aria-hidden="true">●</span> Sample coaching pass</p>
+          <span>Example · not personalized</span>
+        </div>
+        <div class="demo-stage-controls" aria-label="Demo stages">
+          <button type="button" data-demo-select="original" aria-pressed="false"><span>01</span>Original</button>
+          <button type="button" data-demo-select="annotated" aria-pressed="false"><span>02</span>Review</button>
+          <button type="button" data-demo-select="priorities" aria-pressed="false"><span>03</span>Priorities</button>
+          <button type="button" data-demo-select="improved" aria-pressed="true"><span>04</span>Improved</button>
+        </div>
+
+        <div class="resume-sheet">
+          <div class="resume-sheet-head">
+            <div><strong>Avery Chen</strong><small>Product designer</small></div>
+            <span>EXPERIENCE / 02</span>
           </div>
-
-          <div id="pdf-panel" class="source-panel">
-            <label class="file-drop" for="resume-pdf">
-              <span class="file-drop-mark" aria-hidden="true">PDF</span>
-              <span><strong>Choose a resume PDF</strong><small>PDF only, up to 10 MB. The file is processed in memory for this request.</small></span>
-            </label>
-            <input id="resume-pdf" name="resume-pdf" type="file" accept="application/pdf,.pdf">
-            <p id="file-name" class="field-note" aria-live="polite">No file selected.</p>
+          <div class="resume-role"><strong>Product Designer</strong><span>Northstar Labs · 2024–Present</span></div>
+          <div class="bullet original-bullet">
+            <span aria-hidden="true">•</span>
+            <p>Worked with the product team to improve the onboarding experience.</p>
           </div>
-
-          <div id="text-panel" class="source-panel" hidden>
-            <label for="resume-text">Resume text</label>
-            <textarea id="resume-text" name="resume-text" rows="11" maxlength="30000" aria-describedby="resume-text-note" placeholder="Paste your resume text here."></textarea>
-            <p id="resume-text-note" class="field-note">Up to 30,000 characters. Keep contact details only if you want them reviewed.</p>
+          <div class="annotation annotation-one"><span>01</span><p><strong>Name the action.</strong> “Worked with” hides your contribution.</p></div>
+          <div class="annotation annotation-two"><span>02</span><p><strong>Add evidence.</strong> Show scope or a measurable outcome.</p></div>
+          <div class="priority-row" aria-label="Coaching priorities">
+            <span>Ownership</span><span>Specificity</span><span>Outcome</span>
           </div>
-        </fieldset>
-
-        <div class="field-group">
-          <label for="job-description">Role description <span class="optional">Optional</span></label>
-          <textarea id="job-description" name="job-description" rows="6" maxlength="20000" aria-describedby="job-description-note" placeholder="Paste the role description to make keyword coaching more specific."></textarea>
-          <p id="job-description-note" class="field-note">Up to 20,000 characters. Leave blank for a general readiness review.</p>
-        </div>
-
-        <div class="consent-card">
-          <input id="groq-consent" name="groq-consent" type="checkbox" required>
-          <label for="groq-consent">I agree to send this resume and optional role description to Groq for AI coaching. I understand that this is optional AI feedback and not a hiring decision.</label>
-          <p>Read how requests are handled in <a href="/static/privacy.html">Privacy</a>.</p>
-        </div>
-
-        <section class="privacy-disclosure" aria-labelledby="privacy-boundary-title">
-          <h2 id="privacy-boundary-title">Privacy boundary</h2>
-          <ul>
-            <li>This compatibility web app transiently sends a selected standard PDF to Render for bounded text extraction.</li>
-            <li>Raw PDF bytes never go to Groq and are not retained as report history.</li>
-            <li>Extracted or pasted resume text and an optional job description go to Groq only after consent.</li>
-            <li>The service and this browser keep no content or report history.</li>
-            <li>Generated feedback can quote, transform, or restate submitted personal or job content; review it before copying or sharing.</li>
-            <li>An opaque installation security identifier and rate-limit state protect the service without ads or tracking.</li>
-            <li>App-controlled metrics are content-free. Render may separately process connection, HTTP, and Device/IP metadata under its policy.</li>
-            <li>Groq retains usage metadata and may retain inference content for up to 30 days unless Zero Data Retention is enabled; the production setting is unverified.</li>
-          </ul>
-        </section>
-
-        <div class="actions">
-          <button id="analyze-button" class="primary-action" type="submit">Review resume readiness</button>
-          <button id="cancel-button" class="secondary-action" type="button" hidden>Cancel request</button>
-        </div>
-        <p id="form-error" class="notice notice-error" role="alert" tabindex="-1" hidden></p>
-        <p id="request-status" class="notice notice-progress" role="status" aria-live="polite" hidden>Analysis in progress. Keep this page open; you can cancel the request at any time.</p>
-      </form>
-
-      <section id="report" class="report" aria-labelledby="report-title" tabindex="-1" hidden>
-        <div class="report-heading">
-          <p class="eyebrow">Readiness report</p>
-          <h2 id="report-title">Your coaching notes</h2>
-        </div>
-        <div class="score-summary">
-          <p class="score-value"><span id="readiness-score">—</span><span>/100</span></p>
-          <div>
-            <p id="readiness-label" class="status-stamp">Awaiting review</p>
-            <p id="readiness-summary">This is a resume-readiness score based on the submitted material and, when provided, role context.</p>
+          <div class="bullet improved-bullet">
+            <span aria-hidden="true">•</span>
+            <p>Redesigned the three-step onboarding flow with product and engineering, reducing first-session drop-off by 18%.</p>
+          </div>
+          <div class="readiness-line">
+            <span>Readiness signal</span>
+            <div aria-hidden="true"><i></i></div>
+            <strong>Clearer evidence</strong>
           </div>
         </div>
-        <p class="score-explainer">Readiness reflects structure, impact, readability, and relevant terms. It does not predict an application outcome.</p>
 
-        <div class="report-grid">
-          <section class="report-card" aria-labelledby="matched-title"><h3 id="matched-title">Matched terms</h3><ul id="matched-keywords" class="tag-list"></ul></section>
-          <section class="report-card" aria-labelledby="missing-title"><h3 id="missing-title">Terms to consider</h3><ul id="missing-keywords" class="tag-list"></ul></section>
-          <section class="report-card" aria-labelledby="strengths-title"><h3 id="strengths-title">What is working</h3><ul id="strengths" class="coaching-list"></ul></section>
-          <section class="report-card" aria-labelledby="improvements-title"><h3 id="improvements-title">Priority edits</h3><ul id="improvements" class="coaching-list"></ul></section>
+        <div class="demo-footer">
+          <p data-demo-status aria-live="polite">Improved example shown with ownership, scope, and outcome.</p>
+          <div><button type="button" data-demo-toggle>Pause demo</button><button type="button" data-demo-replay>Replay</button></div>
         </div>
-        <section class="report-card report-card-wide" aria-labelledby="bullets-title"><h3 id="bullets-title">Suggested power bullets</h3><ul id="power-bullets" class="coaching-list"></ul></section>
-        <section class="report-card report-card-wide" aria-labelledby="comment-title"><h3 id="comment-title">Simulated recruiter comment</h3><p id="recruiter-comment" class="report-copy"></p></section>
+        <p class="demo-disclaimer">This example is coaching—not a hiring decision.</p>
       </section>
     </section>
 
-    <aside class="margin-rail" aria-label="Analysis annotations">
-      <p class="rail-label">Margin audit</p>
-      <section class="rail-note" data-status="private"><p class="status-stamp">Privacy</p><h2>Request-only handling</h2><p>Your submitted material is sent for this analysis; it is not retained by this browser after the request.</p></section>
-      <section class="rail-note" data-status="method"><p class="status-stamp">Method</p><h2>Two kinds of feedback</h2><p>A deterministic readiness score sits beside AI coaching from Groq. They are shown as separate signals.</p></section>
-      <section class="rail-note" data-status="scope"><p class="status-stamp">Scope</p><h2>For revision, not verdicts</h2><p>Use the notes to revise. Hiring decisions remain with people and employers.</p></section>
-      <a class="rail-link" href="/static/support.html">Limits and support <span aria-hidden="true">→</span></a>
-    </aside>
+    <section class="method-section" id="method" aria-labelledby="method-title">
+      <div class="wrap method-layout">
+        <div class="section-heading">
+          <p class="eyebrow">A review you can inspect</p>
+          <h2 id="method-title">Two signals.<br>One revision plan.</h2>
+          <p>Deterministic checks and optional AI coaching stay visibly separate, so you can understand where every kind of feedback comes from.</p>
+        </div>
+        <div class="method-steps">
+          <article><span>01 / Choose</span><h3>Bring a PDF or paste text.</h3><p>Use a readable PDF up to 10 MB or paste up to 30,000 characters.</p></article>
+          <article><span>02 / Approve</span><h3>Review the transfer boundary.</h3><p>AI coaching begins only after you approve sending reviewed text and optional role context to Groq.</p></article>
+          <article><span>03 / Revise</span><h3>Work through priorities.</h3><p>Use the report as an editing plan. It does not predict an application outcome.</p></article>
+        </div>
+      </div>
+    </section>
+
+    <section class="boundary-strip" aria-labelledby="boundary-title">
+      <div class="wrap boundary-layout">
+        <div><p class="eyebrow">Before you upload</p><h2 id="boundary-title">Know where your material goes.</h2></div>
+        <ul>
+          <li><strong>PDF extraction:</strong> this compatibility web app transiently sends a selected standard PDF to Render.</li>
+          <li><strong>AI coaching:</strong> extracted or pasted text goes to Groq only after explicit consent.</li>
+          <li><strong>History:</strong> raw PDF bytes never go to Groq, and the service and this browser keep no content or report history.</li>
+        </ul>
+      </div>
+    </section>
+
+    <section class="wrap workspace" aria-labelledby="analysis-form-heading">
+      <section class="main-column">
+        <div class="form-intro">
+          <p class="eyebrow">Your review workspace</p>
+          <h2 id="analysis-form-heading" tabindex="-1">Start with the material you want to improve.</h2>
+          <p>Nothing is submitted until you choose a source, confirm the transfer, and request the review.</p>
+        </div>
+
+        <form id="analysis-form" novalidate>
+          <fieldset class="source-fieldset">
+            <legend>Resume source</legend>
+            <div class="mode-switch" role="radiogroup" aria-label="Choose resume source">
+              <label class="mode-choice"><input type="radio" name="source" value="pdf" checked> <span>PDF upload</span></label>
+              <label class="mode-choice"><input type="radio" name="source" value="text"> <span>Paste resume text</span></label>
+            </div>
+
+            <div id="pdf-panel" class="source-panel">
+              <label class="file-drop" for="resume-pdf">
+                <span class="file-drop-mark" aria-hidden="true">PDF</span>
+                <span><strong>Choose a resume PDF</strong><small>PDF only, up to 10 MB. The file is processed in memory for this request.</small></span>
+              </label>
+              <input id="resume-pdf" name="resume-pdf" type="file" accept="application/pdf,.pdf">
+              <p id="file-name" class="field-note" aria-live="polite">No file selected.</p>
+            </div>
+
+            <div id="text-panel" class="source-panel" hidden>
+              <label for="resume-text">Resume text</label>
+              <textarea id="resume-text" name="resume-text" rows="11" maxlength="30000" aria-describedby="resume-text-note" placeholder="Paste your resume text here."></textarea>
+              <p id="resume-text-note" class="field-note">Up to 30,000 characters. Keep contact details only if you want them reviewed.</p>
+            </div>
+          </fieldset>
+
+          <div class="field-group">
+            <label for="job-description">Role description <span class="optional">Optional</span></label>
+            <textarea id="job-description" name="job-description" rows="6" maxlength="20000" aria-describedby="job-description-note" placeholder="Paste the role description to make keyword coaching more specific."></textarea>
+            <p id="job-description-note" class="field-note">Up to 20,000 characters. Leave blank for a general readiness review.</p>
+          </div>
+
+          <div class="consent-card">
+            <input id="groq-consent" name="groq-consent" type="checkbox" required>
+            <label for="groq-consent">I agree to send this resume and optional role description to Groq for AI coaching. I understand that this is optional AI feedback and not a hiring decision.</label>
+            <p>Read how requests are handled in <a href="/static/privacy.html">Privacy</a>.</p>
+          </div>
+
+          <section class="privacy-disclosure" aria-labelledby="privacy-boundary-title">
+            <h2 id="privacy-boundary-title">Privacy boundary</h2>
+            <ul>
+              <li>This compatibility web app transiently sends a selected standard PDF to Render for bounded text extraction.</li>
+              <li>Raw PDF bytes never go to Groq and are not retained as report history.</li>
+              <li>Extracted or pasted resume text and an optional job description go to Groq only after consent.</li>
+              <li>The service and this browser keep no content or report history.</li>
+              <li>Generated feedback can quote, transform, or restate submitted personal or job content; review it before copying or sharing.</li>
+              <li>An opaque installation security identifier and rate-limit state protect the service without ads or tracking.</li>
+              <li>App-controlled metrics are content-free. Render may separately process connection, HTTP, and Device/IP metadata under its policy.</li>
+              <li>Groq retains usage metadata and may retain inference content for up to 30 days unless Zero Data Retention is enabled; the production setting is unverified.</li>
+            </ul>
+          </section>
+
+          <div class="actions">
+            <button id="analyze-button" class="primary-action" type="submit">Review resume readiness</button>
+            <button id="cancel-button" class="secondary-action" type="button" hidden>Cancel request</button>
+          </div>
+          <p id="form-error" class="notice notice-error" role="alert" tabindex="-1" hidden></p>
+          <p id="request-status" class="notice notice-progress" role="status" aria-live="polite" hidden>Analysis in progress. Keep this page open; you can cancel the request at any time.</p>
+        </form>
+
+        <section id="report" class="report" aria-labelledby="report-title" tabindex="-1" hidden>
+          <div class="report-heading"><p class="eyebrow">Readiness report</p><h2 id="report-title">Your coaching notes</h2></div>
+          <div class="score-summary"><p class="score-value"><span id="readiness-score">—</span><span>/100</span></p><div><p id="readiness-label" class="status-stamp">Awaiting review</p><p id="readiness-summary">This is a resume-readiness score based on the submitted material and, when provided, role context.</p></div></div>
+          <p class="score-explainer">Readiness reflects structure, impact, readability, and relevant terms. It does not predict an application outcome.</p>
+          <div class="report-grid">
+            <section class="report-card" aria-labelledby="matched-title"><h3 id="matched-title">Matched terms</h3><ul id="matched-keywords" class="tag-list"></ul></section>
+            <section class="report-card" aria-labelledby="missing-title"><h3 id="missing-title">Terms to consider</h3><ul id="missing-keywords" class="tag-list"></ul></section>
+            <section class="report-card" aria-labelledby="strengths-title"><h3 id="strengths-title">What is working</h3><ul id="strengths" class="coaching-list"></ul></section>
+            <section class="report-card" aria-labelledby="improvements-title"><h3 id="improvements-title">Priority edits</h3><ul id="improvements" class="coaching-list"></ul></section>
+          </div>
+          <section class="report-card report-card-wide" aria-labelledby="bullets-title"><h3 id="bullets-title">Suggested power bullets</h3><ul id="power-bullets" class="coaching-list"></ul></section>
+          <section class="report-card report-card-wide" aria-labelledby="comment-title"><h3 id="comment-title">Simulated recruiter comment</h3><p id="recruiter-comment" class="report-copy"></p></section>
+        </section>
+      </section>
+
+      <aside class="margin-rail" aria-label="Analysis annotations">
+        <p class="rail-label">Margin audit</p>
+        <section class="rail-note" data-status="private"><p class="status-stamp">Privacy</p><h2>Request-only handling</h2><p>Your submitted material is sent for this analysis; it is not retained by this browser after the request.</p></section>
+        <section class="rail-note" data-status="method"><p class="status-stamp">Method</p><h2>Two kinds of feedback</h2><p>A deterministic readiness score sits beside AI coaching from Groq. They are shown as separate signals.</p></section>
+        <section class="rail-note" data-status="scope"><p class="status-stamp">Scope</p><h2>For revision, not verdicts</h2><p>Use the notes to revise. Hiring decisions remain with people and employers.</p></section>
+        <a class="rail-link" href="/static/support.html">Limits and support <span aria-hidden="true">→</span></a>
+      </aside>
+    </section>
   </main>
 
-  <footer class="site-footer wrap"><span>Resume.AI coaching</span><span>Consent version 2026-08-04.v1</span></footer>
+  <footer class="entry-footer">
+    <a class="wordmark" href="#top">Resume<span>.</span>AI</a>
+    <p>Readiness coaching, not a hiring decision.</p>
+    <nav aria-label="Footer navigation"><a href="/static/privacy.html">Privacy</a><a href="/static/terms.html">Terms</a><a href="/static/support.html">Support</a></nav>
+    <span>Consent version 2026-08-04.v1</span>
+  </footer>
 </body>
 </html>
