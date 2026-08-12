@@ -131,7 +131,9 @@ legend { margin-bottom: .85rem; }
 .file-drop-mark { width: 3.4rem; height: 3.4rem; display: inline-flex; align-items: center; justify-content: center; color: white; background: var(--ink); border-radius: .6rem; font: 700 .72rem var(--utility); letter-spacing: .08em; }
 .file-drop strong, .file-drop small { display: block; }
 .file-drop small, .field-note, .consent-card p { margin: .25rem 0 0; color: var(--muted); font-size: .84rem; font-weight: 400; }
-input[type="file"] { display: block; max-width: 100%; margin-top: .65rem; }
+input[type="file"] { width: 100%; display: block; max-width: 100%; margin-top: .65rem; }
+.source-fieldset, .source-panel, .file-drop { min-width: 0; max-width: 100%; }
+.file-drop > span:last-child { min-width: 0; overflow-wrap: anywhere; }
 .field-group { margin-top: 1.5rem; }
 .optional { color: var(--muted); font-size: .86rem; font-weight: 400; }
 textarea { width: 100%; min-height: 3rem; margin-top: .55rem; padding: .8rem; display: block; resize: vertical; border: 1px solid #8ea0ab; border-radius: .55rem; color: var(--ink); background: white; line-height: 1.45; }

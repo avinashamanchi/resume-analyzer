@@ -53,6 +53,14 @@ def test_web_entry_preserves_truthful_career_and_privacy_boundaries():
     assert "guaranteed job" not in html
 
 
+def test_web_entry_constrains_the_upload_form_at_320_css_pixels():
+    styles = (STATIC / "styles.css").read_text()
+
+    assert "input[type=\"file\"] { width: 100%;" in styles
+    assert ".source-fieldset, .source-panel, .file-drop { min-width: 0;" in styles
+    assert ".file-drop > span:last-child { min-width: 0; overflow-wrap: anywhere;" in styles
+
+
 def test_public_legal_pages_disclose_subscription_processing_and_cancellation():
     privacy = (STATIC / "privacy.html").read_text()
     terms = (STATIC / "terms.html").read_text()
@@ -116,6 +124,7 @@ def web_client():
         ("/static/privacy.html", "text/html"),
         ("/static/support.html", "text/html"),
         ("/static/terms.html", "text/html"),
+        ("/static/favicon.svg", "image/svg+xml"),
     ],
 )
 def test_flask_serves_documented_first_party_web_assets(web_client, path, content_type):
