@@ -81,3 +81,77 @@
 
   return { STAGES, nextStage, createController };
 });
+
+(function bindLandingDemo(root) {
+  if (!root || !root.document || !root.ResumeAILandingDemo) return;
+
+  function setup() {
+    const document = root.document;
+    const demo = document.querySelector(".resume-demo");
+    if (!demo) return;
+    const status = demo.querySelector("[data-demo-status]");
+    const toggle = demo.querySelector("[data-demo-toggle]");
+    const replay = demo.querySelector("[data-demo-replay]");
+    const stageButtons = Array.from(demo.querySelectorAll("[data-demo-select]"));
+    const navToggle = document.querySelector(".entry-nav-toggle");
+    const nav = document.querySelector("#entry-nav");
+    const reducedMotion = Boolean(root.matchMedia?.("(prefers-reduced-motion: reduce)").matches);
+    const messages = {
+      original: "Original bullet shown without a clear action or result.",
+      annotated: "The review identifies hidden ownership and missing evidence.",
+      priorities: "Ownership, specificity, and outcome are the next editing priorities.",
+      improved: "Improved example shown with ownership, scope, and outcome.",
+    };
+    let playing = false;
+
+    function render(stage) {
+      demo.dataset.demoStage = stage;
+      if (status) status.textContent = messages[stage];
+      for (const button of stageButtons) button.setAttribute("aria-pressed", String(button.dataset.demoSelect === stage));
+    }
+
+    const controller = root.ResumeAILandingDemo.createController({ onStage: render, reducedMotion });
+
+    function setPlaying(next) {
+      playing = Boolean(next) && !reducedMotion;
+      if (playing) controller.play(); else controller.pause();
+      if (toggle) toggle.textContent = playing ? "Pause demo" : "Play demo";
+    }
+
+    toggle?.addEventListener("click", () => setPlaying(!playing));
+    replay?.addEventListener("click", () => { controller.replay(); setPlaying(!reducedMotion); });
+    for (const button of stageButtons) {
+      button.addEventListener("click", () => {
+        setPlaying(false);
+        controller.select(button.dataset.demoSelect);
+      });
+    }
+
+    if ("IntersectionObserver" in root && !reducedMotion) {
+      const observer = new root.IntersectionObserver((entries) => setPlaying(Boolean(entries[0]?.isIntersecting)), { threshold: 0.35 });
+      observer.observe(demo);
+      root.addEventListener("pagehide", () => observer.disconnect(), { once: true });
+    } else {
+      setPlaying(!reducedMotion);
+    }
+
+    navToggle?.addEventListener("click", () => {
+      const open = navToggle.getAttribute("aria-expanded") !== "true";
+      navToggle.setAttribute("aria-expanded", String(open));
+      nav?.setAttribute("data-open", String(open));
+    });
+    nav?.addEventListener("click", (event) => {
+      if (event.target.closest("a")) {
+        navToggle?.setAttribute("aria-expanded", "false");
+        nav.setAttribute("data-open", "false");
+      }
+    });
+    for (const link of document.querySelectorAll("[data-focus-analysis]")) {
+      link.addEventListener("click", () => root.setTimeout(() => document.querySelector("#analysis-form-heading")?.focus(), 0));
+    }
+    root.addEventListener("pagehide", () => controller.dispose(), { once: true });
+  }
+
+  if (root.document.readyState === "loading") root.document.addEventListener("DOMContentLoaded", setup, { once: true });
+  else setup();
+})(typeof globalThis === "object" ? globalThis : null);

@@ -27,6 +27,32 @@ def test_web_has_privacy_support_and_consent_copy():
     assert "2026-08-04.v1" in html
 
 
+def test_web_entry_explains_the_coaching_method_before_the_real_form():
+    html = (STATIC / "index.html").read_text()
+
+    assert 'aria-label="Resume coaching demo"' in html
+    assert 'id="demo"' in html
+    assert 'id="method"' in html
+    assert 'href="#analysis-form"' in html
+    assert 'src="/static/landing_demo.js"' in html
+    assert ">Pause demo<" in html
+    assert ">Replay<" in html
+    for label in ("Original", "Review", "Priorities", "Improved"):
+        assert f">{label}<" in html
+    assert "This example is coaching—not a hiring decision." in html
+    assert 'id="analysis-form"' in html
+
+
+def test_web_entry_preserves_truthful_career_and_privacy_boundaries():
+    html = (STATIC / "index.html").read_text().lower()
+
+    assert "does not predict an application outcome" in html
+    assert "raw pdf bytes never go to groq" in html
+    assert "the service and this browser keep no content or report history" in html
+    assert "guaranteed interview" not in html
+    assert "guaranteed job" not in html
+
+
 def test_public_legal_pages_disclose_subscription_processing_and_cancellation():
     privacy = (STATIC / "privacy.html").read_text()
     terms = (STATIC / "terms.html").read_text()
@@ -82,6 +108,7 @@ def web_client():
         ("/", "text/html"),
         ("/static/styles.css", "text/css"),
         ("/static/app.js", "text/javascript"),
+        ("/static/landing_demo.js", "text/javascript"),
         ("/static/unicode_normalization.js", "text/javascript"),
         ("/static/unicode_casefold.js", "text/javascript"),
         ("/static/contract.js", "text/javascript"),
