@@ -8,7 +8,6 @@ import { ResumeApi } from '../api/resumeApi';
 import {
   RevenueCatBillingService,
 } from '../billing/revenueCatService';
-import { AppleAccountLinker } from '../billing/appleAccountLinker';
 import {
   RESUME_PRO_ENTITLEMENT,
   RESUME_PRO_PRODUCT_IDS,
@@ -77,16 +76,10 @@ export function createRuntimeComposition(
         planApi,
         productIds: RESUME_PRO_PRODUCT_IDS,
       });
-      const appleAccountLinker = new AppleAccountLinker({
-        planApi,
-        accountStore: accountIdentity,
-        billing: revenueCatBilling,
-      });
       billingService = {
         load: () => revenueCatBilling.load(),
         purchase: productId => revenueCatBilling.purchase(productId),
         restore: () => revenueCatBilling.restore(),
-        linkApple: () => appleAccountLinker.link(new AbortController().signal),
       };
       serviceAvailable = true;
     } catch {

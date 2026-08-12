@@ -29,7 +29,6 @@ function service(snapshot: BillingSnapshot = ready): BillingService {
     load: jest.fn(async () => snapshot),
     purchase: jest.fn(async () => ({ ...snapshot, planStatus: 'pro_verified' as const, entitlementActive: true })),
     restore: jest.fn(async () => snapshot),
-    linkApple: jest.fn(async () => snapshot),
   };
 }
 
@@ -66,7 +65,7 @@ it('shows a clear free escape, StoreKit price, restore, and legal links', async 
   expect(Linking.openURL).toHaveBeenCalledWith(APPLE_PURCHASE_SUPPORT_URL);
 });
 
-it('does not create an Apple-linked Resume.AI account even after Pro is verified', async () => {
+it('does not expose account creation even after Pro is verified', async () => {
   const active: BillingSnapshot = {
     ...ready,
     planStatus: 'pro_verified',
@@ -79,7 +78,6 @@ it('does not create an Apple-linked Resume.AI account even after Pro is verified
   await waitFor(() => expect(view.getByText(/Resume\.AI Pro is server verified/i)).toBeTruthy());
   expect(view.getByText(/4 of 100 AI feedback requests used this month/i)).toBeTruthy();
   expect(view.queryByRole('button', { name: 'Use Pro on my other devices' })).toBeNull();
-  expect(billing.linkApple).not.toHaveBeenCalled();
 });
 
 it('keeps restore available when offerings fail to load', async () => {

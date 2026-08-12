@@ -79,6 +79,8 @@ def test_web_client_uses_first_party_versioned_contract_and_safe_dom_apis():
     assert 'src="/static/app.js"' in html
     assert "/v1/installations" in script
     assert "/v1/analyses" in script
+    assert 'apiUrl("/v1/installations")' in script
+    assert 'apiUrl("/v1/analyses")' in script
     assert "FormData" in script
     assert "AbortController" in script
     assert "crypto.randomUUID" in script

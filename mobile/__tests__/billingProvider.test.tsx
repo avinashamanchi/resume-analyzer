@@ -43,7 +43,6 @@ it('loads StoreKit products and updates the entitlement after purchase and resto
     load: jest.fn(async () => freeSnapshot),
     purchase: jest.fn(async () => ({ ...freeSnapshot, planStatus: 'pro_verified' as const, entitlementActive: true })),
     restore: jest.fn(async () => ({ ...freeSnapshot, planStatus: 'pro_verified' as const, entitlementActive: true })),
-    linkApple: jest.fn(async () => ({ ...freeSnapshot, planStatus: 'pro_verified' as const, entitlementActive: true })),
   };
   const view = render(<BillingProvider service={service}><Probe /></BillingProvider>);
 
