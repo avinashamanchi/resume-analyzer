@@ -235,7 +235,7 @@ def test_render_blueprint_is_fail_closed_and_has_private_ephemeral_key_value():
     assert "access-logfile -" not in blueprint
     assert key_value["persistenceMode"] == "off"
     assert key_value["maxmemoryPolicy"] == "noeviction"
-    assert web_service["autoDeployTrigger"] == "off"
+    assert web_service["autoDeployTrigger"] == "checksPass"
     environment = {
         entry["key"]: entry.get("value")
         for entry in web_service["envVars"]

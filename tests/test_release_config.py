@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import re
 import shutil
 import struct
 import subprocess
+import sys
 
 import yaml
 
@@ -177,7 +179,73 @@ def test_app_store_metadata_candidate_is_valid_and_truthful():
     assert "userId" not in metadata["appPrivacyDraft"]
 
 
-def test_public_legal_site_deploys_only_first_party_legal_assets():
+def test_public_site_builder_emits_the_interactive_landing_with_resolved_assets(
+    tmp_path: Path,
+):
+    output = tmp_path / "pages"
+    completed = subprocess.run(
+        [
+            sys.executable,
+            str(ROOT / "scripts" / "build_pages.py"),
+            "--output",
+            str(output),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    index = (output / "index.html").read_text()
+    assert 'aria-label="Resume coaching demo"' in index
+    assert 'id="analysis-form"' in index
+    assert (
+        'name="resume-ai-api-origin" '
+        f'content="{CANDIDATE_ORIGIN}"'
+    ) in index
+    assert "Content-Security-Policy" in index
+    assert CANDIDATE_ORIGIN in index
+    assert (output / ".nojekyll").is_file()
+
+    local_references = re.findall(r'(?:href|src)="([^"#][^"]*)"', index)
+    for reference in local_references:
+        if reference.startswith(("https://", "mailto:")):
+            continue
+        assert reference.startswith("./")
+        assert (output / reference.removeprefix("./")).is_file(), reference
+
+    app = (output / "app.js").read_text()
+    assert 'apiUrl("/v1/installations")' in app
+    assert 'apiUrl("/v1/analyses")' in app
+
+
+def test_public_site_validator_rejects_a_missing_local_asset_without_path_leak(
+    tmp_path: Path,
+):
+    output = tmp_path / "pages"
+    output.mkdir()
+    (output / "index.html").write_text(
+        '<!doctype html><script src="./missing.js"></script>'
+    )
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            str(ROOT / "scripts" / "build_pages.py"),
+            "--validate-only",
+            str(output),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode != 0
+    assert "missing local asset: missing.js" in completed.stderr
+    assert str(tmp_path) not in completed.stdout + completed.stderr
+
+
+def test_public_site_workflow_builds_and_deploys_the_first_party_artifact():
     workflow = (ROOT / ".github" / "workflows" / "legal-pages.yml").read_text()
 
     for action in (
@@ -187,11 +255,9 @@ def test_public_legal_site_deploys_only_first_party_legal_assets():
     ):
         assert action in workflow
     assert "path: .legal-pages" in workflow
-    assert "static/privacy.html" in workflow
-    assert "static/terms.html" in workflow
-    assert "static/support.html" in workflow
-    assert "static/styles.css" in workflow
-    assert "static/app.js" not in workflow
+    assert "scripts/build_pages.py" in workflow
+    assert "static/**" in workflow
+    assert "cp static/support.html .legal-pages/index.html" not in workflow
 
     for name in ("privacy.html", "terms.html", "support.html"):
         page = (ROOT / "static" / name).read_text()
@@ -204,6 +270,10 @@ def test_render_declares_two_instances_and_every_backend_only_billing_secret():
     service = next(item for item in render["services"] if item["type"] == "web")
 
     assert service["numInstances"] >= 2
+    assert service["autoDeployTrigger"] == "checksPass"
+    assert next(
+        item for item in service["envVars"] if item["key"] == "ALLOWED_WEB_ORIGINS"
+    )["value"] == f"{CANDIDATE_ORIGIN},https://avinashamanchi.github.io"
     assert {item["key"] for item in service["envVars"]} >= {
         "REVENUECAT_SECRET_API_KEY",
         "REVENUECAT_APP_ID",

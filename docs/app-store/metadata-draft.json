@@ -1,6 +1,6 @@
 {
   "name": "Resume.AI",
-  "subtitle": "Feedback, Score & AI Coaching",
+  "subtitle": "Feedback, Scores & Coaching",
   "primaryLanguage": "English (U.S.)",
   "sku": "resume-ai-ios",
   "promotionalText": "Review a PDF or pasted resume with a transparent readiness score and optional AI coaching. Keep a private, local career workspace.",
@@ -11,6 +11,7 @@
   "privacyPolicyUrl": "https://avinashamanchi.github.io/resume-analyzer/privacy.html",
   "termsOfUseUrl": "https://avinashamanchi.github.io/resume-analyzer/terms.html",
   "supportUrl": "https://avinashamanchi.github.io/resume-analyzer/support.html",
+  "marketingUrl": "https://avinashamanchi.github.io/resume-analyzer/",
   "sellerName": "ACCOUNT HOLDER TO CONFIRM",
   "copyright": "ACCOUNT HOLDER TO CONFIRM",
   "appPrivacyDraft": {

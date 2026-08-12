@@ -1,14 +1,12 @@
-name: Publish Resume.AI legal site
+name: Publish Resume.AI public site
 
 on:
   push:
     branches: [main]
     paths:
       - .github/workflows/legal-pages.yml
-      - static/privacy.html
-      - static/terms.html
-      - static/support.html
-      - static/styles.css
+      - scripts/build_pages.py
+      - static/**
   workflow_dispatch:
 
 permissions:
@@ -29,15 +27,11 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
-      - name: Stage only public legal and support assets
-        run: |
-          mkdir -p .legal-pages
-          cp static/privacy.html static/terms.html static/support.html static/styles.css .legal-pages/
-          cp static/support.html .legal-pages/index.html
-          touch .legal-pages/.nojekyll
+      - name: Build public landing, demo, and legal artifact
+        run: python3 scripts/build_pages.py --output .legal-pages
       - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
         with:
           path: .legal-pages
-      - name: Deploy legal site
+      - name: Deploy public site
         id: deployment
         uses: actions/deploy-pages@cd2ce8fcbc39b97be8ca5fce6e763baed58fa128 # v5.0.0

@@ -5,7 +5,7 @@ services:
     plan: starter
     numInstances: 2
     region: oregon
-    autoDeployTrigger: off
+    autoDeployTrigger: checksPass
     previews:
       generation: off
     buildCommand: uv sync --frozen --no-dev
@@ -35,7 +35,7 @@ services:
           name: resume-ai-rate-limit
           property: connectionString
       - key: ALLOWED_WEB_ORIGINS
-        value: https://resume-analyzer-al3g.onrender.com
+        value: https://resume-analyzer-al3g.onrender.com,https://avinashamanchi.github.io
       - key: PROVIDER_DEADLINE_SECONDS
         value: "8"
       - key: REQUEST_DEADLINE_SECONDS

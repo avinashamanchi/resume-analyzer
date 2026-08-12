@@ -109,6 +109,7 @@ describe('native foundation', () => {
       const releaseConfig = appConfig({ config: appManifest } as never);
       expect(releaseConfig.ios?.usesAppleSignIn).toBeUndefined();
       expect(releaseConfig.plugins).not.toContain('expo-apple-authentication');
+      expect(packageManifest.dependencies['expo-apple-authentication']).toBeUndefined();
     } finally {
       if (originalProfile === undefined) delete process.env.EAS_BUILD_PROFILE;
       else process.env.EAS_BUILD_PROFILE = originalProfile;

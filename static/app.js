@@ -8,6 +8,25 @@ const TOKEN_KEY = "resume-ai.installation-token.v1";
 const { validateAnalysisResponse, validateInstallationResponse, validatePublicError } = globalThis.ResumeAIContract;
 const { RequestLifecycle } = globalThis.ResumeAILifecycle;
 
+const API_ORIGIN = (() => {
+  const configured = document.querySelector('meta[name="resume-ai-api-origin"]')?.content.trim() || "";
+  if (!configured) return "";
+  try {
+    const parsed = new URL(configured);
+    if (
+      parsed.protocol !== "https:" || parsed.username || parsed.password ||
+      parsed.pathname !== "/" || parsed.search || parsed.hash
+    ) throw new TypeError("invalid API origin");
+    return parsed.origin;
+  } catch {
+    throw new Error("Resume.AI is not configured for secure analysis requests.");
+  }
+})();
+
+function apiUrl(path) {
+  return `${API_ORIGIN}${path}`;
+}
+
 const errorMessages = {
   invalid_request: "Check the selected material and consent, then submit again.",
   invalid_installation: "This browser session needs a new access token. Submit again to request one.",
@@ -118,7 +137,7 @@ function stableError(data, fallback) {
 }
 
 async function issueInstallation(owner) {
-  const response = await fetch("/v1/installations", {
+  const response = await fetch(apiUrl("/v1/installations"), {
     method: "POST",
     signal: owner.controller.signal,
     credentials: "same-origin"
@@ -193,7 +212,7 @@ async function submitAnalysis(event) {
     const token = await installationToken(owner);
     if (!lifecycle.owns(owner)) return;
     if (!token) return;
-    const response = await fetch("/v1/analyses", {
+    const response = await fetch(apiUrl("/v1/analyses"), {
       method: "POST",
       headers: { Authorization: `Installation ${token}` },
       body: payload.formData,
