@@ -25,7 +25,7 @@ Last updated: 2026-08-14. `PASS` means directly observed evidence. `BLOCKED` mea
 
 ## Public service and privacy gates
 
-- [ ] `BLOCKED` — on 2026-08-14 the live Render root returned HTTP 200 but still served a March 29, 2026 legacy artifact with wildcard CORS, no HSTS, and no current security headers; `/healthz` returned HTTP 404. Deploy the current service, then pass health and a synthetic complete analysis flow anonymously.
+- [ ] `BLOCKED` — an earlier 2026-08-14 probe reached a March 29, 2026 legacy artifact with wildcard CORS, no HSTS, and `/healthz` at HTTP 404. After the security merge, independent 45-second and 30-second probes received zero bytes and timed out, so the current Render service is unavailable or unverifiable. Deploy the current service, then pass health, response-header, and synthetic complete-analysis checks anonymously.
 - [x] Privacy, Terms, and Support each returned HTTPS 200 anonymously on 2026-08-14 and matched the tracked `static/` release files byte for byte; recheck immediately before submission.
 - [ ] `BLOCKED` — Groq Zero Data Retention or the exact production retention configuration must be verified in the authoritative provider console and reflected in the policy.
 - [ ] `BLOCKED` — Render retention, content-free application logging, rate limiting, and deletion behavior must match the submitted privacy answers.

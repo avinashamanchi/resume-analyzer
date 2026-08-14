@@ -23,7 +23,7 @@
   "submissionStatus": "BLOCKED",
   "submissionBlockers": [
     "Confirm seller and copyright values in the authorized App Store Connect account.",
-    "Deploy the current production API and anonymously verify /healthz plus a synthetic complete analysis flow; on 2026-08-14 the root served a March 29, 2026 legacy artifact with wildcard CORS and no HSTS, while /healthz returned HTTP 404.",
+    "Deploy the current production API and anonymously verify /healthz, security headers, and a synthetic complete analysis flow; an earlier 2026-08-14 probe reached a March 29 legacy artifact, while two post-merge probes timed out after 45 and 30 seconds with zero bytes.",
     "Create, localize, and submit the two Apple subscription products; connect them to the resume_pro RevenueCat entitlement and verify sandbox purchase/restore.",
     "Verify Groq retention settings in the authoritative console.",
     "Complete physical-iPhone, backup and restore, signed build, and TestFlight gates.",

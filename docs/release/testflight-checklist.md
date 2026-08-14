@@ -11,7 +11,7 @@ Status vocabulary: `PASS`, `FAIL`, `BLOCKED`, `UNVERIFIED`. A successful archive
 | Marketing version | `1.0.0` | CONFIGURED |
 | Build number | `1` | CONFIGURED; availability unverified |
 | EAS project ID/owner | Not configured | BLOCKED — requires authorized EAS account setup |
-| Production API origin | `https://resume-analyzer-al3g.onrender.com` | BLOCKED — on 2026-08-14 the root returned HTTP 200 but served a March 29, 2026 legacy artifact with wildcard CORS and no HSTS; `/healthz` returned HTTP 404. Deploy the current service and verify health plus a synthetic full flow. |
+| Production API origin | `https://resume-analyzer-al3g.onrender.com` | BLOCKED — an earlier 2026-08-14 probe reached a March 29, 2026 legacy artifact with wildcard CORS, no HSTS, and `/healthz` at HTTP 404; two post-merge probes received zero bytes and timed out after 45 and 30 seconds. Deploy the current service and verify health, security headers, and a synthetic full flow. |
 | Privacy URL | `https://avinashamanchi.github.io/resume-analyzer/privacy.html` | PASS — anonymous HTTPS 200 on 2026-08-14; response matched `static/privacy.html` byte for byte. Recheck immediately before submission. |
 | Terms URL | `https://avinashamanchi.github.io/resume-analyzer/terms.html` | PASS — anonymous HTTPS 200 on 2026-08-14; response matched `static/terms.html` byte for byte. Recheck immediately before submission. |
 | Support URL | `https://avinashamanchi.github.io/resume-analyzer/support.html` | PASS — anonymous HTTPS 200 on 2026-08-14; response matched `static/support.html` byte for byte. Recheck immediately before submission. |
