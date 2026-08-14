@@ -721,6 +721,14 @@ def test_analysis_headers_are_private_and_cors_is_first_party_only(client: Any):
     assert allowed.headers["Cache-Control"] == "no-store"
     assert allowed.headers["X-Content-Type-Options"] == "nosniff"
     assert "default-src 'self'" in allowed.headers["Content-Security-Policy"]
+    assert allowed.headers["Strict-Transport-Security"] == "max-age=31536000"
+    assert allowed.headers["Referrer-Policy"] == "no-referrer"
+    assert allowed.headers["Permissions-Policy"] == (
+        "camera=(), microphone=(), geolocation=(), payment=()"
+    )
+    assert allowed.headers["Cross-Origin-Opener-Policy"] == "same-origin"
+    assert allowed.headers["Cross-Origin-Resource-Policy"] == "same-origin"
+    assert allowed.headers["X-Frame-Options"] == "DENY"
     assert UUID(allowed.headers["X-Request-ID"]) == REQUEST_ID
 
 

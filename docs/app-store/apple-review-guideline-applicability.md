@@ -1,6 +1,6 @@
 # Resume.AI — Apple App Review guideline applicability
 
-Reviewed against Apple's App Review overview and App Review Guidelines on 2026-08-10. This matrix distinguishes repository implementation from credentialed release evidence; it cannot guarantee acceptance.
+Reviewed against Apple's App Review overview and App Review Guidelines on 2026-08-14. This matrix distinguishes repository implementation from credentialed release evidence; it cannot guarantee acceptance.
 
 | Guideline | Status | Resume.AI decision and evidence |
 | --- | --- | --- |
@@ -33,6 +33,11 @@ Reviewed against Apple's App Review overview and App Review Guidelines on 2026-0
 | 5.2 Intellectual property | IMPLEMENTED + EXTERNAL GATE | Users must have rights to resume/job content; verify every bundled/screenshot asset and seller copyright. |
 | 5.3–5.5 Gambling/VPN/device management | N/A | None present. |
 | 5.6 Developer conduct | EXTERNAL GATE | Honest claims, functional support, accurate privacy answers, no review manipulation, and responsive App Review communication are required. |
+
+## 2026 submission questionnaire decision
+
+- **Social media capabilities: No.** Resume.AI has no social feed or discovery surface and cannot redistribute, amplify, or expose user-generated content to many users. Enter `No` for Apple's social-media capability question; this answer becomes submission-blocking in September 2026. Re-review this decision before adding any public feed, discovery, community, or many-user sharing feature.
+- Apple has required uploads to use the iOS 26 SDK or later since April 28, 2026. The repository remains on Expo SDK 54 for the already-tested iOS 15.1+ product surface; Expo's current `sdk-54` EAS image uses Xcode 26.0. The final build log and processed archive must still prove the actual SDK. Expo Go remains preview-only; production acceptance requires a signed development/TestFlight build.
 
 ## Submission-stopping external gates
 

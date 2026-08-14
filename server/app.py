@@ -306,7 +306,15 @@ def create_app(
     @app.after_request
     def apply_response_policy(response: Any) -> Any:
         response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-Frame-Options"] = "DENY"
         response.headers["Content-Security-Policy"] = _CONTENT_SECURITY_POLICY
+        response.headers["Strict-Transport-Security"] = "max-age=31536000"
+        response.headers["Referrer-Policy"] = "no-referrer"
+        response.headers["Permissions-Policy"] = (
+            "camera=(), microphone=(), geolocation=(), payment=()"
+        )
+        response.headers["Cross-Origin-Opener-Policy"] = "same-origin"
+        response.headers["Cross-Origin-Resource-Policy"] = "same-origin"
         response.headers["X-Request-ID"] = str(g.resume_ai_request_id)
         if request.path in {
             "/v1/analyses",

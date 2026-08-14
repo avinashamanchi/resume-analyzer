@@ -1,7 +1,12 @@
 import type { ConfigContext, ExpoConfig } from 'expo/config';
 
 const PRODUCTION_API_ORIGIN = 'https://resume-analyzer-al3g.onrender.com';
-const PUBLIC_REVENUECAT_KEY = /^appl_[A-Za-z0-9_-]{8,}$/;
+const PUBLIC_REVENUECAT_KEY = /^appl_[A-Za-z0-9_-]{12,}$/;
+
+function isRevenueCatApplePublicKey(value: string): boolean {
+  return PUBLIC_REVENUECAT_KEY.test(value)
+    && !/(?:example|placeholder|replace|your|test)/i.test(value);
+}
 
 export default function appConfig({ config }: ConfigContext): ExpoConfig {
   if (process.env.EAS_BUILD_PROFILE === 'production') {
@@ -11,8 +16,7 @@ export default function appConfig({ config }: ConfigContext): ExpoConfig {
       throw new Error('EXPO_PUBLIC_RESUME_API_URL is invalid for the production build');
     }
     if (
-      !PUBLIC_REVENUECAT_KEY.test(revenueCatKey) ||
-      revenueCatKey.includes('replace_with')
+      !isRevenueCatApplePublicKey(revenueCatKey)
     ) {
       throw new Error('EXPO_PUBLIC_REVENUECAT_IOS_API_KEY is required for the production build');
     }
