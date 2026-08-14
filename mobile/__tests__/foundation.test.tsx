@@ -77,6 +77,27 @@ describe('native foundation', () => {
     })).toEqual({ NSAppTransportSecurity: { NSAllowsArbitraryLoads: false } });
   });
 
+  it('declares app-collected data without tracking or tracking domains', () => {
+    const privacy = appManifest.ios.privacyManifests;
+    expect(privacy.NSPrivacyTracking).toBe(false);
+    expect(privacy.NSPrivacyTrackingDomains).toEqual([]);
+    expect(privacy.NSPrivacyCollectedDataTypes.map(
+      (entry: { NSPrivacyCollectedDataType: string }) => entry.NSPrivacyCollectedDataType,
+    )).toEqual([
+      'NSPrivacyCollectedDataTypeOtherUserContent',
+      'NSPrivacyCollectedDataTypeDeviceID',
+      'NSPrivacyCollectedDataTypePurchaseHistory',
+      'NSPrivacyCollectedDataTypeProductInteraction',
+      'NSPrivacyCollectedDataTypePerformanceData',
+      'NSPrivacyCollectedDataTypeOtherDiagnosticData',
+    ]);
+    expect(privacy.NSPrivacyCollectedDataTypes.every(
+      (entry: { NSPrivacyCollectedDataTypeTracking: boolean }) => (
+        entry.NSPrivacyCollectedDataTypeTracking === false
+      ),
+    )).toBe(true);
+  });
+
   it('uses remote App Store build-number auto-increment without submission credentials', () => {
     expect(easConfig.cli).toMatchObject({ appVersionSource: 'remote', requireCommit: true });
     expect(easConfig.build.production).toEqual({
@@ -101,6 +122,8 @@ describe('native foundation', () => {
       delete process.env.EXPO_PUBLIC_REVENUECAT_IOS_API_KEY;
       expect(() => appConfig({ config: appManifest } as never)).toThrow('EXPO_PUBLIC_REVENUECAT_IOS_API_KEY');
       process.env.EXPO_PUBLIC_REVENUECAT_IOS_API_KEY = 'appl_replace_with_revenuecat_public_sdk_key';
+      expect(() => appConfig({ config: appManifest } as never)).toThrow('EXPO_PUBLIC_REVENUECAT_IOS_API_KEY');
+      process.env.EXPO_PUBLIC_REVENUECAT_IOS_API_KEY = 'appl_placeholder_public_sdk_key';
       expect(() => appConfig({ config: appManifest } as never)).toThrow('EXPO_PUBLIC_REVENUECAT_IOS_API_KEY');
       process.env.EXPO_PUBLIC_REVENUECAT_IOS_API_KEY = 'appl_AbCdEfGhIjKlMnOp';
       process.env.EXPO_PUBLIC_RESUME_API_URL = 'http://localhost:5000';

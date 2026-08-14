@@ -43,6 +43,35 @@ def test_ios_release_identity_assets_and_update_policy_are_explicit():
         "bundleIdentifier": "com.avinashamanchi.resumeai",
         "buildNumber": "1",
         "icon": "./assets/icon.png",
+        "privacyManifests": {
+            "NSPrivacyTracking": False,
+            "NSPrivacyTrackingDomains": [],
+            "NSPrivacyAccessedAPITypes": [],
+            "NSPrivacyCollectedDataTypes": [
+                {
+                    "NSPrivacyCollectedDataType": data_type,
+                    "NSPrivacyCollectedDataTypeLinked": False,
+                    "NSPrivacyCollectedDataTypeTracking": False,
+                    "NSPrivacyCollectedDataTypePurposes": [
+                        "NSPrivacyCollectedDataTypePurposeAppFunctionality",
+                        *(
+                            ["NSPrivacyCollectedDataTypePurposeAnalytics"]
+                            if data_type
+                            == "NSPrivacyCollectedDataTypePurchaseHistory"
+                            else []
+                        ),
+                    ],
+                }
+                for data_type in (
+                    "NSPrivacyCollectedDataTypeOtherUserContent",
+                    "NSPrivacyCollectedDataTypeDeviceID",
+                    "NSPrivacyCollectedDataTypePurchaseHistory",
+                    "NSPrivacyCollectedDataTypeProductInteraction",
+                    "NSPrivacyCollectedDataTypePerformanceData",
+                    "NSPrivacyCollectedDataTypeOtherDiagnosticData",
+                )
+            ],
+        },
         "infoPlist": {"ITSAppUsesNonExemptEncryption": False},
     }
 
